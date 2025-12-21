@@ -2,7 +2,7 @@ data:
   root_dir: "/media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train"
   modalities: ["t1c", "t1n", "t2f", "t2w"]
   roi_size: [128, 128, 128]
-  spacing: [1.0, 1.0, 1.0]
+  spacing: [1.875, 1.875, 1.875]
   orientation: "RAS"
   batch_size: 2
   num_workers: 4

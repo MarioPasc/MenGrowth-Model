@@ -9,23 +9,28 @@ After transforms, the batch contains:
 
 from typing import List, Tuple
 
-from monai.transforms import (
-    Compose,
-    LoadImaged,
-    EnsureChannelFirstd,
+from monai.transforms.compose import Compose
+from monai.transforms.io.dictionary import LoadImaged
+from monai.transforms.utility.dictionary import (
+    EnsureChannelFirstd, 
+    ConcatItemsd, 
+    ToTensord
+)
+from monai.transforms.spatial.dictionary import (
     Orientationd,
     Spacingd,
-    NormalizeIntensityd,
-    ConcatItemsd,
-    ResizeWithPadOrCropd,
-    RandSpatialCropd,
-    ToTensord,
 )
+from monai.transforms.croppad.dictionary import (
+    ResizeWithPadOrCropd,
+    RandSpatialCropd
+)
+from monai.transforms.intensity.dictionary import NormalizeIntensityd
 
 
 MODALITY_KEYS = ["t1c", "t1n", "t2f", "t2w"]
 SEG_KEY = "seg"
 ALL_KEYS = MODALITY_KEYS + [SEG_KEY]
+
 
 
 def get_common_transforms(
@@ -35,22 +40,26 @@ def get_common_transforms(
 ) -> List:
     """Get common transforms applied to both train and val data.
 
-    These transforms ensure deterministic geometry and intensity standardization.
+    These transforms enforce:
+      (i) a shared atlas orientation,
+      (ii) isotropic voxel spacing (mm/voxel),
+      (iii) per-subject intensity normalization, and
+      (iv) a deterministic 128³ spatial tensor (via pad/crop).
 
     Args:
-        spacing: Target voxel spacing in mm.
+        spacing: Target voxel spacing in mm (recommended for SRI24 whole-brain: (1.875, 1.875, 1.875)).
         orientation: Target orientation code (e.g., "RAS").
-        roi_size: Target spatial size after resize/crop.
+        roi_size: Target spatial size after pad/crop (default: 128³).
 
     Returns:
         List of MONAI transforms.
     """
     return [
-        # 1. Load NIfTI files
+        # 1. Load NIfTI files (keeps affine/metadata for spacing/orientation ops)
         LoadImaged(keys=ALL_KEYS, image_only=False),
-        # 2. Ensure channel dimension is first
+        # 2. Ensure channel dimension is first for all keys
         EnsureChannelFirstd(keys=ALL_KEYS),
-        # 3. Reorient to standard orientation
+        # 3. Reorient to a standard axis code
         Orientationd(keys=ALL_KEYS, axcodes=orientation),
         # 4a. Resample modalities with bilinear interpolation
         Spacingd(
@@ -64,11 +73,11 @@ def get_common_transforms(
             pixdim=spacing,
             mode=("nearest",),
         ),
-        # 5. Z-score normalize each modality channel-wise per subject
-        NormalizeIntensityd(keys=MODALITY_KEYS, nonzero=False, channel_wise=True),
-        # 6. Concatenate modalities into single "image" tensor with C=4
+        # 5. Z-score normalize each modality per subject over nonzero voxels
+        NormalizeIntensityd(keys=MODALITY_KEYS, nonzero=True, channel_wise=True),
+        # 6. Concatenate modalities into a single "image" tensor with C=4
         ConcatItemsd(keys=MODALITY_KEYS, name="image", dim=0),
-        # 7. Resize/pad/crop to exact target size (128x128x128)
+        # 7. Deterministic pad/crop to exact target size (128×128×128)
         ResizeWithPadOrCropd(keys=["image", SEG_KEY], spatial_size=roi_size),
     ]
 
@@ -78,11 +87,14 @@ def get_train_transforms(
     orientation: str = "RAS",
     roi_size: Tuple[int, int, int] = (128, 128, 128),
 ) -> Compose:
-    """Get training transforms including stochastic augmentation.
+    """Get training transforms.
 
-    The train pipeline includes random spatial cropping after size guarantee.
-    Even though crop size equals target size, it randomizes location if volumes
-    are larger before the resize step.
+    For Neural ODE compatibility, the training pipeline is geometrically deterministic:
+    it produces a single, atlas-anchored whole-brain tensor (128³) per scan.
+
+    If we later decide we want patch-based augmentation, reintroduce random crops
+    *before* the final `ResizeWithPadOrCropd`, and be explicit that the ODE state then
+    becomes crop-dependent.
 
     Args:
         spacing: Target voxel spacing in mm.
@@ -94,14 +106,7 @@ def get_train_transforms(
     """
     transforms = get_common_transforms(spacing, orientation, roi_size)
 
-    # Add train-only stochastic transforms
-    transforms.extend([
-        # 8. Random spatial crop (same size, randomizes location)
-        RandSpatialCropd(keys=["image", SEG_KEY], roi_size=roi_size, random_size=False),
-        # 9. Convert to PyTorch tensors
-        ToTensord(keys=["image", SEG_KEY]),
-    ])
-
+    transforms.append(ToTensord(keys=["image", SEG_KEY]))
     return Compose(transforms)
 
 
@@ -112,9 +117,6 @@ def get_val_transforms(
 ) -> Compose:
     """Get validation transforms (deterministic only).
 
-    The validation pipeline contains no random transforms to ensure
-    reproducible evaluation.
-
     Args:
         spacing: Target voxel spacing in mm.
         orientation: Target orientation code.
@@ -124,10 +126,5 @@ def get_val_transforms(
         MONAI Compose transform pipeline.
     """
     transforms = get_common_transforms(spacing, orientation, roi_size)
-
-    # Val: only deterministic transforms, no random crop
-    transforms.append(
-        ToTensord(keys=["image", SEG_KEY]),
-    )
-
+    transforms.append(ToTensord(keys=["image", SEG_KEY]))
     return Compose(transforms)
