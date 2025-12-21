@@ -267,7 +267,8 @@ class ReconstructionCallback(Callback):
         if current_samples < self.num_recon_samples:
             x = batch["image"].detach().cpu()
             with torch.no_grad():
-                x_hat, _, _ = pl_module.model(batch["image"])
+                # Get reconstruction (first element) - works for both BaselineVAE (3 returns) and TCVAESBD (4 returns)
+                x_hat = pl_module.model(batch["image"])[0]
                 x_hat = x_hat.detach().cpu()
 
             self._val_outputs.append({"x": x, "x_hat": x_hat})
