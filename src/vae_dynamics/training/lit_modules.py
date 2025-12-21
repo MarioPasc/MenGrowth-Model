@@ -136,11 +136,22 @@ class VAELitModule(pl.LightningModule):
         # Compute ELBO loss
         loss_dict = compute_elbo(x, x_hat, mu, logvar, beta=self.current_beta)
 
-        # Log metrics
-        self.log("train/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=True)
-        self.log("train/recon", loss_dict["recon"], on_step=False, on_epoch=True)
-        self.log("train/kl", loss_dict["kl"], on_step=False, on_epoch=True)
-        self.log("train/beta", self.current_beta, on_step=False, on_epoch=True)
+        # Log metrics (on_step=True for intra-epoch logging)
+        self.log("train/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
+        self.log("train/recon", loss_dict["recon"], on_step=True, on_epoch=True)
+        self.log("train/kl", loss_dict["kl"], on_step=True, on_epoch=True)
+        self.log("train/beta", self.current_beta, on_step=True, on_epoch=True)
+
+        # Log latent space statistics
+        self.log("train/mu_mean", mu.mean(), on_step=True, on_epoch=True)
+        self.log("train/mu_std", mu.std(), on_step=True, on_epoch=True)
+        self.log("train/logvar_mean", logvar.mean(), on_step=True, on_epoch=True)
+
+        # Log learning rate
+        opt = self.optimizers()
+        if opt is not None:
+            current_lr = opt.param_groups[0]["lr"]
+            self.log("train/lr", current_lr, on_step=True, on_epoch=False)
 
         return loss_dict["loss"]
 
@@ -166,11 +177,16 @@ class VAELitModule(pl.LightningModule):
         # Compute ELBO loss
         loss_dict = compute_elbo(x, x_hat, mu, logvar, beta=self.current_beta)
 
-        # Log metrics
-        self.log("val/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val/recon", loss_dict["recon"], on_step=False, on_epoch=True)
-        self.log("val/kl", loss_dict["kl"], on_step=False, on_epoch=True)
-        self.log("val/beta", self.current_beta, on_step=False, on_epoch=True)
+        # Log metrics (on_step=True for intra-epoch logging)
+        self.log("val/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
+        self.log("val/recon", loss_dict["recon"], on_step=True, on_epoch=True)
+        self.log("val/kl", loss_dict["kl"], on_step=True, on_epoch=True)
+        self.log("val/beta", self.current_beta, on_step=True, on_epoch=True)
+
+        # Log latent space statistics
+        self.log("val/mu_mean", mu.mean(), on_step=True, on_epoch=True)
+        self.log("val/mu_std", mu.std(), on_step=True, on_epoch=True)
+        self.log("val/logvar_mean", logvar.mean(), on_step=True, on_epoch=True)
 
         return loss_dict["loss"]
 
@@ -342,13 +358,26 @@ class TCVAELitModule(pl.LightningModule):
             compute_in_fp32=self.compute_in_fp32,
         )
 
-        # Log metrics
-        self.log("train/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=True)
-        self.log("train/recon", loss_dict["recon"], on_step=False, on_epoch=True)
-        self.log("train/mi", loss_dict["mi"], on_step=False, on_epoch=True)
-        self.log("train/tc", loss_dict["tc"], on_step=False, on_epoch=True)
-        self.log("train/dwkl", loss_dict["dwkl"], on_step=False, on_epoch=True)
-        self.log("train/beta_tc", self.current_beta_tc, on_step=False, on_epoch=True)
+        # Log metrics (on_step=True for intra-epoch logging)
+        self.log("train/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
+        self.log("train/recon", loss_dict["recon"], on_step=True, on_epoch=True)
+        self.log("train/mi", loss_dict["mi"], on_step=True, on_epoch=True)
+        self.log("train/tc", loss_dict["tc"], on_step=True, on_epoch=True)
+        self.log("train/dwkl", loss_dict["dwkl"], on_step=True, on_epoch=True)
+        self.log("train/beta_tc", self.current_beta_tc, on_step=True, on_epoch=True)
+
+        # Log latent space statistics
+        self.log("train/mu_mean", mu.mean(), on_step=True, on_epoch=True)
+        self.log("train/mu_std", mu.std(), on_step=True, on_epoch=True)
+        self.log("train/logvar_mean", logvar.mean(), on_step=True, on_epoch=True)
+        self.log("train/z_mean", z.mean(), on_step=True, on_epoch=True)
+        self.log("train/z_std", z.std(), on_step=True, on_epoch=True)
+
+        # Log learning rate
+        opt = self.optimizers()
+        if opt is not None:
+            current_lr = opt.param_groups[0]["lr"]
+            self.log("train/lr", current_lr, on_step=True, on_epoch=False)
 
         return loss_dict["loss"]
 
@@ -385,13 +414,20 @@ class TCVAELitModule(pl.LightningModule):
             compute_in_fp32=self.compute_in_fp32,
         )
 
-        # Log metrics
-        self.log("val/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val/recon", loss_dict["recon"], on_step=False, on_epoch=True)
-        self.log("val/mi", loss_dict["mi"], on_step=False, on_epoch=True)
-        self.log("val/tc", loss_dict["tc"], on_step=False, on_epoch=True)
-        self.log("val/dwkl", loss_dict["dwkl"], on_step=False, on_epoch=True)
-        self.log("val/beta_tc", self.current_beta_tc, on_step=False, on_epoch=True)
+        # Log metrics (on_step=True for intra-epoch logging)
+        self.log("val/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
+        self.log("val/recon", loss_dict["recon"], on_step=True, on_epoch=True)
+        self.log("val/mi", loss_dict["mi"], on_step=True, on_epoch=True)
+        self.log("val/tc", loss_dict["tc"], on_step=True, on_epoch=True)
+        self.log("val/dwkl", loss_dict["dwkl"], on_step=True, on_epoch=True)
+        self.log("val/beta_tc", self.current_beta_tc, on_step=True, on_epoch=True)
+
+        # Log latent space statistics
+        self.log("val/mu_mean", mu.mean(), on_step=True, on_epoch=True)
+        self.log("val/mu_std", mu.std(), on_step=True, on_epoch=True)
+        self.log("val/logvar_mean", logvar.mean(), on_step=True, on_epoch=True)
+        self.log("val/z_mean", z.mean(), on_step=True, on_epoch=True)
+        self.log("val/z_std", z.std(), on_step=True, on_epoch=True)
 
         return loss_dict["loss"]
 

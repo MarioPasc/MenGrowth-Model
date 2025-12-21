@@ -40,7 +40,7 @@ from pytorch_lightning.loggers import CSVLogger
 # sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from vae_dynamics.data import build_subject_index, create_train_val_split, get_dataloaders
-from vae_dynamics.training import VAELitModule, TCVAELitModule, ReconstructionCallback
+from vae_dynamics.training import VAELitModule, TCVAELitModule, ReconstructionCallback, TrainingLoggingCallback
 from vae_dynamics.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
 
 
@@ -177,6 +177,15 @@ def main():
     )
     callbacks.append(recon_callback)
 
+    # Custom training logging callback (replaces tqdm)
+    min_logs_per_epoch = cfg.logging.get("min_logs_per_epoch", 3)
+    logging_callback = TrainingLoggingCallback(
+        min_logs_per_epoch=min_logs_per_epoch,
+        log_val_every_n_batches=1,
+    )
+    callbacks.append(logging_callback)
+    logger.info(f"Configured logging: at least {min_logs_per_epoch} logs per training epoch")
+
     # Setup logger
     csv_logger = CSVLogger(
         save_dir=run_dir / "logs",
@@ -184,7 +193,15 @@ def main():
         version="",
     )
 
-    # Create trainer
+    # Calculate log_every_n_steps for at least 3 entries per epoch in CSV
+    # Estimate number of training batches
+    n_train_samples = len(train_subjects)
+    batch_size = cfg.data.batch_size
+    approx_batches_per_epoch = max(1, n_train_samples // batch_size)
+    log_every_n_steps = max(1, approx_batches_per_epoch // min_logs_per_epoch)
+    logger.info(f"CSV logging: every {log_every_n_steps} steps (~{approx_batches_per_epoch // log_every_n_steps} entries/epoch)")
+
+    # Create trainer (disable progress bar since we use custom logging)
     trainer = pl.Trainer(
         max_epochs=cfg.train.max_epochs,
         accelerator=cfg.train.get("accelerator", "auto"),
@@ -192,8 +209,8 @@ def main():
         precision=cfg.train.precision,
         callbacks=callbacks,
         logger=csv_logger,
-        log_every_n_steps=1,
-        enable_progress_bar=True,
+        log_every_n_steps=log_every_n_steps,
+        enable_progress_bar=False,  # Disabled in favor of custom logging
         deterministic=True,
     )
 

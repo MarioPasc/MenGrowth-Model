@@ -2,11 +2,13 @@
 
 This module implements custom callbacks for:
 - Saving reconstruction visualizations at regular intervals
+- Custom logging to replace tqdm progress bars with informative console output
 """
 
 import logging
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import torch
 import numpy as np
@@ -23,6 +25,192 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+class TrainingLoggingCallback(Callback):
+    """Callback to log training progress to console, replacing tqdm.
+
+    Logs loss values and metrics at regular intervals within each epoch,
+    ensuring at least `min_logs_per_epoch` log entries per epoch.
+
+    Also logs epoch summaries and timing information.
+    """
+
+    def __init__(
+        self,
+        min_logs_per_epoch: int = 3,
+        log_val_every_n_batches: int = 1,
+    ):
+        """Initialize TrainingLoggingCallback.
+
+        Args:
+            min_logs_per_epoch: Minimum number of log entries per training epoch.
+            log_val_every_n_batches: Log validation metrics every N batches.
+        """
+        super().__init__()
+        self.min_logs_per_epoch = min_logs_per_epoch
+        self.log_val_every_n_batches = log_val_every_n_batches
+
+        # Epoch tracking
+        self._epoch_start_time = None
+        self._train_batch_count = 0
+        self._log_interval = 1
+
+        # Accumulate metrics for summary
+        self._train_losses = []
+        self._val_losses = []
+
+    def on_train_epoch_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Record epoch start time and reset counters."""
+        self._epoch_start_time = time.time()
+        self._train_batch_count = 0
+        self._train_losses = []
+
+        # Calculate log interval to achieve min_logs_per_epoch
+        total_batches = len(trainer.train_dataloader)
+        self._log_interval = max(1, total_batches // self.min_logs_per_epoch)
+
+        logger.info(
+            f"Epoch {trainer.current_epoch}/{trainer.max_epochs - 1} started "
+            f"({total_batches} batches, logging every {self._log_interval} batches)"
+        )
+
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: Dict[str, torch.Tensor],
+        batch_idx: int,
+    ) -> None:
+        """Log training metrics at regular intervals."""
+        self._train_batch_count += 1
+
+        # Extract loss from outputs
+        if isinstance(outputs, dict) and "loss" in outputs:
+            loss_val = outputs["loss"].item() if torch.is_tensor(outputs["loss"]) else outputs["loss"]
+        elif torch.is_tensor(outputs):
+            loss_val = outputs.item()
+        else:
+            loss_val = float(outputs) if outputs is not None else 0.0
+
+        self._train_losses.append(loss_val)
+
+        # Log at intervals
+        if (batch_idx + 1) % self._log_interval == 0 or batch_idx == 0:
+            total_batches = len(trainer.train_dataloader)
+            progress = 100 * (batch_idx + 1) / total_batches
+
+            # Get additional metrics from logged values
+            metrics_str = self._format_logged_metrics(trainer, prefix="train/")
+
+            logger.info(
+                f"  [Train] Batch {batch_idx + 1}/{total_batches} ({progress:.0f}%) | "
+                f"loss={loss_val:.4f}{metrics_str}"
+            )
+
+    def on_train_epoch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Log epoch summary with average loss and timing."""
+        epoch_time = time.time() - self._epoch_start_time
+
+        avg_train_loss = sum(self._train_losses) / len(self._train_losses) if self._train_losses else 0.0
+
+        logger.info(
+            f"Epoch {trainer.current_epoch} train complete | "
+            f"avg_loss={avg_train_loss:.4f} | time={epoch_time:.1f}s"
+        )
+
+    def on_validation_epoch_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Reset validation tracking."""
+        self._val_losses = []
+
+    def on_validation_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: Dict[str, torch.Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
+        """Track validation losses."""
+        if torch.is_tensor(outputs):
+            loss_val = outputs.item()
+        elif isinstance(outputs, (int, float)):
+            loss_val = float(outputs)
+        else:
+            loss_val = 0.0
+
+        self._val_losses.append(loss_val)
+
+        # Log validation progress
+        if (batch_idx + 1) % self.log_val_every_n_batches == 0:
+            total_batches = len(trainer.val_dataloaders)
+            metrics_str = self._format_logged_metrics(trainer, prefix="val/")
+            logger.info(
+                f"  [Val] Batch {batch_idx + 1}/{total_batches} | "
+                f"loss={loss_val:.4f}{metrics_str}"
+            )
+
+    def on_validation_epoch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        """Log validation epoch summary."""
+        avg_val_loss = sum(self._val_losses) / len(self._val_losses) if self._val_losses else 0.0
+
+        # Get all validation metrics
+        metrics_str = self._format_logged_metrics(trainer, prefix="val/", include_loss=False)
+
+        logger.info(
+            f"Epoch {trainer.current_epoch} validation complete | "
+            f"val_loss={avg_val_loss:.4f}{metrics_str}"
+        )
+
+    def _format_logged_metrics(
+        self,
+        trainer: pl.Trainer,
+        prefix: str,
+        include_loss: bool = False,
+    ) -> str:
+        """Format logged metrics as string.
+
+        Args:
+            trainer: PyTorch Lightning trainer.
+            prefix: Metric prefix to filter (e.g., "train/", "val/").
+            include_loss: Whether to include loss in output (already shown separately).
+
+        Returns:
+            Formatted string of metrics.
+        """
+        metrics = trainer.callback_metrics
+        parts = []
+
+        for key, value in metrics.items():
+            if key.startswith(prefix):
+                short_key = key.replace(prefix, "")
+                if not include_loss and short_key == "loss":
+                    continue
+                if torch.is_tensor(value):
+                    value = value.item()
+                parts.append(f"{short_key}={value:.4f}")
+
+        if parts:
+            return " | " + " | ".join(parts)
+        return ""
 
 
 class ReconstructionCallback(Callback):

@@ -32,3 +32,4 @@ logging:
   save_dir: "experiments/runs"
   recon_every_n_epochs: 5
   num_recon_samples: 2
+  min_logs_per_epoch: 3  # Minimum console/CSV log entries per training epoch
