@@ -37,11 +37,11 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from src.vae_dynamics.data import build_subject_index, create_train_val_split, get_dataloaders
-from src.vae_dynamics.training import VAELitModule, TCVAELitModule, ReconstructionCallback
-from src.vae_dynamics.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
+from vae_dynamics.data import build_subject_index, create_train_val_split, get_dataloaders
+from vae_dynamics.training import VAELitModule, TCVAELitModule, ReconstructionCallback
+from vae_dynamics.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
 
 
 logger = logging.getLogger(__name__)

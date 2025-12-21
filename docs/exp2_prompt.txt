@@ -1,0 +1,372 @@
+The **β-TCVAE objective** and the **minibatch-weighted sampling (MWS) estimator** used below follow Chen et al., *Isolating Sources of Disentanglement in Variational Autoencoders* (NeurIPS 2018), including the KL decomposition and the weighted objective with (\alpha=\gamma=1). ([NeurIPS Papers][1])
+
+```text
+# FINAL PROMPT FOR LOCAL AGENT (Exp2): Candidate 1 = β-TCVAE + Spatial Broadcast Decoder (SBD)
+
+## Role
+You already implemented Exp1 in this codebase. Now implement Experiment 2 (Exp2) exactly as specified here:
+- Same dataset + preprocessing as Exp1 (4-channel MRI to 128³).
+- Same encoder family as Exp1 (3D ResNet with GroupNorm).
+- Replace the decoder with a Spatial Broadcast Decoder (SBD).
+- Replace the loss with β-TCVAE (Total Correlation–weighted KL decomposition) using the Minibatch-Weighted Sampling estimator.
+- Keep the training script entrypoint and run artifacts structure consistent with Exp1.
+
+Do NOT implement Exp3/ODE. Do NOT change Exp1 behavior. Exp2 must be selectable by config.
+
+---
+
+## Non-negotiable framework usage (no substitutions)
+1) MONAI: data indexing, medical IO, transforms, PersistentDataset caching, DataLoader best practices.
+2) PyTorch: model architecture, SBD, all loss math including β-TCVAE decomposition and MWS estimator.
+3) Lightning: training orchestration, scalar logging, checkpointing, callbacks, AMP, reproducibility.
+
+---
+
+## Data + preprocessing: EXACTLY the same contract as Exp1
+- Root directory:
+  /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+- Same folder indexing, train/val split, PersistentDataset, and transforms as Exp1.
+- Model input tensor MUST be:
+  batch["image"] with shape [B, 4, 128, 128, 128]
+- seg MUST still be loaded and preserved under batch["seg"] for future Exp3, but unused in Exp2 loss.
+
+No differences allowed in data pipeline between Exp1 and Exp2.
+
+---
+
+## Exp2 Model: exact architecture requirements
+
+### Encoder (unchanged from Exp1)
+- 3D ResNet backbone.
+- GroupNorm everywhere (no BatchNorm).
+- Outputs:
+  mu: [B, 128]
+  logvar: [B, 128]
+- Reparameterization:
+  z = mu + eps * exp(0.5 * logvar), eps ~ N(0, I)
+- z_dim fixed to 128.
+
+### Decoder (CHANGED): Spatial Broadcast Decoder (SBD), fixed broadcast resolution (8,8,8)
+Implement SBD exactly with the following mechanism:
+
+Given z with shape (B, 128):
+1) Broadcast/tile to a 3D grid of spatial size (8, 8, 8):
+   z_tiled = z.view(B, 128, 1, 1, 1).expand(-1, -1, 8, 8, 8)
+
+2) Create fixed coordinate grids in [-1, 1] with indexing='ij' and axis order matching (D,H,W):
+   x = linspace(-1, 1, 8)
+   y = linspace(-1, 1, 8)
+   d = linspace(-1, 1, 8)
+   grid_d, grid_h, grid_w = meshgrid(d, y, x, indexing='ij')
+   coords = stack([grid_d, grid_h, grid_w], dim=0)  # (3,8,8,8)
+   coords = coords.unsqueeze(0).expand(B, -1, -1, -1, -1)  # (B,3,8,8,8)
+
+3) Concatenate along channels:
+   decoder_input = cat([z_tiled, coords], dim=1)  # (B, 131, 8, 8, 8)
+
+Implementation constraints:
+- coords MUST be registered as a buffer on the module (shape [1,3,8,8,8]) and expanded to B at runtime.
+- meshgrid MUST use indexing='ij'.
+- Coordinate channels MUST be ordered exactly [depth, height, width] = [grid_d, grid_h, grid_w].
+
+4) Decode to reconstruction x_hat of shape [B,4,128,128,128] using conv + transposed conv:
+- The decoder MUST upsample 8→16→32→64→128 using exactly 4 upsampling stages with stride=2.
+- GroupNorm must be used in decoder blocks.
+- Final layer outputs 4 channels.
+
+Decoder channel schedule:
+- Start by mapping 131 channels at 8³ to C0 = model.base_filters * 8 via a 1×1×1 Conv3d.
+- Then upsample stages:
+  Stage1: C0 -> model.base_filters*4 at 16³
+  Stage2: -> model.base_filters*2 at 32³
+  Stage3: -> model.base_filters*1 at 64³
+  Stage4: -> model.base_filters//2 at 128³ (integer division; must be >= 8)
+- Final Conv3d to 4 output channels at 128³.
+
+If base_filters=32, this implies:
+- 131 -> 256 (8³)
+- 256 -> 128 (16³)
+- 128 -> 64  (32³)
+- 64  -> 32  (64³)
+- 32  -> 16  (128³)
+- 16  -> 4   (output)
+
+Forward signature:
+- forward(x) returns: (x_hat, mu, logvar, z)
+
+---
+
+## Exp2 Loss: β-TCVAE with MWS estimator (no interpretation)
+Implement compute_tcvae_loss(...) in src/vae_dynamics/losses/tcvae.py.
+
+### Reconstruction term (same as Exp1, mandatory)
+- MSE with reduction="sum" across batch, channels, voxels:
+  recon_sum = Σ_{b,c,d,h,w} (x_hat - x)^2
+
+### KL decomposition (Chen et al. 2018 decomposition, mandatory)
+For each minibatch of size M (= batch size), with dataset size N (= number of training subjects):
+- Let (mu_i, logvar_i) be encoder outputs for sample i.
+- Sample z_i from q(z|x_i) via reparameterization.
+
+Define log densities (all computations must be done in float32 for numerical stability, even under AMP):
+- log q(z_i | x_j) for all i,j in {1..M}
+- log q(z_i) via minibatch-weighted sampling estimator
+- log q(z_{i,k}) for each latent dimension k via analogous estimator
+- log p(z_i) under standard normal prior
+
+#### Factorized Gaussian log-density
+For diagonal Gaussian N(mu, diag(exp(logvar))):
+log N(z; mu, logvar) = Σ_k [ -0.5*( log(2π) + logvar_k + (z_k - mu_k)^2 / exp(logvar_k) ) ]
+
+#### Pairwise matrix log q(z_i | x_j)
+Compute a tensor log_q_zx_mat of shape [M, M]:
+- log_q_zx_mat[i,j] = log q(z_i | x_j)  (sum over latent dims)
+
+Also compute per-dimension tensor log_q_zx_dim of shape [M, M, d]:
+- log_q_zx_dim[i,j,k] = log q(z_{i,k} | x_j)  (no sum over k)
+
+#### MWS estimator for log q(z_i) (Eq. (3) in Chen et al. 2018, mandatory)
+For each i:
+q(z_i) ≈ (1/(N*M)) * Σ_{j=1..M} q(z_i | x_j)
+So:
+log_q_z[i] = logsumexp_j( log_q_zx_mat[i,j] ) - log(N*M)
+
+Similarly for each latent dimension k:
+q(z_{i,k}) ≈ (1/(N*M)) * Σ_{j=1..M} q(z_{i,k} | x_j)
+So:
+log_q_zk[i,k] = logsumexp_j( log_q_zx_dim[i,j,k] ) - log(N*M)
+
+Then:
+log_prod_q_z[i] = Σ_k log_q_zk[i,k]
+
+#### log q(z_i | x_i) (diagonal term)
+log_q_z_given_x[i] = log q(z_i | x_i) = log_q_zx_mat[i,i]
+
+#### log p(z_i)
+p(z) = N(0, I):
+log_p_z[i] = Σ_k [ -0.5*( log(2π) + z_{i,k}^2 ) ]
+
+### Decomposition terms per sample i (mandatory)
+mi_i   = log_q_z_given_x[i] - log_q_z[i]
+tc_i   = log_q_z[i] - log_prod_q_z[i]
+dwkl_i = log_prod_q_z[i] - log_p_z[i]
+
+Aggregate as SUMS over batch (mandatory, to match Exp1 scaling):
+mi_sum   = Σ_i mi_i
+tc_sum   = Σ_i tc_i
+dwkl_sum = Σ_i dwkl_i
+
+### Weighted β-TCVAE objective (Eq. (4) special case α=γ=1, mandatory)
+Set:
+alpha = 1.0
+gamma = 1.0
+beta_tc = scheduled value (see schedule below), target > 1 (default 6.0)
+
+Total loss to MINIMIZE (negative weighted ELBO):
+total = recon_sum + alpha*mi_sum + beta_tc*tc_sum + gamma*dwkl_sum
+
+Return dict EXACTLY:
+{
+  "loss": total,
+  "recon": recon_sum,
+  "mi": mi_sum,
+  "tc": tc_sum,
+  "dwkl": dwkl_sum,
+  "beta_tc": beta_tc
+}
+
+Important:
+- Do NOT compute means for these terms.
+- Do NOT clamp TC/MI/DWKL; they can be slightly negative due to estimator bias with small M.
+- All must be finite; if non-finite occurs, raise a clear error.
+
+---
+
+## β schedule (mandatory, minimum requirement)
+Implement monotonic warm-up of beta_tc to prevent posterior collapse:
+- beta_tc starts at 0.0 at epoch 0.
+- linearly ramps to beta_tc_target over beta_tc_annealing_epochs.
+- stays constant at beta_tc_target afterwards.
+
+No cyclic schedule in Exp2 (do not add extra modes).
+
+---
+
+## Memory mitigation (mandatory implementation support)
+Exp2 requires pairwise log-density computations of shape [M,M,d]. Implement a config switch:
+- train.gradient_checkpointing: true/false
+
+If true:
+- Use torch.utils.checkpoint.checkpoint on the encoder residual blocks AND decoder upsampling blocks
+  (wrap block forward calls, not the entire model).
+- This must not change outputs; only reduce activation memory.
+
+Also implement:
+- train.compute_tcvae_terms_in_fp32: true (default)
+When true:
+- cast z, mu, logvar to float32 only within the tcvae loss computations.
+
+---
+
+## Lightning orchestration: exact requirements
+Create/modify LightningModule for Exp2, separate from Exp1 module.
+
+Implement in: src/vae_dynamics/training/lit_modules.py
+- Add TCVAELitModule (do not modify VAELitModule behavior).
+
+TCVAELitModule.training_step:
+- uses batch["image"]
+- forward -> (x_hat, mu, logvar, z)
+- compute_tcvae_loss(...) with N = number of TRAIN subjects, M = batch size
+- logs scalar keys:
+  train/loss, train/recon, train/mi, train/tc, train/dwkl, train/beta_tc
+- returns loss
+
+TCVAELitModule.validation_step:
+- same keys with "val/" prefix:
+  val/loss, val/recon, val/mi, val/tc, val/dwkl, val/beta_tc
+
+Optimizer:
+- AdamW lr from config
+
+Trainer:
+- AMP precision 16-mixed supported
+- ModelCheckpoint monitors "val/loss" (mode="min")
+- CSVLogger under <run_dir>/logs/
+- same run directory + artifacts policy as Exp1
+- resume support
+
+Reproducibility:
+- seed_everything(seed, workers=True)
+- save resolved config YAML
+- save train/val splits CSVs
+
+---
+
+## Recon snapshot logging (mandatory, same policy as Exp1)
+Reuse the existing recon callback behavior:
+- Every recon_every_n_epochs:
+  save input vs recon vs abs diff central slices for each modality and each sample
+  to <run_dir>/recon/epoch_<E>/
+
+No additional visualization requirements.
+
+---
+
+## Project deliverables: exact file structure for Exp2
+Create/modify the following files:
+
+1) src/vae_dynamics/config/exp2_tcvae_sbd.yaml
+2) src/vae_dynamics/models/components/sbd.py              # new: coords buffer + broadcast concat
+3) src/vae_dynamics/models/vae/tcvae_sbd.py               # new: Exp2 VAE module using SBD decoder
+4) src/vae_dynamics/losses/tcvae.py                       # new: β-TCVAE loss with MWS estimator
+5) src/vae_dynamics/training/lit_modules.py               # add TCVAELitModule
+6) scripts/train.py                                       # extend to select Exp2 by config (keep Exp1 working)
+7) tests/test_sbd.py                                      # new
+8) tests/test_tcvae_loss.py                               # new
+9) tests/test_shapes_exp2.py                              # new (or extend existing test_shapes.py with Exp2 section)
+
+Do not change Exp1 config file. Do not break Exp1 training.
+
+---
+
+## YAML: src/vae_dynamics/config/exp2_tcvae_sbd.yaml (use exactly these keys)
+data:
+  root_dir: "/media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train"
+  modalities: ["t1c", "t1n", "t2f", "t2w"]
+  roi_size: [128, 128, 128]
+  spacing: [1.0, 1.0, 1.0]
+  orientation: "RAS"
+  batch_size: 8
+  num_workers: 4
+  cache_rate: 1.0
+  val_split: 0.1
+
+model:
+  variant: "tcvae_sbd"
+  z_dim: 128
+  input_channels: 4
+  base_filters: 32
+  norm: "GROUP"
+  sbd_grid_size: [8, 8, 8]   # fixed, do not change
+
+loss:
+  alpha: 1.0
+  gamma: 1.0
+  beta_tc_target: 6.0
+  beta_tc_annealing_epochs: 40   # 20% of max_epochs when max_epochs=200
+  compute_in_fp32: true
+
+train:
+  seed: 42
+  max_epochs: 200
+  lr: 1e-4
+  precision: "16-mixed"
+  gradient_checkpointing: true
+
+logging:
+  save_dir: "experiments/runs"
+  recon_every_n_epochs: 5
+  num_recon_samples: 2
+
+---
+
+## scripts/train.py: required Exp2 selection behavior
+- Continue supporting Exp1 configs unchanged.
+- For Exp2:
+  - detect cfg.model.variant == "tcvae_sbd"
+  - instantiate Exp2 model: TCVAESBD (from src/vae_dynamics/models/vae/tcvae_sbd.py)
+  - instantiate Exp2 LightningModule: TCVAELitModule
+  - pass N_train (dataset size of training split) into the loss computation (store in module)
+
+Run directory policy:
+- <save_dir>/<timestamp>_exp2_tcvae_sbd/
+
+Artifacts:
+- checkpoints/, logs/, recon/, splits/, config_resolved.yaml, train.log
+
+---
+
+## Tests (mandatory)
+
+### tests/test_sbd.py
+- Instantiate SBD module with z_dim=128 and grid_size=8.
+- Input z: [B=2,128]
+- Assert:
+  - decoder_input shape == [2, 131, 8, 8, 8]
+  - coords buffer exists with shape [1,3,8,8,8]
+  - coords values are within [-1,1]
+  - coords ordering is (D,H,W): verify coords[:,0,:,:,:] varies only along depth axis, etc.
+
+### tests/test_tcvae_loss.py
+Create a small synthetic batch:
+- M=4, d=128
+- mu, logvar random finite tensors, z sampled via reparameterization, recon_sum dummy finite
+Call compute_tcvae_loss with N=1000, M=4 and beta_tc=6.0.
+Assert:
+- returned dict has keys: loss,recon,mi,tc,dwkl,beta_tc
+- all values are finite (torch.isfinite)
+Do NOT assert non-negativity of tc/mi/dwkl (may be slightly negative due to estimator bias).
+
+### tests/test_shapes_exp2.py
+- Dummy x: [B=2, C=4, 128,128,128]
+- Model forward returns:
+  - x_hat same shape
+  - mu/logvar: [2,128]
+  - z: [2,128]
+- Loss call returns finite scalar loss.
+
+---
+
+## Output expectation
+After implementation, I can run:
+python scripts/train.py --config src/vae_dynamics/config/exp2_tcvae_sbd.yaml
+
+and obtain:
+- run artifacts under experiments/runs/<timestamp>_exp2_tcvae_sbd/
+- training proceeds with logged recon, mi, tc, dwkl, beta_tc and stable recon snapshots.
+
+Implement Exp2 only, exactly as specified.
+```
+
+[1]: https://papers.neurips.cc/paper/7527-isolating-sources-of-disentanglement-in-variational-autoencoders.pdf "Isolating Sources of Disentanglement in Variational Autoencoders"
