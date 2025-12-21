@@ -1,5 +1,11 @@
 """Loss functions module."""
 
-from .elbo import compute_elbo
+from .elbo import compute_elbo, get_beta_schedule
+from .tcvae import compute_tcvae_loss, get_beta_tc_schedule
 
-__all__ = ["compute_elbo"]
+__all__ = [
+    "compute_elbo",
+    "get_beta_schedule",
+    "compute_tcvae_loss",
+    "get_beta_tc_schedule",
+]

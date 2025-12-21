@@ -1,0 +1,287 @@
+# FINAL PROMPT FOR LOCAL AGENT (Exp1): Baseline 3D VAE for Multi-Modal MRI (128³)
+
+## Role
+You are a Senior Deep Learning Engineer. Implement Experiment 1 (Exp1) exactly as specified below. Exp1 trains a stable latent representation of 3D MRI volumes using a baseline VAE with a diagonal Gaussian posterior and a negative-ELBO objective. This latent space will be used later for Neural ODE dynamics (not part of Exp1).
+
+Do NOT implement Exp2/Exp3/ODE. Create clean interfaces so Exp2/Exp3 can be added later without refactoring Exp1.
+
+---
+
+## Non-negotiable framework usage (no substitutions)
+1) MONAI: data indexing, medical IO, transforms, caching datasets, DataLoader best practices.
+2) PyTorch: model architecture, reparameterization, ELBO math, all loss computations.
+3) Lightning: training orchestration, logging scalars, checkpointing, callbacks, AMP settings, reproducibility handling.
+
+---
+
+## Data: exact dataset contract
+Root directory:
+- /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+
+Each subject directory contains the following NIfTI files:
+- *-t1c.nii.gz
+- *-t1n.nii.gz
+- *-t2f.nii.gz
+- *-t2w.nii.gz
+- *-seg.nii.gz
+
+Exp1 uses ONLY the 4 modalities as input. seg must be loaded and preserved in the batch dict for future Exp3, but it is not used for Exp1 loss.
+
+The model input tensor MUST be:
+- batch["image"] with shape [B, 4, 128, 128, 128]
+
+The seg tensor MUST be:
+- batch["seg"] with shape [B, 1, 128, 128, 128] or [B, 128, 128, 128] (choose one and keep it consistent; document it)
+
+All subject folders MUST be indexed programmatically:
+- Build a deterministic index list of dict items:
+  {"t1c": path, "t1n": path, "t2f": path, "t2w": path, "seg": path, "id": subject_id}
+- Split train/val deterministically by seed (val_split configurable). Save split CSV files under the run directory.
+
+---
+
+## Preprocessing: exact MONAI transform requirements
+Use MONAI dict-based transforms and keep keys:
+- modalities_keys = ["t1c","t1n","t2f","t2w"]
+- seg_key = "seg"
+
+Transforms MUST be implemented as two separate Compose pipelines:
+- train_transforms
+- val_transforms
+
+### Deterministic geometry + intensity standardization (applies to both train and val, in this order)
+1) LoadImaged(keys=modalities_keys + [seg_key])
+2) EnsureChannelFirstd(keys=modalities_keys + [seg_key])
+3) Orientationd(keys=modalities_keys + [seg_key], axcodes="RAS")
+4) Spacingd:
+   - for modalities_keys: pixdim=(1.0,1.0,1.0), mode=("bilinear","bilinear","bilinear","bilinear")
+   - for seg_key: pixdim=(1.0,1.0,1.0), mode=("nearest",)
+   (You may implement as two Spacingd calls if needed.)
+5) NormalizeIntensityd(keys=modalities_keys, nonzero=False, channel_wise=True)  # Z-score per channel per subject
+
+### Multi-modality concatenation (mandatory)
+6) ConcatItemsd(keys=modalities_keys, name="image", dim=0)  # output C=4 tensor under "image"
+
+### Robust ROI sizing to exactly 128³ (mandatory)
+You MUST guarantee all samples end as exactly 128×128×128 spatial size, even if original volumes differ in size after spacing.
+- Use ResizeWithPadOrCropd(keys=["image", seg_key], spatial_size=(128,128,128))
+  (If you choose an equivalent pad+crop pair, it must be deterministic and documented; no shape failures allowed.)
+
+### Train-only stochasticity (mandatory separation)
+Train transforms MUST include stochastic crop AFTER the size guarantee:
+- RandSpatialCropd(keys=["image", seg_key], roi_size=(128,128,128), random_size=False)
+(Yes, crop size equals target size; it should still randomize location if larger inputs appear before pad/crop or if you choose an equivalent pipeline. Do not remove it.)
+
+Val transforms MUST be deterministic (NO random transforms).
+
+Finally:
+- ToTensord(keys=["image", seg_key])
+
+Data caching:
+- Use monai.data.PersistentDataset for both train and val.
+- Provide a cache_dir under the run directory (e.g., <run_dir>/cache/).
+- Use cache in a way that does not re-run deterministic transforms each epoch.
+
+DataLoader:
+- Use pin_memory when CUDA is available.
+- Use persistent_workers if num_workers > 0.
+- Keep batch dict keys intact.
+
+---
+
+## Model: exact architecture requirements
+Implement a baseline VAE in PyTorch.
+
+### Encoder
+- 3D ResNet backbone producing a feature vector per volume.
+- Normalization MUST be GroupNorm (not BatchNorm) due to small batch size.
+- The encoder output must feed two linear heads:
+  - mu: shape [B, 128]
+  - logvar: shape [B, 128]
+
+You may:
+- Implement your own 3D ResNet blocks in PyTorch, OR
+- Use MONAI networks for the ResNet backbone ONLY if it is clearly 3D and you can enforce GroupNorm.
+In either case, the VAE module, mu/logvar heads, and reparameterization MUST be pure PyTorch and clearly written.
+
+### Latent space
+- Dimensionality z_dim = 128
+- Posterior is diagonal Gaussian q(z|x) = N(mu, diag(exp(logvar))).
+
+### Reparameterization
+- z = mu + eps * exp(0.5 * logvar), eps ~ N(0, I)
+
+### Decoder
+- 3D transposed-convolution decoder symmetric in spirit to the encoder.
+- Output MUST be reconstruction x_hat with shape [B, 4, 128, 128, 128].
+- No ambiguity: output spatial dimensions must match exactly.
+
+Forward signature:
+- forward(x) returns: (x_hat, mu, logvar)
+
+---
+
+## Loss: exact negative ELBO aggregation rules (no interpretation)
+Implement compute_elbo(x, x_hat, mu, logvar, beta) in src/vae_dynamics/losses/elbo.py
+
+Reconstruction term:
+- Use MSE with reduction="sum" across batch, channels, and all voxels:
+  recon_sum = Σ_{b,c,d,h,w} (x_hat - x)^2
+
+KL term:
+- Closed-form KL for diagonal Gaussian vs standard normal, computed per sample and summed:
+  kl_per_sample = 0.5 * Σ_j ( exp(logvar_j) + mu_j^2 - 1 - logvar_j )
+  kl_sum = Σ_b kl_per_sample
+
+Total loss:
+- total = recon_sum + beta * kl_sum
+
+Return dict EXACTLY:
+- {"loss": total, "recon": recon_sum, "kl": kl_sum}
+
+Logging must reflect these exact sums (no means).
+
+KL annealing:
+- beta starts at 0.0 at epoch 0.
+- Linearly increases to kl_beta (from config) over kl_annealing_epochs.
+- After that, beta stays constant at kl_beta.
+Implement beta schedule in LightningModule (recommended: on_train_epoch_start) and log current beta.
+
+---
+
+## Training orchestration: exact Lightning requirements
+Implement VAELitModule in src/vae_dynamics/training/lit_modules.py:
+- training_step:
+  - consumes batch["image"]
+  - runs model forward
+  - calls compute_elbo with current beta
+  - logs (self.log) the following scalar keys:
+    train/loss, train/recon, train/kl, train/beta
+- validation_step:
+  - same but logs:
+    val/loss, val/recon, val/kl, val/beta
+
+Optimizer:
+- AdamW with lr from config
+
+Trainer:
+- Must support precision=16-mixed (AMP).
+- Must use ModelCheckpoint monitoring "val/loss" (mode="min").
+- Must use CSVLogger writing under run_dir/logs/.
+- Must support resume from checkpoint.
+
+Reproducibility:
+- Use Lightning seed_everything(cfg.train.seed, workers=True).
+- Save resolved config YAML as <run_dir>/config_resolved.yaml.
+- Save train/val split CSVs under <run_dir>/splits/.
+
+---
+
+## Minimal custom artifact logging (mandatory)
+Implement a Lightning Callback in src/vae_dynamics/training/callbacks.py:
+- Every logging.recon_every_n_epochs epochs, pick the first logging.num_recon_samples samples from the current validation batch and save reconstruction snapshots to:
+  <run_dir>/recon/epoch_<E>/
+- For each sample, save:
+  - central slices (axial, coronal, sagittal) for each modality channel:
+    input vs recon vs absolute difference
+- Save as PNG files using a lightweight method (matplotlib or imageio).
+No external visualization frameworks.
+
+---
+
+## Project deliverables: exact file structure
+Create/modify the following files:
+
+1) src/vae_dynamics/config/exp1_baseline_vae.yaml  (exact fields below)
+2) src/vae_dynamics/data/transforms.py
+3) src/vae_dynamics/data/datasets.py
+4) src/vae_dynamics/models/vae/baseline.py
+5) src/vae_dynamics/losses/elbo.py
+6) src/vae_dynamics/training/lit_modules.py
+7) src/vae_dynamics/training/callbacks.py
+8) src/vae_dynamics/utils/seed.py
+9) src/vae_dynamics/utils/logging.py
+10) src/vae_dynamics/utils/io.py
+11) scripts/train.py
+12) tests/test_shapes.py
+
+Use clean module docstrings, type hints, dataclasses where appropriate, and Python logging (no print). Do not add unnecessary defensive try/except blocks.
+
+---
+
+## YAML: src/vae_dynamics/config/exp1_baseline_vae.yaml (use exactly these keys; you may add ONLY the marked optional keys)
+data:
+  root_dir: "/media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train"
+  modalities: ["t1c", "t1n", "t2f", "t2w"]
+  roi_size: [128, 128, 128]
+  spacing: [1.0, 1.0, 1.0]
+  orientation: "RAS"
+  batch_size: 2
+  num_workers: 4
+  cache_rate: 1.0
+  val_split: 0.1
+  # optional:
+  # persistent_cache_subdir: "cache"
+
+model:
+  z_dim: 128
+  input_channels: 4
+  base_filters: 32
+  norm: "GROUP"   # mandatory
+  # optional:
+  # encoder_depth: 4
+  # decoder_depth: 4
+
+train:
+  seed: 42
+  max_epochs: 200
+  lr: 1e-4
+  kl_beta: 1.0
+  kl_annealing_epochs: 40
+  precision: "16-mixed"
+  # optional:
+  # accelerator: "gpu"
+  # devices: 1
+
+logging:
+  save_dir: "experiments/runs"
+  recon_every_n_epochs: 5
+  num_recon_samples: 2
+
+---
+
+## scripts/train.py requirements
+- Load YAML using OmegaConf.
+- Create a run directory: <save_dir>/<timestamp>_exp1_baseline_vae/
+- Initialize Python logging to both console and <run_dir>/train.log
+- Build dataset index (scan root_dir), create deterministic train/val splits, save split CSVs.
+- Build PersistentDataset + DataLoader for train and val using the exact transforms above.
+- Instantiate model, LightningModule, callbacks, logger, checkpoint callback, trainer.
+- Call trainer.fit(module, train_loader, val_loader).
+
+---
+
+## Validation / Tests (tests/test_shapes.py)
+Implement a unit test that verifies:
+1) A dummy batch shaped [B=2, C=4, D=128, H=128, W=128] produces:
+   - mu shape [2,128], logvar shape [2,128]
+2) Decoder output x_hat has exact same shape as input: [2,4,128,128,128]
+3) compute_elbo returns finite positive scalars:
+   - loss is finite and >= 0
+   - recon is finite and >= 0
+   - kl is finite and >= 0
+
+---
+
+## Output expectation
+After implementation, I should be able to run:
+- python scripts/train.py --config src/vae_dynamics/config/exp1_baseline_vae.yaml
+
+And obtain:
+- checkpoints under <run_dir>/checkpoints/
+- CSV logs under <run_dir>/logs/
+- recon snapshots under <run_dir>/recon/
+- config_resolved.yaml under <run_dir>/
+- split CSVs under <run_dir>/splits/
+
+Implement Exp1 only. Keep interfaces stable for future expansions.

@@ -1,18 +1,28 @@
 #!/usr/bin/env python
-"""Training script for Exp1 Baseline 3D VAE.
+"""Training script for VAE experiments.
 
-This script orchestrates the training process:
+This script orchestrates the training process for:
+- Exp1: Baseline 3D VAE with ELBO loss
+- Exp2: β-TCVAE with Spatial Broadcast Decoder
+
+Workflow:
 1. Load configuration from YAML
 2. Create run directory with timestamp
 3. Setup logging
 4. Build dataset index and create train/val splits
 5. Build data loaders with persistent caching
-6. Instantiate model and Lightning module
+6. Instantiate model and Lightning module (based on config variant)
 7. Configure trainer with callbacks and logging
 8. Run training
 
 Usage:
+    # Exp1
     python scripts/train.py --config src/vae_dynamics/config/exp1_baseline_vae.yaml
+
+    # Exp2
+    python scripts/train.py --config src/vae_dynamics/config/exp2_tcvae_sbd.yaml
+
+    # Resume from checkpoint
     python scripts/train.py --config path/to/config.yaml --resume path/to/checkpoint.ckpt
 """
 
@@ -30,7 +40,7 @@ from pytorch_lightning.loggers import CSVLogger
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from src.vae_dynamics.data import build_subject_index, create_train_val_split, get_dataloaders
-from src.vae_dynamics.training import VAELitModule, ReconstructionCallback
+from src.vae_dynamics.training import VAELitModule, TCVAELitModule, ReconstructionCallback
 from src.vae_dynamics.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
 
 
@@ -40,7 +50,7 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Train Exp1 Baseline 3D VAE for multi-modal MRI"
+        description="Train 3D VAE for multi-modal MRI (Exp1 or Exp2)"
     )
     parser.add_argument(
         "--config",
@@ -57,6 +67,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def get_experiment_info(cfg: OmegaConf) -> tuple:
+    """Determine experiment type from configuration.
+
+    Args:
+        cfg: Configuration object.
+
+    Returns:
+        Tuple of (experiment_name, is_tcvae).
+    """
+    # Check for model variant
+    variant = cfg.model.get("variant", None)
+
+    if variant == "tcvae_sbd":
+        return "exp2_tcvae_sbd", True
+    else:
+        # Default to Exp1 baseline
+        return "exp1_baseline_vae", False
+
+
 def main():
     """Main training function."""
     args = parse_args()
@@ -64,13 +93,16 @@ def main():
     # Load configuration
     cfg = OmegaConf.load(args.config)
 
+    # Determine experiment type
+    experiment_name, is_tcvae = get_experiment_info(cfg)
+
     # Create run directory
-    run_dir = create_run_dir(cfg.logging.save_dir, experiment_name="exp1_baseline_vae")
+    run_dir = create_run_dir(cfg.logging.save_dir, experiment_name=experiment_name)
     run_dir_str = str(run_dir)
 
     # Setup logging to console and file
     setup_logging(run_dir_str)
-    logger.info(f"Starting Exp1 Baseline VAE training")
+    logger.info(f"Starting {experiment_name} training")
     logger.info(f"Run directory: {run_dir}")
 
     # Set seed for reproducibility
@@ -100,9 +132,22 @@ def main():
         cfg, run_dir_str, train_subjects, val_subjects
     )
 
-    # Create model and Lightning module
+    # Create model and Lightning module based on experiment type
     logger.info("Creating model...")
-    lit_module = VAELitModule.from_config(cfg)
+
+    if is_tcvae:
+        # Exp2: β-TCVAE with SBD
+        n_train = len(train_subjects)
+        lit_module = TCVAELitModule.from_config(cfg, n_train=n_train)
+        logger.info(f"Created TCVAELitModule with N_train={n_train}")
+        logger.info(f"  SBD grid size: {cfg.model.sbd_grid_size}")
+        logger.info(f"  β_tc target: {cfg.loss.beta_tc_target}")
+        logger.info(f"  Gradient checkpointing: {cfg.train.get('gradient_checkpointing', False)}")
+    else:
+        # Exp1: Baseline VAE
+        lit_module = VAELitModule.from_config(cfg)
+        logger.info("Created VAELitModule (baseline)")
+        logger.info(f"  KL beta: {cfg.train.kl_beta}")
 
     # Log model info
     total_params = sum(p.numel() for p in lit_module.model.parameters())
