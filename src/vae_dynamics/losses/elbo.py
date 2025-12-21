@@ -24,6 +24,7 @@ def compute_elbo(
     mu: torch.Tensor,
     logvar: torch.Tensor,
     beta: float = 1.0,
+    reduction: str = "mean",
 ) -> Dict[str, torch.Tensor]:
     """Compute negative ELBO loss for VAE.
 
@@ -33,16 +34,29 @@ def compute_elbo(
         mu: Posterior mean [B, z_dim].
         logvar: Posterior log-variance [B, z_dim].
         beta: Weight for KL term (for beta-VAE and KL annealing).
+        reduction: Loss reduction strategy ("mean" or "sum").
+                  "mean" averages over all elements for numerical stability.
+                  "sum" sums over all elements (legacy behavior).
+                  Default: "mean".
 
     Returns:
         Dict with keys:
-            - "loss": Total loss (recon_sum + beta * kl_sum)
-            - "recon": Reconstruction loss (MSE sum)
-            - "kl": KL divergence (sum over batch)
+            - "loss": Total loss (recon + beta * kl)
+            - "recon": Reconstruction loss (MSE)
+            - "kl": KL divergence (normalized by batch size when reduction="mean")
     """
-    # Reconstruction loss: MSE with sum reduction
-    # Sum over all dimensions: batch, channels, depth, height, width
-    recon_sum = torch.sum((x_hat - x) ** 2)
+    # Reconstruction loss: MSE
+    squared_error = (x_hat - x) ** 2
+
+    if reduction == "mean":
+        # Mean over all elements (batch, channels, spatial dims)
+        # Provides numerical stability for FP16 mixed precision
+        recon = torch.mean(squared_error)
+    elif reduction == "sum":
+        # Sum over all elements (backward compatibility)
+        recon = torch.sum(squared_error)
+    else:
+        raise ValueError(f"Invalid reduction: {reduction}. Must be 'mean' or 'sum'.")
 
     # KL divergence: closed-form for diagonal Gaussian vs N(0,I)
     # KL = -0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
@@ -54,13 +68,17 @@ def compute_elbo(
     )
     kl_sum = torch.sum(kl_per_sample)
 
+    # Normalize KL by batch size to match reconstruction scale when using mean reduction
+    batch_size = x.size(0)
+    kl_normalized = kl_sum / batch_size
+
     # Total loss with beta weighting on KL
-    total = recon_sum + beta * kl_sum
+    total = recon + beta * kl_normalized
 
     return {
         "loss": total,
-        "recon": recon_sum,
-        "kl": kl_sum,
+        "recon": recon,
+        "kl": kl_normalized,
     }
 
 

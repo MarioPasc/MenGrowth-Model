@@ -91,6 +91,7 @@ def compute_tcvae_loss(
     beta_tc: float = 6.0,
     gamma: float = 1.0,
     compute_in_fp32: bool = True,
+    reduction: str = "mean",
 ) -> Dict[str, torch.Tensor]:
     """Compute β-TCVAE loss with MWS estimator.
 
@@ -112,10 +113,15 @@ def compute_tcvae_loss(
         beta_tc: Weight for TC term (target value, typically > 1).
         gamma: Weight for DWKL term (default 1.0).
         compute_in_fp32: If True, compute TC terms in float32 for stability.
+        reduction: Loss reduction strategy ("mean" or "sum").
+                  "mean" averages over all elements for numerical stability.
+                  "sum" sums over all elements (legacy behavior).
+                  Default: "mean".
 
     Returns:
         Dict with keys: loss, recon, mi, tc, dwkl, beta_tc
-        All terms are SUMS over batch (not means).
+        When reduction="mean", all terms are normalized by batch size.
+        When reduction="sum", all terms are SUMS over batch.
     """
     # Get dimensions
     m = mu.size(0)  # Minibatch size
@@ -124,12 +130,22 @@ def compute_tcvae_loss(
     # Store original dtype for casting back
     orig_dtype = x.dtype
 
-    # Reconstruction loss: MSE sum
+    # Reconstruction loss: MSE
     # Compute in fp32 for stability when summing over millions of voxels
     if compute_in_fp32:
-        recon_sum = torch.sum((x_hat.float() - x.float()) ** 2)
+        squared_error = (x_hat.float() - x.float()) ** 2
     else:
-        recon_sum = torch.sum((x_hat - x) ** 2)
+        squared_error = (x_hat - x) ** 2
+
+    if reduction == "mean":
+        # Mean over all elements (batch, channels, spatial dims)
+        # Provides numerical stability for FP16 mixed precision
+        recon = torch.mean(squared_error)
+    elif reduction == "sum":
+        # Sum over all elements (backward compatibility)
+        recon = torch.sum(squared_error)
+    else:
+        raise ValueError(f"Invalid reduction: {reduction}")
 
     # Cast latent tensors to fp32 for numerical stability if requested
     if compute_in_fp32:
@@ -201,31 +217,42 @@ def compute_tcvae_loss(
     tc_sum = tc_per_sample.sum()
     dwkl_sum = dwkl_per_sample.sum()
 
+    # Normalize by batch size if using mean reduction
+    if reduction == "mean":
+        mi = mi_sum / m
+        tc = tc_sum / m
+        dwkl = dwkl_sum / m
+    else:
+        mi = mi_sum
+        tc = tc_sum
+        dwkl = dwkl_sum
+
     # Cast back to original dtype if needed
     if compute_in_fp32:
-        mi_sum = mi_sum.to(orig_dtype)
-        tc_sum = tc_sum.to(orig_dtype)
-        dwkl_sum = dwkl_sum.to(orig_dtype)
+        mi = mi.to(orig_dtype)
+        tc = tc.to(orig_dtype)
+        dwkl = dwkl.to(orig_dtype)
+        recon = recon.to(orig_dtype)
 
     # =========================================================================
     # Total weighted loss
     # =========================================================================
-    total = recon_sum + alpha * mi_sum + beta_tc * tc_sum + gamma * dwkl_sum
+    total = recon + alpha * mi + beta_tc * tc + gamma * dwkl
 
     # Check for non-finite values
     if not torch.isfinite(total):
         raise RuntimeError(
             f"Non-finite loss detected: total={total.item()}, "
-            f"recon={recon_sum.item()}, mi={mi_sum.item()}, "
-            f"tc={tc_sum.item()}, dwkl={dwkl_sum.item()}"
+            f"recon={recon.item()}, mi={mi.item()}, "
+            f"tc={tc.item()}, dwkl={dwkl.item()}"
         )
 
     return {
         "loss": total,
-        "recon": recon_sum,
-        "mi": mi_sum,
-        "tc": tc_sum,
-        "dwkl": dwkl_sum,
+        "recon": recon,
+        "mi": mi,
+        "tc": tc,
+        "dwkl": dwkl,
         "beta_tc": torch.tensor(beta_tc, device=total.device, dtype=total.dtype),
     }
 

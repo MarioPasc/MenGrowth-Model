@@ -28,6 +28,11 @@ train:
   accelerator: "gpu"
   devices: 1
 
+  # Numerical stability settings for FP16 mixed precision
+  loss_reduction: "mean"  # Use mean reduction instead of sum for numerical stability
+  gradient_clip_val: 1.0  # Clip gradient L2 norm to prevent FP16 overflow
+  gradient_clip_algorithm: "norm"  # Gradient clipping algorithm: "norm" or "value"
+
 logging:
   save_dir: "experiments/runs"
   recon_every_n_epochs: 5

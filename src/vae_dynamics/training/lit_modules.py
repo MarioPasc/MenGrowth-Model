@@ -47,6 +47,7 @@ class VAELitModule(pl.LightningModule):
         lr: float = 1e-4,
         kl_beta: float = 1.0,
         kl_annealing_epochs: int = 40,
+        loss_reduction: str = "mean",
     ):
         """Initialize VAELitModule.
 
@@ -55,6 +56,8 @@ class VAELitModule(pl.LightningModule):
             lr: Learning rate for AdamW optimizer.
             kl_beta: Target beta value after annealing.
             kl_annealing_epochs: Number of epochs for linear KL annealing.
+            loss_reduction: Loss reduction strategy ("mean" or "sum").
+                           Default "mean" for numerical stability in FP16.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -63,6 +66,7 @@ class VAELitModule(pl.LightningModule):
         self.lr = lr
         self.kl_beta = kl_beta
         self.kl_annealing_epochs = kl_annealing_epochs
+        self.loss_reduction = loss_reduction
         self.current_beta = 0.0
 
     @classmethod
@@ -92,6 +96,7 @@ class VAELitModule(pl.LightningModule):
             lr=cfg.train.lr,
             kl_beta=cfg.train.kl_beta,
             kl_annealing_epochs=cfg.train.kl_annealing_epochs,
+            loss_reduction=cfg.train.get("loss_reduction", "mean"),
         )
 
     def on_train_epoch_start(self) -> None:
@@ -134,7 +139,7 @@ class VAELitModule(pl.LightningModule):
         x_hat, mu, logvar = self.model(x)
 
         # Compute ELBO loss
-        loss_dict = compute_elbo(x, x_hat, mu, logvar, beta=self.current_beta)
+        loss_dict = compute_elbo(x, x_hat, mu, logvar, beta=self.current_beta, reduction=self.loss_reduction)
 
         # Log metrics (on_step=True for intra-epoch logging)
         self.log("train/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
@@ -175,7 +180,7 @@ class VAELitModule(pl.LightningModule):
         x_hat, mu, logvar = self.model(x)
 
         # Compute ELBO loss
-        loss_dict = compute_elbo(x, x_hat, mu, logvar, beta=self.current_beta)
+        loss_dict = compute_elbo(x, x_hat, mu, logvar, beta=self.current_beta, reduction=self.loss_reduction)
 
         # Log metrics (on_step=True for intra-epoch logging)
         self.log("val/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
@@ -237,6 +242,7 @@ class TCVAELitModule(pl.LightningModule):
         gamma: float = 1.0,
         beta_tc_annealing_epochs: int = 40,
         compute_in_fp32: bool = True,
+        loss_reduction: str = "mean",
     ):
         """Initialize TCVAELitModule.
 
@@ -249,6 +255,8 @@ class TCVAELitModule(pl.LightningModule):
             gamma: Weight for DWKL term (default 1.0).
             beta_tc_annealing_epochs: Number of epochs for TC annealing.
             compute_in_fp32: Whether to compute TC terms in float32.
+            loss_reduction: Loss reduction strategy ("mean" or "sum").
+                           Default "mean" for numerical stability in FP16.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -261,6 +269,7 @@ class TCVAELitModule(pl.LightningModule):
         self.gamma = gamma
         self.beta_tc_annealing_epochs = beta_tc_annealing_epochs
         self.compute_in_fp32 = compute_in_fp32
+        self.loss_reduction = loss_reduction
         self.current_beta_tc = 0.0
 
     @classmethod
@@ -303,6 +312,7 @@ class TCVAELitModule(pl.LightningModule):
             gamma=cfg.loss.gamma,
             beta_tc_annealing_epochs=cfg.loss.beta_tc_annealing_epochs,
             compute_in_fp32=cfg.loss.get("compute_in_fp32", True),
+            loss_reduction=cfg.loss.get("reduction", cfg.train.get("loss_reduction", "mean")),
         )
 
     def on_train_epoch_start(self) -> None:
@@ -356,6 +366,7 @@ class TCVAELitModule(pl.LightningModule):
             beta_tc=self.current_beta_tc,
             gamma=self.gamma,
             compute_in_fp32=self.compute_in_fp32,
+            reduction=self.loss_reduction,
         )
 
         # Log metrics (on_step=True for intra-epoch logging)
@@ -412,6 +423,7 @@ class TCVAELitModule(pl.LightningModule):
             beta_tc=self.current_beta_tc,
             gamma=self.gamma,
             compute_in_fp32=self.compute_in_fp32,
+            reduction=self.loss_reduction,
         )
 
         # Log metrics (on_step=True for intra-epoch logging)

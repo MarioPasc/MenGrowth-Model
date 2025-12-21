@@ -201,7 +201,12 @@ def main():
     log_every_n_steps = max(1, approx_batches_per_epoch // min_logs_per_epoch)
     logger.info(f"CSV logging: every {log_every_n_steps} steps (~{approx_batches_per_epoch // log_every_n_steps} entries/epoch)")
 
+    # Extract gradient clipping config
+    gradient_clip_val = cfg.train.get("gradient_clip_val", None)
+    gradient_clip_algorithm = cfg.train.get("gradient_clip_algorithm", "norm")
+
     # Create trainer (disable progress bar since we use custom logging)
+    # PyTorch Lightning handles gradient clipping natively via these parameters
     trainer = pl.Trainer(
         max_epochs=cfg.train.max_epochs,
         accelerator=cfg.train.get("accelerator", "auto"),
@@ -212,6 +217,8 @@ def main():
         log_every_n_steps=log_every_n_steps,
         enable_progress_bar=False,  # Disabled in favor of custom logging
         deterministic=True,
+        gradient_clip_val=gradient_clip_val,  # Gradient clipping for numerical stability
+        gradient_clip_algorithm=gradient_clip_algorithm,  # "norm" or "value"
     )
 
     # Log trainer info
@@ -219,6 +226,12 @@ def main():
     logger.info(f"  Max epochs: {cfg.train.max_epochs}")
     logger.info(f"  Precision: {cfg.train.precision}")
     logger.info(f"  Accelerator: {trainer.accelerator}")
+
+    # Log gradient clipping info
+    if gradient_clip_val is not None and gradient_clip_val > 0:
+        logger.info(f"  Gradient clipping: {gradient_clip_algorithm} with value {gradient_clip_val}")
+    else:
+        logger.info("  Gradient clipping: disabled")
 
     # Start training
     logger.info("Starting training...")
