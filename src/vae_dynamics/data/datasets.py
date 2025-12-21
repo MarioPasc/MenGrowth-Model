@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
 import torch
+import numpy as np
 from torch.utils.data import DataLoader
 from monai.data import PersistentDataset
 from omegaconf import DictConfig
@@ -19,6 +20,46 @@ from .transforms import get_train_transforms, get_val_transforms
 
 
 logger = logging.getLogger(__name__)
+
+
+def safe_collate(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+    """Custom collate function that handles both numpy arrays and tensors.
+
+    This collate function ensures that data is always converted to tensors,
+    even if PersistentDataset returns cached numpy arrays. This provides
+    robustness against cache inconsistencies without breaking existing functionality.
+
+    Args:
+        batch: List of data dictionaries from the dataset.
+
+    Returns:
+        Collated batch dictionary with all values as tensors.
+    """
+    if not batch:
+        return {}
+
+    # Get keys from first item
+    keys = batch[0].keys()
+    collated = {}
+
+    for key in keys:
+        values = [item[key] for item in batch]
+
+        # Check if first value is a numpy array or tensor
+        first_val = values[0]
+
+        if isinstance(first_val, np.ndarray):
+            # Convert numpy arrays to tensors
+            tensors = [torch.from_numpy(v) if isinstance(v, np.ndarray) else v for v in values]
+            collated[key] = torch.stack(tensors, dim=0)
+        elif isinstance(first_val, torch.Tensor):
+            # Stack tensors normally
+            collated[key] = torch.stack(values, dim=0)
+        else:
+            # For other types (strings, etc.), keep as list
+            collated[key] = values
+
+    return collated
 
 
 def build_subject_index(root_dir: str, modalities: List[str]) -> List[Dict[str, str]]:
@@ -169,7 +210,7 @@ def get_dataloaders(
     use_cuda = torch.cuda.is_available()
     persistent_workers = num_workers > 0
 
-    # Create DataLoaders
+    # Create DataLoaders with custom collate function
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -178,6 +219,7 @@ def get_dataloaders(
         pin_memory=use_cuda,
         persistent_workers=persistent_workers,
         drop_last=True,
+        collate_fn=safe_collate,
     )
 
     val_loader = DataLoader(
@@ -188,6 +230,7 @@ def get_dataloaders(
         pin_memory=use_cuda,
         persistent_workers=persistent_workers,
         drop_last=False,
+        collate_fn=safe_collate,
     )
 
     logger.info(
