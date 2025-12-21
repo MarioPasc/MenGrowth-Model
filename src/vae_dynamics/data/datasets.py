@@ -26,23 +26,34 @@ def safe_collate(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     """Custom collate function that handles both numpy arrays and tensors.
 
     This collate function ensures that data is always converted to tensors,
-    even if PersistentDataset returns cached numpy arrays. This provides
-    robustness against cache inconsistencies without breaking existing functionality.
+    even if PersistentDataset returns cached numpy arrays. It also filters
+    out MONAI metadata keys that can cause issues with PyTorch Lightning's
+    batch size extraction.
+
+    Only processes keys needed for training: "image", "seg", and "id".
+    This prevents issues with MONAI MetaTensor metadata (scalars, 0-d arrays).
 
     Args:
         batch: List of data dictionaries from the dataset.
 
     Returns:
-        Collated batch dictionary with all values as tensors.
+        Collated batch dictionary with tensor values for image/seg keys.
     """
     if not batch:
         return {}
 
-    # Get keys from first item
-    keys = batch[0].keys()
+    # Only collate the keys we need for training
+    # Filter out MONAI metadata keys (like "image_meta_dict", "affine", etc.)
+    # that can contain scalar values causing PyTorch Lightning batch size errors
+    keys_to_collate = ["image", "seg", "id"]
+
     collated = {}
 
-    for key in keys:
+    for key in keys_to_collate:
+        # Skip if key doesn't exist in batch
+        if key not in batch[0]:
+            continue
+
         values = [item[key] for item in batch]
 
         # Check if first value is a numpy array or tensor
