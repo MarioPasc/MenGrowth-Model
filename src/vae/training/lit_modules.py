@@ -307,6 +307,8 @@ class TCVAELitModule(pl.LightningModule):
         gamma: Weight for DWKL term.
         beta_tc_annealing_epochs: Number of epochs for TC annealing.
         compute_in_fp32: Whether to compute TC terms in fp32.
+        kl_free_bits: Minimum KL threshold per latent dimension.
+        kl_free_bits_mode: Free Bits clamping mode.
         current_beta_tc: Current beta_tc value (updated each epoch).
     """
 
@@ -321,6 +323,8 @@ class TCVAELitModule(pl.LightningModule):
         beta_tc_annealing_epochs: int = 40,
         compute_in_fp32: bool = True,
         loss_reduction: str = "mean",
+        kl_free_bits: float = 0.0,
+        kl_free_bits_mode: str = "batch_mean",
     ):
         """Initialize TCVAELitModule.
 
@@ -335,6 +339,10 @@ class TCVAELitModule(pl.LightningModule):
             compute_in_fp32: Whether to compute TC terms in float32.
             loss_reduction: Loss reduction strategy ("mean" or "sum").
                            Default "mean" for numerical stability in FP16.
+            kl_free_bits: Minimum KL threshold per latent dimension (nats).
+                         Set to 0.0 to disable Free Bits (default).
+            kl_free_bits_mode: Free Bits clamping mode ("batch_mean" or "per_sample").
+                              Default "batch_mean".
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -348,6 +356,8 @@ class TCVAELitModule(pl.LightningModule):
         self.beta_tc_annealing_epochs = beta_tc_annealing_epochs
         self.compute_in_fp32 = compute_in_fp32
         self.loss_reduction = loss_reduction
+        self.kl_free_bits = kl_free_bits
+        self.kl_free_bits_mode = kl_free_bits_mode
         self.current_beta_tc = 0.0
 
     @classmethod
@@ -391,6 +401,8 @@ class TCVAELitModule(pl.LightningModule):
             beta_tc_annealing_epochs=cfg.loss.beta_tc_annealing_epochs,
             compute_in_fp32=cfg.loss.get("compute_in_fp32", True),
             loss_reduction=cfg.loss.get("reduction", cfg.train.get("loss_reduction", "mean")),
+            kl_free_bits=cfg.train.get("kl_free_bits", 0.0),
+            kl_free_bits_mode=cfg.train.get("kl_free_bits_mode", "batch_mean"),
         )
 
     def on_train_epoch_start(self) -> None:
@@ -445,6 +457,8 @@ class TCVAELitModule(pl.LightningModule):
             gamma=self.gamma,
             compute_in_fp32=self.compute_in_fp32,
             reduction=self.loss_reduction,
+            kl_free_bits=self.kl_free_bits,
+            kl_free_bits_mode=self.kl_free_bits_mode,
         )
 
         # Log metrics (on_step=True for intra-epoch logging)
@@ -454,6 +468,9 @@ class TCVAELitModule(pl.LightningModule):
         self.log("train/tc", loss_dict["tc"], on_step=True, on_epoch=True)
         self.log("train/dwkl", loss_dict["dwkl"], on_step=True, on_epoch=True)
         self.log("train/beta_tc", self.current_beta_tc, on_step=True, on_epoch=True)
+        self.log("train/kl_raw", loss_dict["kl_raw"], on_step=True, on_epoch=True)
+        self.log("train/kl_constrained", loss_dict["kl_constrained"], on_step=True, on_epoch=True)
+        self.log("train/kl_free_bits_penalty", loss_dict["kl_free_bits_penalty"], on_step=True, on_epoch=True)
 
         # Log latent space statistics
         self.log("train/mu_mean", mu.mean(), on_step=True, on_epoch=True)
@@ -502,6 +519,8 @@ class TCVAELitModule(pl.LightningModule):
             gamma=self.gamma,
             compute_in_fp32=self.compute_in_fp32,
             reduction=self.loss_reduction,
+            kl_free_bits=self.kl_free_bits,
+            kl_free_bits_mode=self.kl_free_bits_mode,
         )
 
         # Log metrics (on_step=True for intra-epoch logging)
@@ -511,6 +530,9 @@ class TCVAELitModule(pl.LightningModule):
         self.log("val/tc", loss_dict["tc"], on_step=True, on_epoch=True)
         self.log("val/dwkl", loss_dict["dwkl"], on_step=True, on_epoch=True)
         self.log("val/beta_tc", self.current_beta_tc, on_step=True, on_epoch=True)
+        self.log("val/kl_raw", loss_dict["kl_raw"], on_step=True, on_epoch=True)
+        self.log("val/kl_constrained", loss_dict["kl_constrained"], on_step=True, on_epoch=True)
+        self.log("val/kl_free_bits_penalty", loss_dict["kl_free_bits_penalty"], on_step=True, on_epoch=True)
 
         # Log latent space statistics
         self.log("val/mu_mean", mu.mean(), on_step=True, on_epoch=True)

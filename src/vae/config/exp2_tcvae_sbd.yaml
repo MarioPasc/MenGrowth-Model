@@ -40,6 +40,15 @@ train:
   gradient_clip_val: 1.0  # Clip gradient L2 norm to prevent FP16 overflow
   gradient_clip_algorithm: "norm"  # Gradient clipping algorithm: "norm" or "value"
 
+  # Free bits (per-dimension KL threshold for posterior collapse mitigation)
+  kl_free_bits: 0.05  # nats per dimension (0.0 = disabled)
+                     # With batch_mean mode and z_dim=128: floor ≈ 128 × 0.05 = 6.4 nats
+                     # Recommended range: 0.05-0.2 based on KL/recon balance
+                     # Start with 0.1 and adjust if posterior collapse persists
+  kl_free_bits_mode: "batch_mean"  # "per_sample" or "batch_mean"
+                                   # batch_mean: weaker, better for small batches (B=2)
+                                   # per_sample: stronger, uniform floor across samples
+
 logging:
   save_dir: "experiments/runs"
   recon_every_n_epochs: 5

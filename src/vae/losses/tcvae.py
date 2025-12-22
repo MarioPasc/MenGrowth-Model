@@ -92,6 +92,8 @@ def compute_tcvae_loss(
     gamma: float = 1.0,
     compute_in_fp32: bool = True,
     reduction: str = "mean",
+    kl_free_bits: float = 0.0,
+    kl_free_bits_mode: str = "batch_mean",
 ) -> Dict[str, torch.Tensor]:
     """Compute β-TCVAE loss with MWS estimator.
 
@@ -100,7 +102,11 @@ def compute_tcvae_loss(
     - TC: log q(z) - log prod_j q(z_j)  (total correlation)
     - DWKL: log prod_j q(z_j) - log p(z)  (dimension-wise KL)
 
-    Total loss: recon + alpha*MI + beta_tc*TC + gamma*DWKL
+    Total loss: recon + alpha*MI + beta_tc*TC + gamma*DWKL + kl_free_bits_penalty
+
+    Free Bits posterior collapse mitigation (optional):
+    Computes analytic KL per dimension and clamps to minimum threshold,
+    adding the difference to the loss to prevent latent collapse.
 
     Args:
         x: Original input [B, C, D, H, W].
@@ -117,11 +123,21 @@ def compute_tcvae_loss(
                   "mean" averages over all elements for numerical stability.
                   "sum" sums over all elements (legacy behavior).
                   Default: "mean".
+        kl_free_bits: Minimum KL threshold per latent dimension (nats).
+                     Set to 0.0 to disable Free Bits (default).
+                     Typical range: 0.05-0.2 nats/dimension.
+        kl_free_bits_mode: Free Bits clamping mode ("batch_mean" or "per_sample").
+                          "batch_mean": Clamp batch-averaged KL per dimension (recommended for small batches).
+                          "per_sample": Clamp each sample's KL per dimension independently.
+                          Default: "batch_mean".
 
     Returns:
-        Dict with keys: loss, recon, mi, tc, dwkl, beta_tc
+        Dict with keys: loss, recon, mi, tc, dwkl, beta_tc, kl_raw, kl_constrained, kl_free_bits_penalty
         When reduction="mean", all terms are normalized by batch size.
         When reduction="sum", all terms are SUMS over batch.
+        - kl_raw: Analytic KL before Free Bits clamping (for monitoring).
+        - kl_constrained: Analytic KL after Free Bits clamping.
+        - kl_free_bits_penalty: Difference added to loss (kl_constrained - kl_raw).
     """
     # Get dimensions
     m = mu.size(0)  # Minibatch size
@@ -175,16 +191,16 @@ def compute_tcvae_loss(
 
     # =========================================================================
     # MWS estimator for log q(z_i)
-    # log q(z_i) = logsumexp_j(log q(z_i|x_j)) - log(N*M)
+    # log q(z_i) = logsumexp_j(log q(z_i|x_j)) - log(M)
     # =========================================================================
-    log_nm = math.log(n_data * m)
+    log_m = math.log(m)
 
     # log q(z) for each sample i: [M]
-    log_q_z = torch.logsumexp(log_q_zx_mat, dim=1) - log_nm
+    log_q_z = torch.logsumexp(log_q_zx_mat, dim=1) - log_m
 
     # log q(z_k) for each sample i and dimension k: [M, d]
     # logsumexp over j (samples in minibatch) for each (i, k)
-    log_q_zk = torch.logsumexp(log_q_zx_dim, dim=1) - log_nm  # [M, d]
+    log_q_zk = torch.logsumexp(log_q_zx_dim, dim=1) - log_m  # [M, d]
 
     # log prod_k q(z_k) = sum_k log q(z_k): [M]
     log_prod_q_z = log_q_zk.sum(dim=1)
@@ -227,17 +243,61 @@ def compute_tcvae_loss(
         tc = tc_sum
         dwkl = dwkl_sum
 
+    # =========================================================================
+    # KL Free Bits (posterior collapse mitigation)
+    # =========================================================================
+    # Compute analytic per-dimension KL (same as ELBO)
+    # KL per dimension per sample: 0.5 * (exp(logvar) + mu^2 - 1 - logvar)
+    # Shape: [M, d]
+    kl_per_dim = 0.5 * (torch.exp(logvar) + mu ** 2 - 1.0 - logvar)
+
+    # Clamp to ensure non-negative (numerical stability)
+    kl_per_dim = torch.clamp(kl_per_dim, min=0.0)
+
+    # Compute raw KL (for logging)
+    kl_raw_per_dim_mean = kl_per_dim.mean(dim=0)  # [d]
+    kl_raw = kl_raw_per_dim_mean.sum()  # scalar
+
+    # Apply free bits based on mode
+    if kl_free_bits > 0.0:
+        if kl_free_bits_mode == "batch_mean":
+            # Clamp batch-mean per dimension
+            kl_constrained_per_dim = torch.clamp(kl_raw_per_dim_mean, min=kl_free_bits)  # [d]
+            kl_constrained = kl_constrained_per_dim.sum()  # scalar
+        elif kl_free_bits_mode == "per_sample":
+            # Clamp each sample per dimension
+            kl_constrained_per_sample = torch.clamp(kl_per_dim, min=kl_free_bits)  # [M, d]
+            kl_constrained = kl_constrained_per_sample.sum(dim=1).mean()  # scalar
+        else:
+            raise ValueError(
+                f"Invalid kl_free_bits_mode: {kl_free_bits_mode}. "
+                "Must be 'per_sample' or 'batch_mean'."
+            )
+    else:
+        kl_constrained = kl_raw
+
+    # Normalize by batch size if using mean reduction
+    if reduction == "mean":
+        kl_raw = kl_raw / m
+        kl_constrained = kl_constrained / m
+
+    # Compute free bits penalty (difference to add to loss)
+    kl_free_bits_penalty = kl_constrained - kl_raw
+
     # Cast back to original dtype if needed
     if compute_in_fp32:
         mi = mi.to(orig_dtype)
         tc = tc.to(orig_dtype)
         dwkl = dwkl.to(orig_dtype)
         recon = recon.to(orig_dtype)
+        kl_raw = kl_raw.to(orig_dtype)
+        kl_constrained = kl_constrained.to(orig_dtype)
+        kl_free_bits_penalty = kl_free_bits_penalty.to(orig_dtype)
 
     # =========================================================================
     # Total weighted loss
     # =========================================================================
-    total = recon + alpha * mi + beta_tc * tc + gamma * dwkl
+    total = recon + alpha * mi + beta_tc * tc + gamma * dwkl + kl_free_bits_penalty
 
     # Check for non-finite values
     if not torch.isfinite(total):
@@ -254,6 +314,9 @@ def compute_tcvae_loss(
         "tc": tc,
         "dwkl": dwkl,
         "beta_tc": torch.tensor(beta_tc, device=total.device, dtype=total.dtype),
+        "kl_raw": kl_raw,
+        "kl_constrained": kl_constrained,
+        "kl_free_bits_penalty": kl_free_bits_penalty,
     }
 
 
