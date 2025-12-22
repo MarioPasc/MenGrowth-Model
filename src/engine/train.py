@@ -177,6 +177,21 @@ def main():
     )
     callbacks.append(recon_callback)
 
+    if cfg.logging.get("latent_diag_every_n_epochs", 0) > 0:
+            from vae.training.callbacks import LatentDiagnosticsCallback 
+            
+            diag_callback = LatentDiagnosticsCallback(
+                run_dir=run_dir_str,
+                every_n_epochs=cfg.logging.latent_diag_every_n_epochs,
+                num_samples=cfg.logging.latent_diag_num_samples,
+                shift_vox=cfg.logging.latent_diag_shift_vox,
+                eps_au=cfg.logging.latent_diag_eps_au,
+                csv_name=cfg.logging.latent_diag_csv_name,
+                ids_name=cfg.logging.latent_diag_ids_name,
+            )
+            callbacks.append(diag_callback)
+            logger.info(f"Configured latent diagnostics every {cfg.logging.latent_diag_every_n_epochs} epochs")
+
     # Custom training logging callback (replaces tqdm)
     min_logs_per_epoch = cfg.logging.get("min_logs_per_epoch", 3)
     logging_callback = TrainingLoggingCallback(

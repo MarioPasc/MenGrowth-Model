@@ -24,7 +24,7 @@ loss:
   beta_tc_target: 6.0
   beta_tc_annealing_epochs: 40
   compute_in_fp32: true
-  reduction: "mean"  # Use mean reduction for numerical stability
+  reduction: "sum" # CHANGED: "mean" -> "sum" to match Whitepaper 2.4
 
 train:
   seed: 42
@@ -36,9 +36,13 @@ train:
   devices: 1
 
   # Numerical stability settings for FP16 mixed precision
-  loss_reduction: "mean"  # Use mean reduction instead of sum for numerical stability
-  gradient_clip_val: 1.0  # Clip gradient L2 norm to prevent FP16 overflow
-  gradient_clip_algorithm: "norm"  # Gradient clipping algorithm: "norm" or "value"
+  loss_reduction: "sum"  # Use mean reduction instead of sum for numerical stability
+
+  # Gradient clipping behavior changes with "sum" reduction. 
+  # Losses will be ~10^7 magnitude. Clipping at 1.0 is too aggressive.
+  # Recommendation: Disable clipping or use very high value (e.g., 1e5).
+  gradient_clip_val: 0.0 
+  gradient_clip_algorithm: "norm"
 
   # Free bits (per-dimension KL threshold for posterior collapse mitigation)
   kl_free_bits: 0.05  # nats per dimension (0.0 = disabled)
