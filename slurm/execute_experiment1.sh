@@ -19,11 +19,12 @@ echo "Job started at: $(date)"
 # ========================================================================
 EXPERIMENT_NAME="exp1_baseline_vae"
 CONDA_ENV_NAME="vae-dynamics"
+RESUME_FLAG= false
 
 REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 DATA_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men"
 RESULTS_DST="/mnt/home/users/tic_163_uma/mpascual/fscratch/results/${EXPERIMENT_NAME}"
-CONFIG_FILE="${REPO_SRC}/src/vae_dynamics/config/${EXPERIMENT_NAME}.yaml"
+CONFIG_FILE="${REPO_SRC}/src/vae/config/${EXPERIMENT_NAME}.yaml"
 
 # Dynamic GPU assignment
 export CUDA_VISIBLE_DEVICES=0
@@ -97,7 +98,7 @@ cd "${REPO_SRC}"
 echo "Working directory: $(pwd)"
 
 echo "Starting training with config: ${MODIFIED_CONFIG}"
-python scripts/train.py --config "${MODIFIED_CONFIG}"
+vae-train --config "${MODIFIED_CONFIG}" 
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))

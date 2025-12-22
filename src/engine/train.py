@@ -17,10 +17,10 @@ Workflow:
 
 Usage:
     # Exp1
-    python scripts/train.py --config src/vae_dynamics/config/exp1_baseline_vae.yaml
+    python scripts/train.py --config src/vae/config/exp1_baseline_vae.yaml
 
     # Exp2
-    python scripts/train.py --config src/vae_dynamics/config/exp2_tcvae_sbd.yaml
+    python scripts/train.py --config src/vae/config/exp2_tcvae_sbd.yaml
 
     # Resume from checkpoint
     python scripts/train.py --config path/to/config.yaml --resume path/to/checkpoint.ckpt
@@ -39,9 +39,9 @@ from pytorch_lightning.loggers import CSVLogger
 # Add src to path for imports
 # sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from vae_dynamics.data import build_subject_index, create_train_val_split, get_dataloaders
-from vae_dynamics.training import VAELitModule, TCVAELitModule, ReconstructionCallback, TrainingLoggingCallback
-from vae_dynamics.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
+from vae.data import build_subject_index, create_train_val_split, get_dataloaders
+from vae.training import VAELitModule, TCVAELitModule, ReconstructionCallback, TrainingLoggingCallback
+from vae.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
 
 
 logger = logging.getLogger(__name__)
