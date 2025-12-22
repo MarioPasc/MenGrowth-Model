@@ -91,6 +91,9 @@ cp "${CONFIG_FILE}" "${MODIFIED_CONFIG}"
 echo "Modifying configuration file..."
 sed -i "s|  root_dir: .*|  root_dir: \"${DATA_SRC}\"|" "${MODIFIED_CONFIG}"
 sed -i "s|  save_dir: .*|  save_dir: \"${RESULTS_DST}\"|" "${MODIFIED_CONFIG}"
+sed -i "s|  latent_diag_csv_name: .*|  latent_diag_csv_name: \"${RESULTS_DST}/latent_diag/metrics.csv\"|" "${MODIFIED_CONFIG}"
+sed -i "s|  latent_diag_ids_name: .*|  latent_diag_ids_name: \"${RESULTS_DST}/latent_diag/ids.txt\"|" "${MODIFIED_CONFIG}"
+
 
 # 4. Run the training script
 # Navigate to the repository root to ensure imports work correctly

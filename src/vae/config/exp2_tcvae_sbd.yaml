@@ -54,3 +54,11 @@ logging:
   recon_every_n_epochs: 5
   num_recon_samples: 2
   min_logs_per_epoch: 3  # Minimum console/CSV log entries per training epoch
+
+  # Latent diagnostics (lightweight disentanglement metrics)
+  latent_diag_every_n_epochs: 10
+  latent_diag_num_samples: 32
+  latent_diag_shift_vox: 5
+  latent_diag_eps_au: 0.01
+  latent_diag_csv_name: "latent_diag/metrics.csv"
+  latent_diag_ids_name: "latent_diag/ids.txt"
