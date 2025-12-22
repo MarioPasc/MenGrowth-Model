@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH -J free_bits_cyclical
+#SBATCH -J study_free_bits_cyclical
 #SBATCH --time=1-12:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1

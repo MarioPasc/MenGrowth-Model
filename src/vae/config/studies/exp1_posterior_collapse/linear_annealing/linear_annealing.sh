@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH -J linear_annealing
+#SBATCH -J study_linear_annealing
 #SBATCH --time=1-12:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1

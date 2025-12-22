@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH -J capacity_control
+#SBATCH -J study_capacity_control
 #SBATCH --time=1-12:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
