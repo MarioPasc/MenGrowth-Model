@@ -22,9 +22,43 @@ train:
   seed: 42
   max_epochs: 200
   lr: 1e-4
+
+  # === KL Regularization - Posterior Collapse Mitigation ===
+  # Default strategy: Cyclical Annealing + Free Bits (recommended)
+
+  # Beta annealing (controls KL weight schedule)
   kl_beta: 1.0
-  kl_annealing_epochs: 40
-  precision: "16-mixed"
+  kl_annealing_epochs: 160  # For cyclical: 4 cycles × 40 epochs/cycle
+  kl_annealing_type: "cyclical"  # Options: "linear", "cyclical"
+  kl_annealing_cycles: 4
+  kl_annealing_ratio: 0.5  # Anneal for first 50% of each cycle
+
+  # Free bits (per-dimension KL threshold)
+  kl_free_bits: 0.03  # nats per dimension (0.0 = disabled)
+                     # With batch_mean mode: floor ≈ 128 × 0.1 = 12.8 nats
+                     # Tune in range 0.05-0.2 based on KL/recon balance
+  kl_free_bits_mode: "batch_mean"  # "per_sample" or "batch_mean"
+                                   # batch_mean: weaker, better for small batches (B=2)
+                                   # per_sample: stronger, uniform floor across samples
+
+  # Capacity control (alternative to beta annealing - disabled by default)
+  # kl_target_capacity: 20.0  # Uncomment to enable capacity control
+  kl_capacity_anneal_epochs: 200
+
+  # === Alternative Configurations (commented examples) ===
+  #
+  # Linear annealing only (original behavior):
+  #   kl_annealing_type: "linear"
+  #   kl_annealing_epochs: 40
+  #   kl_free_bits: 0.0
+  #
+  # Capacity control only (replaces beta weighting):
+  #   kl_target_capacity: 20.0
+  #   kl_capacity_anneal_epochs: 100
+  #   kl_free_bits: 0.0
+
+  # Execution settings
+  precision: "16-mixed" # or "32-true"
   accelerator: "gpu"
   devices: 1
 

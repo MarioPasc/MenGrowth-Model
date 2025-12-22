@@ -1,297 +1,151 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Overview
-
-**MenGrowth-Model** is a deep learning framework for meningioma tumor growth prediction from multi-modal MRI. It implements two VAE variants:
-
-- **Experiment 1 (Exp1)**: Baseline 3D VAE with ELBO loss
-- **Experiment 2 (Exp2)**: β-TCVAE with Spatial Broadcast Decoder (SBD)
-
-The goal is to learn disentangled representations that separate anatomical position from tumor content characteristics.
-
-## Development Commands
-
-### Setup and Installation
-
-```bash
-# Install package in development mode
-pip install -e .
-
-# Install with development dependencies
-pip install -e ".[dev]"
-```
-
-The project uses a conda environment named `vae-dynamics` with Python ≥3.11.
-
-### Running Experiments
-
-```bash
-# Experiment 1: Baseline VAE
-python scripts/train.py --config src/vae_dynamics/config/exp1_baseline_vae.yaml
-
-# Experiment 2: β-TCVAE with SBD
-python scripts/train.py --config src/vae_dynamics/config/exp2_tcvae_sbd.yaml
-
-# Resume from checkpoint
-python scripts/train.py --config path/to/config.yaml --resume path/to/checkpoint.ckpt
-```
-
-### Testing
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test file
-pytest tests/test_shapes.py
-pytest tests/test_shapes_exp2.py
-
-# Run with coverage
-pytest --cov=src/vae_dynamics
-
-# Run specific test function
-pytest tests/test_shapes.py::test_baseline_vae_shapes
-```
-
-### SLURM Cluster Execution
-
-```bash
-# Submit Experiment 1 to cluster
-sbatch slurm/execute_experiment1.sh
-
-# Submit Experiment 2 to cluster
-sbatch slurm/execute_experiment2.sh
-```
-
-SLURM scripts handle:
-- Dynamic GPU assignment (finds available GPU 0-7)
-- Conda environment activation
-- Config file modification for cluster paths
-- Results directory creation
-
-## Architecture Overview
-
-### Core Design Patterns
-
-**Encoder-Decoder Architecture:**
-- **Encoder**: 3D ResNet with GroupNorm (not BatchNorm due to small batch sizes 2-8)
-  - Downsamples 128³ → 64³ → 32³ → 16³ → 8³
-  - Outputs μ and log(σ²) for posterior q(z|x)
-- **Exp1 Decoder**: Standard transposed convolutions
-- **Exp2 Decoder**: Spatial Broadcast Decoder that explicitly provides position coordinates
-
-**Why Spatial Broadcast Decoder?**
-The SBD removes positional encoding from latent space by:
-1. Broadcasting latent z to spatial grid [B, 128] → [B, 128, 8, 8, 8]
-2. Concatenating normalized coordinates (D, H, W) ∈ [-1, 1]
-3. Upsampling concatenated tensor to full resolution
-
-This forces the model to encode *content* (tumor characteristics) in z while position is handled by explicit coordinates.
-
-### Loss Functions
-
-**Exp1 - ELBO Loss:**
-```
-Loss = MSE(x, x̂) + β·KL(q(z|x) || p(z))
-```
-- β anneals from 0 → 1.0 over 40 epochs (prevents posterior collapse)
-
-**Exp2 - β-TCVAE Loss:**
-```
-Loss = Recon + α·MI + β_tc·TC + γ·DWKL
-```
-Where:
-- **MI** (Mutual Information): How much z explains x
-- **TC** (Total Correlation): Statistical dependence among latent dimensions
-- **DWKL** (Dimension-wise KL): Regularization per dimension
-
-**Key Implementation Detail:** Uses Minibatch-Weighted Sampling (MWS) to estimate marginal q(z):
-```
-log q(z_i) = logsumexp_j(log q(z_i|x_j)) - log(N·M)
-```
-
-### Data Pipeline
-
-**Input Format:** NIfTI files (.nii.gz) with structure:
-```
-BraTS_Men_Train/
-  ├── BraTS-MEN-00001-000/
-  │   ├── *-t1c.nii.gz
-  │   ├── *-t1n.nii.gz
-  │   ├── *-t2f.nii.gz
-  │   ├── *-t2w.nii.gz
-  │   └── *-seg.nii.gz
-  └── ...
-```
-
-**MONAI Transform Pipeline:**
-1. LoadImaged → load with metadata
-2. EnsureChannelFirstd → [C, D, H, W] format
-3. Orientationd → reorient to "RAS"
-4. Spacingd → resample to isotropic 1.875³ mm³
-5. NormalizeIntensityd → z-score normalize per modality
-6. ConcatItemsd → stack 4 modalities into [4, D, H, W]
-7. ResizeWithPadOrCropd → deterministic pad/crop to 128³
-8. ToTensord → convert to PyTorch tensors
-
-**Critical Implementation:** Uses `safe_collate()` function in DataLoader that:
-- Handles both numpy arrays and tensors (prevents `AttributeError` when PersistentDataset returns cached numpy arrays)
-- **Filters to only training keys** ("image", "seg", "id") to exclude MONAI metadata
-- Prevents `TypeError: iteration over a 0-d array` by avoiding MONAI MetaTensor metadata keys that contain scalar values
-
-### Module Interaction Flow
-
-```
-train.py
-  ├── Load config (OmegaConf)
-  ├── data.build_subject_index() → scan directories for NIfTI files
-  ├── data.create_train_val_split() → deterministic 90/10 split
-  ├── data.get_dataloaders() → PersistentDataset + safe_collate
-  ├── Instantiate model: BaselineVAE or TCVAESBD
-  ├── Wrap in Lightning module: VAELitModule or TCVAELitModule
-  ├── Configure callbacks: ModelCheckpoint, ReconstructionCallback, TrainingLoggingCallback
-  └── pl.Trainer.fit() → executes training loop
-```
-
-### Configuration Schema
-
-Experiments are fully configured via YAML. Key parameters:
-
-**Data:**
-- `root_dir`: Path to BraTS dataset
-- `modalities`: ["t1c", "t1n", "t2f", "t2w"] (order matters)
-- `roi_size`: [128, 128, 128] (target volume size)
-- `spacing`: [1.875, 1.875, 1.875] (isotropic resampling)
-- `batch_size`: 2-8 (small due to 3D volume memory)
-- `val_split`: 0.1
-
-**Model:**
-- `z_dim`: 128 (latent dimension)
-- `input_channels`: 4 (stacked modalities)
-- `base_filters`: 32 (channel scaling)
-- `norm`: "GROUP" (GroupNorm for small batches)
-- `sbd_grid_size`: [8, 8, 8] (Exp2 only - broadcast resolution)
-
-**Training:**
-- `precision`: "16-mixed" (FP16 with FP32 fallback)
-- `gradient_clip_val`: 1.0 (prevent FP16 overflow)
-- `loss_reduction`: "mean" (more stable than "sum" in FP16)
-
-### Numerical Stability Considerations
-
-The codebase handles FP16 mixed precision carefully:
-
-1. **Gradient Clipping:** L2 norm clipped to 1.0 to prevent explosion
-2. **Mean Reduction:** Loss normalized by batch size (not summed over millions of voxels)
-3. **FP32 Computation:** TC-VAE loss computed in FP32 when `compute_in_fp32: true`
-4. **GroupNorm:** Used instead of BatchNorm (stable for small batches)
-
-## Critical Implementation Details
-
-### Preventing Experiment 1 Breakage
-
-When modifying data loading or model code:
-- **Never remove** the `safe_collate()` function in `datasets.py`
-- **Always test both experiments** after changes to shared code
-- **Preserve tensor shape contracts**: [B, C, D, H, W] throughout pipeline
-- **Maintain modality order**: ["t1c", "t1n", "t2f", "t2w"]
-
-### Model Output Signatures
-
-**Exp1 (BaselineVAE):** Returns 3 values
-```python
-x_hat, mu, logvar = model(x)
-```
-
-**Exp2 (TCVAESBD):** Returns 4 values
-```python
-x_hat, mu, logvar, z = model(x)
-```
-
-Code that handles both must use indexing: `x_hat = model(x)[0]`
-
-### Persistent Dataset Caching
-
-PersistentDataset caches preprocessed volumes to `run_dir/cache/`.
-
-**Important:** If transforms change, delete cache directories manually:
-```bash
-rm -rf experiments/runs/*/cache/
-```
-
-Otherwise, stale cached data may be used.
-
-### Random Seed Management
-
-Reproducibility requires seeding:
-- PyTorch RNG: `torch.manual_seed(seed)`
-- NumPy RNG: `np.random.seed(seed)`
-- DataLoader workers: `set_seed(seed, workers=True)`
-- Train/val split: Uses seeded `torch.Generator`
-
-All seeds set from `cfg.train.seed` (default: 42).
-
-## Output Directory Structure
-
-Training creates timestamped runs:
-```
-experiments/runs/exp1_baseline_vae_YYYYMMDD_HHMMSS/
-  ├── config.yaml                  # Resolved config
-  ├── checkpoints/
-  │   ├── vae-epoch=XXX-val_loss=X.XXXX.ckpt
-  │   └── last.ckpt
-  ├── logs/
-  │   └── version_0/
-  │       └── metrics.csv          # Training metrics
-  ├── recon/
-  │   └── epoch_XXXX/
-  │       └── sample_XX_*.png      # Reconstruction visualizations
-  ├── splits/
-  │   ├── train_split.csv
-  │   └── val_split.csv
-  └── cache/
-      ├── train/                   # Cached preprocessed volumes
-      └── val/
-```
-
-## Testing Strategy
-
-Tests verify:
-- **Shape correctness**: All tensors have expected dimensions
-- **Loss finiteness**: No NaN/Inf values
-- **Gradient flow**: Backward pass produces gradients
-- **Model compatibility**: Both Exp1 and Exp2 work correctly
-
-Run tests before committing changes to models, losses, or data pipeline.
-
-## Technology Stack
-
-- **PyTorch 2.0+**: Deep learning framework
-- **MONAI 1.3+**: Medical imaging transforms and datasets
-- **PyTorch Lightning 2.0+**: Training orchestration
-- **OmegaConf 2.3+**: Hierarchical configuration
-- **NiBabel 5.0+**: NIfTI file I/O
-- **Python ≥3.11**: Required for type hints and performance
-
-## Common Issues and Solutions
-
-**Issue:** `AttributeError: 'numpy.ndarray' object has no attribute 'numel'`
-**Solution:** Ensure `safe_collate()` is used in DataLoader (already implemented)
-
-**Issue:** `TypeError: iteration over a 0-d array` during validation
-**Root Cause:** MONAI's `LoadImaged(image_only=False)` creates MetaTensor objects with metadata keys containing scalar values. PyTorch Lightning's batch size extraction recursively iterates through the batch and fails when encountering 0-d arrays in metadata.
-**Solution:** `safe_collate()` now filters to only process training keys ("image", "seg", "id"), excluding MONAI metadata (already implemented)
-
-**Issue:** `RuntimeError: CUDA out of memory`
-**Solution:** Reduce `batch_size` in config (try 2 for 16GB GPU, 4-8 for 24GB+)
-
-**Issue:** Loss becomes NaN during training
-**Solution:** Check `gradient_clip_val` is enabled; verify `loss_reduction: "mean"` in config
-
-**Issue:** PersistentDataset using stale cached data
-**Solution:** Delete cache directories after changing transforms
-
-**Issue:** Experiment 1 works but Experiment 2 fails
-**Solution:** Check model returns 4 values (x_hat, mu, logvar, z); verify `sbd_grid_size` in config
+# CLAUDE.md — MenGrowth-Model (VAE → Disentangled Latents → Neural ODE)
+
+This repository implements a staged methodology to learn **disentangled latent state vectors** from **multi-modal 3D MRI** (4 channels, 128³) suitable for **continuous-time tumor growth forecasting** via a **Neural ODE**. 
+
+---
+
+## 1) Methodology Overview (Experiments + Neural ODE)
+
+### Common data / tensor contract (all experiments)
+- Input per subject: 4 modalities `["t1c","t1n","t2f","t2w"]` stacked into:
+  - `x ∈ ℝ^{B×4×128×128×128}`
+- Z-score intensity normalization per subject (channel-wise) is mandatory to reduce scanner variability. 
+- All models use a **3D encoder** and **GroupNorm** (not BatchNorm) because feasible batch sizes are small for 3D volumes. 
+
+---
+
+### Experiment 1 (Exp1): Baseline 3D VAE (ELBO)
+**Goal:** stable reconstruction + a workable latent manifold (not disentangled yet). 
+
+**Architecture**
+- Encoder: 3D ResNet-style downsampling to a compact feature volume (e.g., 8³) then flatten.
+- Latent: diagonal Gaussian posterior `q(z|x)=N(μ, diag(exp(logσ²)))`, with `z_dim=128`.
+- Decoder: standard 3D transposed-convolution upsampling to `x_hat ∈ ℝ^{B×4×128×128×128}`.
+
+**Loss (negative ELBO with Posterior Collapse Mitigation)**
+- Reconstruction: Gaussian likelihood → MSE. Use **`reduction="mean"`** over all voxels/channels to keep scale comparable to KL in 128³ volumes.
+- KL: closed-form KL between diagonal Gaussian and `N(0,I)`.
+- **Posterior Collapse Mitigations** (default configuration):
+  - **Cyclical Annealing** (Fu et al., 2019): Beta oscillates in cycles (0 → 1 → 0...) to periodically relieve KL pressure, allowing the model to explore the latent space. Default: 4 cycles over 160 epochs.
+  - **Free Bits** (Kingma et al., 2016): Per-dimension KL threshold (0.1 nats/dim) prevents optimizer from collapsing any latent dimension below the information bottleneck. Uses **batch-mean clamping** (Pelsmaeker & Aziz, 2020) which is more appropriate for small batch sizes (B=2) and heterogeneous data, allowing capacity allocation to informative subsets of latent dimensions rather than enforcing uniformity across all samples.
+  - **Capacity Control** (Burgess et al., 2018): Available but disabled by default. Gradually increases KL capacity from 0 to target over training.
+
+**References:**
+- Fu et al. (2019). "Cyclical Annealing Schedule: A Simple Approach to Mitigating KL Vanishing." NAACL-HLT 2019.
+- Kingma et al. (2016). "Improved Variational Inference with Inverse Autoregressive Flow." NeurIPS 2016.
+- Burgess et al. (2018). "Understanding disentangling in β-VAE." ICLR 2018.
+- Pelsmaeker & Aziz (2020). "Effective Estimation of Deep Generative Language Models." EMNLP 2020. 
+
+**Expected outcome**
+- Good reconstructions, but **entangled** latents (not suitable as ODE state without further constraints).
+---
+
+### Experiment 2 (Exp2): Candidate 1 — β-TCVAE + Spatial Broadcast Decoder (SBD)
+**Goal:** **unsupervised disentanglement**, especially removing positional information from `z` and encouraging factor independence
+
+**Architecture change (decoder)**
+- Replace dense projection decoder with **Spatial Broadcast Decoder (SBD)**:
+  1) broadcast `z` to a small grid (e.g., 8×8×8),
+  2) concatenate fixed coordinate channels `(D,H,W) ∈ [-1,1]`,
+  3) decode with conv / transposed-conv to 128³.
+- Rationale: coordinates are supplied explicitly, so `z` is pressured to encode “what” not “where”. 
+
+**Loss change (β-TCVAE decomposition)**
+- Decompose the KL into:
+  - Mutual Information (MI),
+  - Total Correlation (TC),
+  - Dimension-wise KL (DWKL),
+- and upweight TC with **`β_tc > 1`** (typical target ≈ 6) to penalize dependence among latent dims. 
+- Use the **minibatch-weighted sampling (MWS)** estimator for `q(z)` / marginals; compute these terms in FP32 for numeric stability (especially under AMP).
+- Practical note: batch-size limits in 3D can bias TC estimation; mitigation includes larger effective batches (checkpointing / accumulation) or memory-bank extensions (optional).
+
+**Schedule**
+- Warm-up `β_tc` from 0 → target over a fixed fraction of training (linear warm-up minimum). 
+
+---
+
+### Experiment 3 (planned): Candidate 2 — Semi-supervised, physics-aligned latents (DIP-VAE + auxiliary regressions)
+**Goal:** disentanglement **and** semantic alignment of latent subspaces to ODE-relevant state variables.
+
+**Latent partition (example)**
+- `z_vol ∈ ℝ¹` (log-volume),
+- `z_loc ∈ ℝ³` (centroid),
+- `z_shape` (morphology),
+- remaining dims for background/anatomy.
+
+**Regularization**
+- Prefer **DIP-VAE** moment-matching (covariance penalties) in small-batch regimes; add supervised losses:
+  - `||z_vol - log(V_gt)||²`, `||z_loc - c_gt||²`.
+- Weighting must account for the voxel-sum recon term magnitude; uncertainty-weighting is an option. 
+---
+
+### Neural ODE interface (planned downstream)
+**Goal:** continuous-time evolution in latent space:
+\[
+\frac{d z(t)}{dt} = f_\theta(z(t), t)
+\]
+- Physics-informed volume dynamics: Gompertz-like growth on the volume latent, with parameters predicted from phenotype latents (`z_shape`).
+- Use `torchdiffeq` adjoint method for memory-efficient backprop through the solver.
+
+---
+
+## 2) Codebase map (what to touch)
+Current layout (core):
+- `src/vae_dynamics/data/`: dataset indexing, MONAI transforms, dataloaders/collate.
+- `src/vae_dynamics/models/vae/`:
+  - `baseline.py` (Exp1),
+  - `tcvae_sbd.py` (Exp2).
+- `src/vae_dynamics/models/components/sbd.py`: SBD coordinate grid + broadcast logic.
+- `src/vae_dynamics/losses/`:
+  - `elbo.py` (Exp1),
+  - `tcvae.py` (Exp2).
+- `src/vae_dynamics/training/`:
+  - `lit_modules.py`: LightningModules for Exp1/Exp2,
+  - `callbacks.py`: recon snapshot logging, run artifacts.
+- `src/vae_dynamics/config/`:
+  - `exp1_baseline_vae.yaml`,
+  - `exp2_tcvae_sbd.yaml`.
+- Entry point: `scripts/train.py`.
+
+This file supersedes the older autogenerated notes where they conflict with the PDF specs (e.g., ELBO scaling and Exp2 decomposition).
+
+---
+
+## 3) Libraries and responsibilities
+- **PyTorch 2.0+**: Deep learning framework (models, losses, tensor math, AMP-safe kernels).
+- **MONAI 1.3+**: Medical imaging transforms and datasets (NIfTI loading pipelines, spacing/orientation, caching via `PersistentDataset`).
+- **PyTorch Lightning 2.0+**: Training orchestration (Trainer, checkpointing, loggers, callbacks, multi-GPU/AMP plumbing).
+- **OmegaConf 2.3+**: Hierarchical configuration (experiment YAMLs, overrides).
+- **NiBabel 5.0+**: NIfTI file I/O (backend used by MONAI; keep for utilities if needed).
+- **Python ≥3.11**: Type hints, dataclasses, modern stdlib features.
+
+Guiding rule: **MONAI for data**, **PyTorch for core ML**, **Lightning for training loop + logging**.
+
+---
+
+## 4) Best Python / research-engineering practices (required)
+- **No “AI slop”**:
+  - avoid unnecessary try/except wrappers,
+  - avoid needless helper abstractions,
+  - prefer simple readable functions with clear names.
+- **Docstrings and typing everywhere**:
+  - module docstring: intent + boundaries,
+  - function docstrings: inputs/outputs + tensor shapes,
+  - type annotations for public APIs.
+- **Keep contracts explicit**:
+  - tensor shapes always `[B,C,D,H,W]`,
+  - modality order is fixed and documented,
+  - model forward signatures are stable (Exp1 returns `(x_hat, mu, logvar)`, Exp2 additionally returns `z`).
+- **Numerical stability policy**:
+  - compute TC-VAE density terms in **FP32** even under AMP,
+  - log and assert finiteness (`torch.isfinite`) for loss terms in debug/test paths.
+- **Reproducibility**:
+  - seed everything (`seed_everything(seed, workers=True)`),
+  - save resolved config and train/val split CSVs in each run directory,
+  - treat cached datasets as invalid if transforms change (wipe cache).
+- **Modularization**:
+  - data/indexing/transforms separate from model,
+  - losses as pure functions returning dicts of terms,
+  - LightningModules should orchestrate calls, not own core math.
+
+Keep this file concise and actionable. If you add Exp3/Neural ODE code, update only the methodology bullets and the module map (do not add long tutorials).

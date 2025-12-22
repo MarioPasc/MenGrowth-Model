@@ -12,14 +12,14 @@ Both modules include:
 """
 
 import logging
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 
 from ..models import BaselineVAE, TCVAESBD
-from ..losses import compute_elbo, compute_tcvae_loss
+from ..losses import compute_elbo, compute_tcvae_loss, get_capacity_schedule
 from ..losses.elbo import get_beta_schedule
 from ..losses.tcvae import get_beta_tc_schedule
 
@@ -48,6 +48,14 @@ class VAELitModule(pl.LightningModule):
         kl_beta: float = 1.0,
         kl_annealing_epochs: int = 40,
         loss_reduction: str = "mean",
+        # New parameters for posterior collapse mitigation
+        kl_annealing_type: str = "cyclical",
+        kl_annealing_cycles: int = 4,
+        kl_annealing_ratio: float = 0.5,
+        kl_free_bits: float = 0.5,
+        kl_free_bits_mode: str = "batch_mean",
+        kl_target_capacity: Optional[float] = None,
+        kl_capacity_anneal_epochs: int = 100,
     ):
         """Initialize VAELitModule.
 
@@ -55,9 +63,18 @@ class VAELitModule(pl.LightningModule):
             model: BaselineVAE model instance.
             lr: Learning rate for AdamW optimizer.
             kl_beta: Target beta value after annealing.
-            kl_annealing_epochs: Number of epochs for linear KL annealing.
+            kl_annealing_epochs: Number of epochs for KL annealing.
             loss_reduction: Loss reduction strategy ("mean" or "sum").
                            Default "mean" for numerical stability in FP16.
+            kl_annealing_type: Annealing type ("linear" or "cyclical").
+                              Default "cyclical" for posterior collapse mitigation.
+            kl_annealing_cycles: Number of cycles for cyclical annealing. Default: 4.
+            kl_annealing_ratio: Fraction of each cycle for annealing. Default: 0.5.
+            kl_free_bits: Free bits threshold per dimension (nats). Default: 0.5.
+            kl_free_bits_mode: Free bits clamping mode ("per_sample" or "batch_mean").
+                              Default: "batch_mean" (recommended for small batches).
+            kl_target_capacity: Target capacity (nats). None disables. Default: None.
+            kl_capacity_anneal_epochs: Epochs to reach target capacity. Default: 100.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -68,6 +85,15 @@ class VAELitModule(pl.LightningModule):
         self.kl_annealing_epochs = kl_annealing_epochs
         self.loss_reduction = loss_reduction
         self.current_beta = 0.0
+        # New parameters
+        self.kl_annealing_type = kl_annealing_type
+        self.kl_annealing_cycles = kl_annealing_cycles
+        self.kl_annealing_ratio = kl_annealing_ratio
+        self.kl_free_bits = kl_free_bits
+        self.kl_free_bits_mode = kl_free_bits_mode
+        self.kl_target_capacity = kl_target_capacity
+        self.kl_capacity_anneal_epochs = kl_capacity_anneal_epochs
+        self.current_capacity = 0.0 if kl_target_capacity is not None else None
 
     @classmethod
     def from_config(cls, cfg: DictConfig) -> "VAELitModule":
@@ -97,16 +123,42 @@ class VAELitModule(pl.LightningModule):
             kl_beta=cfg.train.kl_beta,
             kl_annealing_epochs=cfg.train.kl_annealing_epochs,
             loss_reduction=cfg.train.get("loss_reduction", "mean"),
+            # New parameters with backward-compatible defaults
+            kl_annealing_type=cfg.train.get("kl_annealing_type", "cyclical"),
+            kl_annealing_cycles=cfg.train.get("kl_annealing_cycles", 4),
+            kl_annealing_ratio=cfg.train.get("kl_annealing_ratio", 0.5),
+            kl_free_bits=cfg.train.get("kl_free_bits", 0.5),
+            kl_free_bits_mode=cfg.train.get("kl_free_bits_mode", "batch_mean"),
+            kl_target_capacity=cfg.train.get("kl_target_capacity", None),
+            kl_capacity_anneal_epochs=cfg.train.get("kl_capacity_anneal_epochs", 100),
         )
 
     def on_train_epoch_start(self) -> None:
-        """Update beta at the start of each training epoch."""
+        """Update beta and capacity at the start of each training epoch."""
+        # Update beta schedule
         self.current_beta = get_beta_schedule(
             epoch=self.current_epoch,
             kl_beta=self.kl_beta,
             kl_annealing_epochs=self.kl_annealing_epochs,
+            kl_annealing_type=self.kl_annealing_type,
+            kl_annealing_cycles=self.kl_annealing_cycles,
+            kl_annealing_ratio=self.kl_annealing_ratio,
         )
-        logger.debug(f"Epoch {self.current_epoch}: beta = {self.current_beta:.4f}")
+
+        # Update capacity schedule (if enabled)
+        if self.kl_target_capacity is not None:
+            self.current_capacity = get_capacity_schedule(
+                epoch=self.current_epoch,
+                kl_target_capacity=self.kl_target_capacity,
+                kl_capacity_anneal_epochs=self.kl_capacity_anneal_epochs,
+            )
+            logger.debug(
+                f"Epoch {self.current_epoch}: "
+                f"beta = {self.current_beta:.4f}, "
+                f"capacity = {self.current_capacity:.4f}"
+            )
+        else:
+            logger.debug(f"Epoch {self.current_epoch}: beta = {self.current_beta:.4f}")
 
     def forward(self, x: torch.Tensor) -> tuple:
         """Forward pass through VAE.
@@ -139,13 +191,26 @@ class VAELitModule(pl.LightningModule):
         x_hat, mu, logvar = self.model(x)
 
         # Compute ELBO loss
-        loss_dict = compute_elbo(x, x_hat, mu, logvar, beta=self.current_beta, reduction=self.loss_reduction)
+        loss_dict = compute_elbo(
+            x,
+            x_hat,
+            mu,
+            logvar,
+            beta=self.current_beta,
+            reduction=self.loss_reduction,
+            kl_free_bits=self.kl_free_bits,
+            kl_free_bits_mode=self.kl_free_bits_mode,
+            kl_capacity=self.current_capacity,
+        )
 
         # Log metrics (on_step=True for intra-epoch logging)
         self.log("train/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
         self.log("train/recon", loss_dict["recon"], on_step=True, on_epoch=True)
         self.log("train/kl", loss_dict["kl"], on_step=True, on_epoch=True)
+        self.log("train/kl_raw", loss_dict["kl_raw"], on_step=True, on_epoch=True)
         self.log("train/beta", self.current_beta, on_step=True, on_epoch=True)
+        if self.current_capacity is not None:
+            self.log("train/capacity", self.current_capacity, on_step=True, on_epoch=True)
 
         # Log latent space statistics
         self.log("train/mu_mean", mu.mean(), on_step=True, on_epoch=True)
@@ -180,13 +245,26 @@ class VAELitModule(pl.LightningModule):
         x_hat, mu, logvar = self.model(x)
 
         # Compute ELBO loss
-        loss_dict = compute_elbo(x, x_hat, mu, logvar, beta=self.current_beta, reduction=self.loss_reduction)
+        loss_dict = compute_elbo(
+            x,
+            x_hat,
+            mu,
+            logvar,
+            beta=self.current_beta,
+            reduction=self.loss_reduction,
+            kl_free_bits=self.kl_free_bits,
+            kl_free_bits_mode=self.kl_free_bits_mode,
+            kl_capacity=self.current_capacity,
+        )
 
         # Log metrics (on_step=True for intra-epoch logging)
         self.log("val/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
         self.log("val/recon", loss_dict["recon"], on_step=True, on_epoch=True)
         self.log("val/kl", loss_dict["kl"], on_step=True, on_epoch=True)
+        self.log("val/kl_raw", loss_dict["kl_raw"], on_step=True, on_epoch=True)
         self.log("val/beta", self.current_beta, on_step=True, on_epoch=True)
+        if self.current_capacity is not None:
+            self.log("val/capacity", self.current_capacity, on_step=True, on_epoch=True)
 
         # Log latent space statistics
         self.log("val/mu_mean", mu.mean(), on_step=True, on_epoch=True)
