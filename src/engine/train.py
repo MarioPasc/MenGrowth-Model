@@ -242,7 +242,7 @@ def main():
                 shift_vox=cfg.logging.latent_diag_shift_vox,
                 csv_name=cfg.logging.latent_diag_csv_name,
                 ids_name=cfg.logging.latent_diag_ids_name,
-                seg_labels=seg_labels,  # NEW: Pass configurable seg_labels
+                seg_labels=seg_labels,  # Pass segmentation labels if provided
             )
             callbacks.append(diag_callback)
             logger.info(f"Configured latent diagnostics every {cfg.logging.latent_diag_every_n_epochs} epochs")

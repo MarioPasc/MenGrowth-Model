@@ -136,13 +136,19 @@ class ActiveUnitsCallback(Callback):
             pin_memory=True,
         )
 
-    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        """Initialize subset at training start (rank 0 only).
+    def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
+        """Initialize subset during setup phase (rank 0 only).
+
+        Called before sanity validation to ensure dataloader is ready.
 
         Args:
             trainer: PyTorch Lightning trainer.
             pl_module: Lightning module.
+            stage: Current stage ('fit', 'validate', 'test', or 'predict').
         """
+        if stage != "fit":
+            return
+
         if not trainer.is_global_zero:
             return
 
@@ -214,7 +220,16 @@ class ActiveUnitsCallback(Callback):
 
         Returns:
             Tuple of (au_count, au_frac, z_dim).
+
+        Raises:
+            RuntimeError: If subset dataloader is not initialized.
         """
+        if self._subset_dataloader is None:
+            raise RuntimeError(
+                "AU subset dataloader not initialized. "
+                "This should not happen if setup() was called properly."
+            )
+
         pl_module.eval()
         device = pl_module.device
 
