@@ -15,6 +15,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 from torch.utils.data import DataLoader, Subset
 
+from vae.data.datasets import safe_collate
+
 logger = logging.getLogger(__name__)
 
 
@@ -134,6 +136,7 @@ class ActiveUnitsCallback(Callback):
             shuffle=False,
             num_workers=0,
             pin_memory=True,
+            collate_fn=safe_collate,
         )
 
     def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
