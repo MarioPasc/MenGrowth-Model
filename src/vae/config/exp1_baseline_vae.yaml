@@ -77,6 +77,26 @@ logging:
   latent_diag_every_n_epochs: 10
   latent_diag_num_samples: 32
   latent_diag_shift_vox: 5
-  latent_diag_eps_au: 0.01
   latent_diag_csv_name: "latent_diag/metrics.csv"
   latent_diag_ids_name: "latent_diag/ids.txt"
+
+  # Active Units (AU) callback - canonical latent activity metric
+  au_dense_until: 15        # Dense logging (every epoch) for epochs 0..15
+  au_sparse_interval: 5     # Sparse logging (every 5 epochs) after epoch 15
+  au_subset_fraction: 0.25  # Use 25% of validation dataset for AU computation
+  au_batch_size: 64         # Batch size for AU computation (larger = more efficient)
+  eps_au: 0.01              # Variance threshold (nats) for active dimension counting
+  au_subset_seed: 42        # RNG seed for reproducible subset selection
+
+  # Tidy CSV logging (one row per epoch, no NaN fragmentation)
+  tidy_dir: "logs/tidy"
+  step_log_stride: 100  # Log every N steps for step CSV (50-200 recommended for long runs)
+
+  # Segmentation label mapping (configurable for different datasets)
+  seg_labels:
+    ncr: 1  # Necrotic core
+    ed: 2   # Edema
+    et: 3   # Enhancing tumor
+
+  # Gradient norm logging (optimization stability monitoring)
+  log_grad_norm: true

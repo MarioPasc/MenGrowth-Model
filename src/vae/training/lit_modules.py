@@ -203,25 +203,50 @@ class VAELitModule(pl.LightningModule):
             kl_capacity=self.current_capacity,
         )
 
-        # Log metrics (on_step=True for intra-epoch logging)
-        self.log("train/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
-        self.log("train/recon", loss_dict["recon"], on_step=True, on_epoch=True)
-        self.log("train/kl", loss_dict["kl"], on_step=True, on_epoch=True)
-        self.log("train/kl_raw", loss_dict["kl_raw"], on_step=True, on_epoch=True)
-        self.log("train/beta", self.current_beta, on_step=True, on_epoch=True)
+        # === STEP LOGGING (minimal) ===
+        self.log("train_step/loss", loss_dict["loss"], on_step=True, on_epoch=False, prog_bar=False)
+
+        # === EPOCH LOGGING (comprehensive) ===
+        self.log("train_epoch/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log("train_epoch/recon", loss_dict["recon"], on_step=False, on_epoch=True)
+        self.log("train_epoch/kl", loss_dict["kl"], on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
+
+        # Normalized metrics (resolution-independent)
+        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
+        z_dim = mu.shape[1]
+        self.log("train_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
+
+        # Latent statistics
+        self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
+
+        # === SCHEDULE LOGGING ===
+        self.log("sched/beta", self.current_beta, on_step=False, on_epoch=True)
         if self.current_capacity is not None:
-            self.log("train/capacity", self.current_capacity, on_step=True, on_epoch=True)
+            self.log("sched/capacity", self.current_capacity, on_step=False, on_epoch=True)
 
-        # Log latent space statistics
-        self.log("train/mu_mean", mu.mean(), on_step=True, on_epoch=True)
-        self.log("train/mu_std", mu.std(), on_step=True, on_epoch=True)
-        self.log("train/logvar_mean", logvar.mean(), on_step=True, on_epoch=True)
+        # Schedule state (for cyclical annealing)
+        if self.kl_annealing_type == "cyclical":
+            cycle_length = self.kl_annealing_epochs / self.kl_annealing_cycles
+            cycle_idx = int(self.current_epoch / cycle_length)
+            phase = (self.current_epoch % cycle_length) / cycle_length
+            self.log("sched/cycle_idx", float(cycle_idx), on_step=False, on_epoch=True)
+            self.log("sched/phase", phase, on_step=False, on_epoch=True)
 
-        # Log learning rate
+        # === COLLAPSE PROXIES ===
+        # Expected KL floor from free bits (cite: Kingma et al. 2016, arXiv:1606.04934)
+        if self.kl_free_bits > 0.0:
+            expected_kl_floor = z_dim * self.kl_free_bits
+            self.log("sched/expected_kl_floor", expected_kl_floor, on_step=False, on_epoch=True)
+            self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
+
+        # === OPTIMIZER LOGGING ===
         opt = self.optimizers()
         if opt is not None:
             current_lr = opt.param_groups[0]["lr"]
-            self.log("train/lr", current_lr, on_step=True, on_epoch=False)
+            self.log("opt/lr", current_lr, on_step=False, on_epoch=True)
 
         return loss_dict["loss"]
 
@@ -257,19 +282,24 @@ class VAELitModule(pl.LightningModule):
             kl_capacity=self.current_capacity,
         )
 
-        # Log metrics (on_step=True for intra-epoch logging)
-        self.log("val/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
-        self.log("val/recon", loss_dict["recon"], on_step=True, on_epoch=True)
-        self.log("val/kl", loss_dict["kl"], on_step=True, on_epoch=True)
-        self.log("val/kl_raw", loss_dict["kl_raw"], on_step=True, on_epoch=True)
-        self.log("val/beta", self.current_beta, on_step=True, on_epoch=True)
-        if self.current_capacity is not None:
-            self.log("val/capacity", self.current_capacity, on_step=True, on_epoch=True)
+        # === STEP LOGGING (minimal) ===
+        self.log("val_step/loss", loss_dict["loss"], on_step=True, on_epoch=False, prog_bar=False)
 
-        # Log latent space statistics
-        self.log("val/mu_mean", mu.mean(), on_step=True, on_epoch=True)
-        self.log("val/mu_std", mu.std(), on_step=True, on_epoch=True)
-        self.log("val/logvar_mean", logvar.mean(), on_step=True, on_epoch=True)
+        # === EPOCH LOGGING (comprehensive) ===
+        self.log("val_epoch/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log("val_epoch/recon", loss_dict["recon"], on_step=False, on_epoch=True)
+        self.log("val_epoch/kl", loss_dict["kl"], on_step=False, on_epoch=True)
+        self.log("val_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
+
+        # Normalized metrics (resolution-independent)
+        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
+        z_dim = mu.shape[1]
+        self.log("val_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        self.log("val_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
+
+        # Latent statistics
+        self.log("val_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
+        self.log("val_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
 
         return loss_dict["loss"]
 
@@ -461,29 +491,54 @@ class TCVAELitModule(pl.LightningModule):
             kl_free_bits_mode=self.kl_free_bits_mode,
         )
 
-        # Log metrics (on_step=True for intra-epoch logging)
-        self.log("train/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
-        self.log("train/recon", loss_dict["recon"], on_step=True, on_epoch=True)
-        self.log("train/mi", loss_dict["mi"], on_step=True, on_epoch=True)
-        self.log("train/tc", loss_dict["tc"], on_step=True, on_epoch=True)
-        self.log("train/dwkl", loss_dict["dwkl"], on_step=True, on_epoch=True)
-        self.log("train/beta_tc", self.current_beta_tc, on_step=True, on_epoch=True)
-        self.log("train/kl_raw", loss_dict["kl_raw"], on_step=True, on_epoch=True)
-        self.log("train/kl_constrained", loss_dict["kl_constrained"], on_step=True, on_epoch=True)
-        self.log("train/kl_free_bits_penalty", loss_dict["kl_free_bits_penalty"], on_step=True, on_epoch=True)
+        # === STEP LOGGING (minimal) ===
+        self.log("train_step/loss", loss_dict["loss"], on_step=True, on_epoch=False, prog_bar=False)
 
-        # Log latent space statistics
-        self.log("train/mu_mean", mu.mean(), on_step=True, on_epoch=True)
-        self.log("train/mu_std", mu.std(), on_step=True, on_epoch=True)
-        self.log("train/logvar_mean", logvar.mean(), on_step=True, on_epoch=True)
-        self.log("train/z_mean", z.mean(), on_step=True, on_epoch=True)
-        self.log("train/z_std", z.std(), on_step=True, on_epoch=True)
+        # === EPOCH LOGGING (comprehensive) ===
+        self.log("train_epoch/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log("train_epoch/recon", loss_dict["recon"], on_step=False, on_epoch=True)
 
-        # Log learning rate
+        # TC-VAE decomposition (MI, TC, DWKL are the primary disentanglement diagnostics)
+        # Cite: Chen et al. 2018, arXiv:1802.04942
+        self.log("train_epoch/mi", loss_dict["mi"], on_step=False, on_epoch=True)
+        self.log("train_epoch/tc", loss_dict["tc"], on_step=False, on_epoch=True)
+        self.log("train_epoch/dwkl", loss_dict["dwkl"], on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_constrained", loss_dict["kl_constrained"], on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_free_bits_penalty", loss_dict["kl_free_bits_penalty"], on_step=False, on_epoch=True)
+
+        # Normalized metrics (resolution-independent)
+        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
+        z_dim = mu.shape[1]
+        self.log("train_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
+
+        # Latent statistics
+        self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/z_std", z.std(), on_step=False, on_epoch=True)
+
+        # === SCHEDULE LOGGING ===
+        self.log("sched/beta_tc", self.current_beta_tc, on_step=False, on_epoch=True)
+
+        # Schedule state (linear warm-up for beta_tc)
+        if self.beta_tc_annealing_epochs > 0:
+            phase = min(1.0, self.current_epoch / self.beta_tc_annealing_epochs)
+            self.log("sched/beta_tc_phase", phase, on_step=False, on_epoch=True)
+
+        # === COLLAPSE PROXIES ===
+        # Expected KL floor from free bits
+        if self.kl_free_bits > 0.0:
+            expected_kl_floor = z_dim * self.kl_free_bits
+            self.log("sched/expected_kl_floor", expected_kl_floor, on_step=False, on_epoch=True)
+            self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
+
+        # === OPTIMIZER LOGGING ===
         opt = self.optimizers()
         if opt is not None:
             current_lr = opt.param_groups[0]["lr"]
-            self.log("train/lr", current_lr, on_step=True, on_epoch=False)
+            self.log("opt/lr", current_lr, on_step=False, on_epoch=True)
 
         return loss_dict["loss"]
 
@@ -523,23 +578,31 @@ class TCVAELitModule(pl.LightningModule):
             kl_free_bits_mode=self.kl_free_bits_mode,
         )
 
-        # Log metrics (on_step=True for intra-epoch logging)
-        self.log("val/loss", loss_dict["loss"], on_step=True, on_epoch=True, prog_bar=False)
-        self.log("val/recon", loss_dict["recon"], on_step=True, on_epoch=True)
-        self.log("val/mi", loss_dict["mi"], on_step=True, on_epoch=True)
-        self.log("val/tc", loss_dict["tc"], on_step=True, on_epoch=True)
-        self.log("val/dwkl", loss_dict["dwkl"], on_step=True, on_epoch=True)
-        self.log("val/beta_tc", self.current_beta_tc, on_step=True, on_epoch=True)
-        self.log("val/kl_raw", loss_dict["kl_raw"], on_step=True, on_epoch=True)
-        self.log("val/kl_constrained", loss_dict["kl_constrained"], on_step=True, on_epoch=True)
-        self.log("val/kl_free_bits_penalty", loss_dict["kl_free_bits_penalty"], on_step=True, on_epoch=True)
+        # === STEP LOGGING (minimal) ===
+        self.log("val_step/loss", loss_dict["loss"], on_step=True, on_epoch=False, prog_bar=False)
 
-        # Log latent space statistics
-        self.log("val/mu_mean", mu.mean(), on_step=True, on_epoch=True)
-        self.log("val/mu_std", mu.std(), on_step=True, on_epoch=True)
-        self.log("val/logvar_mean", logvar.mean(), on_step=True, on_epoch=True)
-        self.log("val/z_mean", z.mean(), on_step=True, on_epoch=True)
-        self.log("val/z_std", z.std(), on_step=True, on_epoch=True)
+        # === EPOCH LOGGING (comprehensive) ===
+        self.log("val_epoch/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log("val_epoch/recon", loss_dict["recon"], on_step=False, on_epoch=True)
+
+        # TC-VAE decomposition
+        self.log("val_epoch/mi", loss_dict["mi"], on_step=False, on_epoch=True)
+        self.log("val_epoch/tc", loss_dict["tc"], on_step=False, on_epoch=True)
+        self.log("val_epoch/dwkl", loss_dict["dwkl"], on_step=False, on_epoch=True)
+        self.log("val_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
+        self.log("val_epoch/kl_constrained", loss_dict["kl_constrained"], on_step=False, on_epoch=True)
+
+        # Normalized metrics (resolution-independent)
+        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
+        z_dim = mu.shape[1]
+        self.log("val_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        self.log("val_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
+
+        # Latent statistics
+        self.log("val_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
+        self.log("val_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
+        self.log("val_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
+        self.log("val_epoch/z_std", z.std(), on_step=False, on_epoch=True)
 
         return loss_dict["loss"]
 

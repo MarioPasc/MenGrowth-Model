@@ -2,5 +2,12 @@
 
 from .lit_modules import VAELitModule, TCVAELitModule
 from .callbacks import ReconstructionCallback, TrainingLoggingCallback
+from .au_callbacks import ActiveUnitsCallback
 
-__all__ = ["VAELitModule", "TCVAELitModule", "ReconstructionCallback", "TrainingLoggingCallback"]
+__all__ = [
+    "VAELitModule",
+    "TCVAELitModule",
+    "ReconstructionCallback",
+    "TrainingLoggingCallback",
+    "ActiveUnitsCallback",
+]

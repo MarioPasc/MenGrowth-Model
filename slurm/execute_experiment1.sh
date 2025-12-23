@@ -19,7 +19,6 @@ echo "Job started at: $(date)"
 # ========================================================================
 EXPERIMENT_NAME="exp1_baseline_vae"
 CONDA_ENV_NAME="vae-dynamics"
-RESUME_FLAG= false
 
 REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 DATA_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men"
@@ -91,6 +90,7 @@ cp "${CONFIG_FILE}" "${MODIFIED_CONFIG}"
 echo "Modifying configuration file..."
 sed -i "s|  root_dir: .*|  root_dir: \"${DATA_SRC}\"|" "${MODIFIED_CONFIG}"
 sed -i "s|  save_dir: .*|  save_dir: \"${RESULTS_DST}\"|" "${MODIFIED_CONFIG}"
+sed -i "s|  tidy_dir: .*|  tidy_dir: \"${RESULTS_DST}/logs/tidy\"|" "${MODIFIED_CONFIG}"
 sed -i "s|  latent_diag_csv_name: .*|  latent_diag_csv_name: \"${RESULTS_DST}/latent_diag/metrics.csv\"|" "${MODIFIED_CONFIG}"
 sed -i "s|  latent_diag_ids_name: .*|  latent_diag_ids_name: \"${RESULTS_DST}/latent_diag/ids.txt\"|" "${MODIFIED_CONFIG}"
 

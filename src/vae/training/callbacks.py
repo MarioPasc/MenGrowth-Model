@@ -409,8 +409,6 @@ class LatentDiagnosticsCallback(Callback):
     computed in float32 on CPU to ensure numerical stability.
 
     Diagnostics:
-    - Active Units (AU): Count of latent dimensions with sample variance > threshold
-      (proxy for posterior collapse - low AU indicates many collapsed dims)
     - Correlation: Mean absolute off-diagonal correlation of latent means
       (proxy for independence - high correlation indicates entangled factors)
     - Translation sensitivity: L2 change in μ under spatial shift
@@ -433,12 +431,19 @@ class LatentDiagnosticsCallback(Callback):
         every_n_epochs: Compute diagnostics every N epochs (default: 10).
         num_samples: Number of validation samples to use (default: 32).
         shift_vox: Translation shift magnitude in voxels (default: 5).
-        eps_au: Variance threshold for active units in nats (default: 0.01).
+        eps_au: Variance threshold (nats) - kept for backward compatibility but no longer used.
         csv_name: Relative path for CSV metrics file (default: "latent_diag/metrics.csv").
         ids_name: Relative path for sample IDs file (default: "latent_diag/ids.txt").
         image_key: Batch dict key for images (default: "image").
         seg_key: Batch dict key for segmentations (default: "seg").
         id_key: Batch dict key for sample IDs (default: "id").
+        seg_labels: Segmentation label mapping dict (default: {"ncr": 1, "ed": 2, "et": 3} for BraTS).
+
+    Note:
+        Active Units (AU) metric is now computed by the dedicated ActiveUnitsCallback,
+        which provides more flexible scheduling (dense-early/sparse-late) and uses a
+        configurable subset size. This callback focuses on correlation, shift sensitivity,
+        and segmentation probe diagnostics.
     """
 
     def __init__(
@@ -453,6 +458,7 @@ class LatentDiagnosticsCallback(Callback):
         image_key: str = "image",
         seg_key: str = "seg",
         id_key: str = "id",
+        seg_labels: Optional[Dict[str, int]] = None,
     ):
         """Initialize LatentDiagnosticsCallback.
 
@@ -467,6 +473,7 @@ class LatentDiagnosticsCallback(Callback):
             image_key: Batch dict key for images.
             seg_key: Batch dict key for segmentations.
             id_key: Batch dict key for sample IDs.
+            seg_labels: Segmentation label mapping (default: {"ncr": 1, "ed": 2, "et": 3} for BraTS).
         """
         super().__init__()
         self.run_dir = Path(run_dir)
@@ -480,9 +487,16 @@ class LatentDiagnosticsCallback(Callback):
         self.seg_key = seg_key
         self.id_key = id_key
 
+        # Segmentation labels (configurable for different datasets)
+        if seg_labels is None:
+            self.seg_labels = {"ncr": 1, "ed": 2, "et": 3}
+        else:
+            self.seg_labels = seg_labels
+
         # Runtime state
         self._sample_ids: Optional[List[str]] = None
         self._val_data: List[Dict[str, Any]] = []
+        self.last_epoch_metrics: Optional[Dict[str, Any]] = None
 
     def on_validation_epoch_start(
         self,
@@ -610,6 +624,25 @@ class LatentDiagnosticsCallback(Callback):
         self._log_metrics(metrics, pl_module)
         self._save_csv(metrics, trainer)
 
+        # Export metrics for TidyEpochCSVCallback to merge
+        # Include all scalar diagnostic metrics with diag/* namespace
+        self.last_epoch_metrics = {
+            "epoch": metrics["epoch"],
+            "diag/corr_offdiag_meanabs": metrics["corr_offdiag_meanabs"],
+            "diag/shift_mu_l2_mean": metrics.get("shift_mu_l2_mean", np.nan),
+            "diag/shift_mu_absmean": metrics.get("shift_mu_absmean", np.nan),
+            "diag/r2_logV_ncr": metrics.get("r2_logV_ncr", np.nan),
+            "diag/r2_logV_ed": metrics.get("r2_logV_ed", np.nan),
+            "diag/r2_logV_et": metrics.get("r2_logV_et", np.nan),
+            "diag/r2_logV_total": metrics.get("r2_logV_total", np.nan),
+            "diag/r2_cz_total": metrics.get("r2_cz_total", np.nan),
+            "diag/r2_cy_total": metrics.get("r2_cy_total", np.nan),
+            "diag/r2_cx_total": metrics.get("r2_cx_total", np.nan),
+            "diag/r2_r_ncr": metrics.get("r2_r_ncr", np.nan),
+            "diag/r2_r_ed": metrics.get("r2_r_ed", np.nan),
+            "diag/r2_r_et": metrics.get("r2_r_et", np.nan),
+        }
+
         # Clear accumulator
         self._val_data = []
 
@@ -721,10 +754,6 @@ class LatentDiagnosticsCallback(Callback):
             "z_dim": z_dim,
         }
 
-        # Active units
-        au_metrics = self._compute_active_units(mu_matrix, self.eps_au)
-        metrics.update(au_metrics)
-
         # Correlation
         corr_metrics = self._compute_correlation(mu_matrix)
         metrics.update(corr_metrics)
@@ -791,28 +820,6 @@ class LatentDiagnosticsCallback(Callback):
         mu_matrix = torch.stack(mus, dim=0)  # [N, z_dim]
         assert mu_matrix.dtype == torch.float32
         return mu_matrix, mu_matrix.shape[1]
-
-    def _compute_active_units(
-        self, mu_matrix: torch.Tensor, eps: float
-    ) -> Dict[str, float]:
-        """Count dimensions with sample variance > eps.
-
-        Args:
-            mu_matrix: [N, z_dim] latent means.
-            eps: Variance threshold (nats).
-
-        Returns:
-            Dictionary with 'au' (count) and 'au_frac' (fraction).
-        """
-        # Variance across samples (dim=0)
-        var = mu_matrix.var(dim=0, unbiased=True)  # [z_dim]
-        active = (var > eps).sum().item()
-        z_dim = mu_matrix.shape[1]
-
-        return {
-            "au": active,
-            "au_frac": active / z_dim,
-        }
 
     def _compute_correlation(self, mu_matrix: torch.Tensor) -> Dict[str, float]:
         """Mean absolute off-diagonal correlation.
@@ -971,10 +978,14 @@ class LatentDiagnosticsCallback(Callback):
             seg = d["seg"].squeeze(0)  # [128, 128, 128]
 
             # Volumes (voxel counts)
-            # Labels: 0=bg, 1=NCR, 2=ED, 3=ET
-            V_ncr = (seg == 1).sum().item()
-            V_ed = (seg == 2).sum().item()
-            V_et = (seg == 3).sum().item()
+            # Use configurable segmentation labels
+            ncr_label = self.seg_labels["ncr"]
+            ed_label = self.seg_labels["ed"]
+            et_label = self.seg_labels["et"]
+
+            V_ncr = (seg == ncr_label).sum().item()
+            V_ed = (seg == ed_label).sum().item()
+            V_et = (seg == et_label).sum().item()
             V_total = V_ncr + V_ed + V_et
 
             # Log volumes (with offset to handle zeros)
@@ -1116,8 +1127,6 @@ class LatentDiagnosticsCallback(Callback):
             pl_module: Lightning module for logging.
         """
         scalar_keys = [
-            "au",
-            "au_frac",
             "corr_offdiag_meanabs",
             "shift_mu_l2_mean",
             "shift_mu_absmean",
@@ -1138,7 +1147,7 @@ class LatentDiagnosticsCallback(Callback):
             if k in metrics:
                 val = metrics[k]
                 # Lightning handles NaN gracefully
-                log_dict[f"val/latent/{k}"] = val
+                log_dict[f"diag/{k}"] = val
 
         pl_module.log_dict(
             log_dict,
@@ -1151,7 +1160,6 @@ class LatentDiagnosticsCallback(Callback):
 
         logger.info(
             f"Latent diagnostics at epoch {metrics['epoch']}: "
-            f"AU={metrics['au']}/{metrics['z_dim']} ({metrics['au_frac']:.3f}), "
             f"corr={metrics['corr_offdiag_meanabs']:.4f}"
         )
 
@@ -1174,8 +1182,6 @@ class LatentDiagnosticsCallback(Callback):
             "num_samples_planned",
             "num_samples_used",
             "z_dim",
-            "au",
-            "au_frac",
             "corr_offdiag_meanabs",
             "shift_vox",
             "shift_mu_l2_mean",

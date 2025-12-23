@@ -29,6 +29,7 @@ Usage:
 import argparse
 import logging
 import sys
+from math import ceil
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -40,7 +41,19 @@ from pytorch_lightning.loggers import CSVLogger
 # sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from vae.data import build_subject_index, create_train_val_split, get_dataloaders
-from vae.training import VAELitModule, TCVAELitModule, ReconstructionCallback, TrainingLoggingCallback
+from vae.training import (
+    VAELitModule,
+    TCVAELitModule,
+    ReconstructionCallback,
+    TrainingLoggingCallback,
+    ActiveUnitsCallback,
+)
+from vae.training.metrics_callbacks import (
+    TidyEpochCSVCallback,
+    TidyStepCSVCallback,
+    GradNormCallback,
+    RunMetadataCallback,
+)
 from vae.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
 
 
@@ -177,9 +190,51 @@ def main():
     )
     callbacks.append(recon_callback)
 
+    # === NEW: Tidy CSV logging callbacks ===
+
+    # Tidy epoch CSV (one row per epoch, no NaN fragmentation)
+    tidy_epoch_callback = TidyEpochCSVCallback(
+        run_dir=run_dir,
+        tidy_subdir=cfg.logging.get("tidy_dir", "logs/tidy"),
+    )
+    callbacks.append(tidy_epoch_callback)
+    logger.info("Configured tidy epoch CSV logging")
+
+    # Tidy step CSV (downsampled step logs)
+    step_stride = cfg.logging.get("step_log_stride", 50)
+    tidy_step_callback = TidyStepCSVCallback(
+        run_dir=run_dir,
+        stride=step_stride,
+        tidy_subdir=cfg.logging.get("tidy_dir", "logs/tidy"),
+    )
+    callbacks.append(tidy_step_callback)
+    logger.info(f"Configured tidy step CSV logging (stride={step_stride})")
+
+    # Gradient norm logging (optimization stability)
+    if cfg.logging.get("log_grad_norm", False):
+        grad_norm_callback = GradNormCallback(norm_type=2.0)
+        callbacks.append(grad_norm_callback)
+        logger.info("Configured gradient norm logging")
+
+    # Run metadata JSON (config + data signature)
+    run_meta_callback = RunMetadataCallback(
+        run_dir=run_dir,
+        cfg=cfg,
+        tidy_subdir=cfg.logging.get("tidy_dir", "logs/tidy"),
+    )
+    callbacks.append(run_meta_callback)
+    logger.info("Configured run metadata JSON")
+
+    # === END NEW ===
+
     if cfg.logging.get("latent_diag_every_n_epochs", 0) > 0:
-            from vae.training.callbacks import LatentDiagnosticsCallback 
-            
+            from vae.training.callbacks import LatentDiagnosticsCallback
+
+            # Get seg_labels from config (convert DictConfig to dict)
+            seg_labels = cfg.logging.get("seg_labels", None)
+            if seg_labels is not None:
+                seg_labels = dict(seg_labels)  # Convert DictConfig to dict
+
             diag_callback = LatentDiagnosticsCallback(
                 run_dir=run_dir_str,
                 every_n_epochs=cfg.logging.latent_diag_every_n_epochs,
@@ -188,9 +243,35 @@ def main():
                 eps_au=cfg.logging.latent_diag_eps_au,
                 csv_name=cfg.logging.latent_diag_csv_name,
                 ids_name=cfg.logging.latent_diag_ids_name,
+                seg_labels=seg_labels,  # NEW: Pass configurable seg_labels
             )
             callbacks.append(diag_callback)
             logger.info(f"Configured latent diagnostics every {cfg.logging.latent_diag_every_n_epochs} epochs")
+
+    # Active Units (AU) callback - canonical latent activity tracking
+    if cfg.logging.get("au_dense_until", -1) >= 0:
+        val_dataset = val_loader.dataset  # Get underlying dataset from DataLoader
+
+        au_callback = ActiveUnitsCallback(
+            run_dir=run_dir_str,
+            val_dataset=val_dataset,
+            au_dense_until=cfg.logging.get("au_dense_until", 15),
+            au_sparse_interval=cfg.logging.get("au_sparse_interval", 5),
+            au_subset_fraction=cfg.logging.get("au_subset_fraction", 0.25),
+            au_batch_size=cfg.logging.get("au_batch_size", 64),
+            eps_au=cfg.logging.get("eps_au", 0.01),
+            au_subset_seed=cfg.logging.get("au_subset_seed", 42),
+        )
+        callbacks.append(au_callback)
+
+        n_val = len(val_dataset)
+        n_subset = ceil(cfg.logging.get("au_subset_fraction", 0.25) * n_val)
+        logger.info(
+            f"Configured Active Units (AU) callback: "
+            f"dense until epoch {cfg.logging.get('au_dense_until', 15)}, "
+            f"then every {cfg.logging.get('au_sparse_interval', 5)} epochs, "
+            f"subset={n_subset}/{n_val} samples ({cfg.logging.get('au_subset_fraction', 0.25):.1%})"
+        )
 
     # Custom training logging callback (replaces tqdm)
     min_logs_per_epoch = cfg.logging.get("min_logs_per_epoch", 3)
