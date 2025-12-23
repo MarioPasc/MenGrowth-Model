@@ -240,7 +240,6 @@ def main():
                 every_n_epochs=cfg.logging.latent_diag_every_n_epochs,
                 num_samples=cfg.logging.latent_diag_num_samples,
                 shift_vox=cfg.logging.latent_diag_shift_vox,
-                eps_au=cfg.logging.latent_diag_eps_au,
                 csv_name=cfg.logging.latent_diag_csv_name,
                 ids_name=cfg.logging.latent_diag_ids_name,
                 seg_labels=seg_labels,  # NEW: Pass configurable seg_labels
