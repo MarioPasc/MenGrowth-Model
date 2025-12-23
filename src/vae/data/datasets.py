@@ -22,7 +22,7 @@ from .transforms import get_train_transforms, get_val_transforms
 logger = logging.getLogger(__name__)
 
 
-def safe_collate(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+def safe_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Custom collate function that handles both numpy arrays and tensors.
 
     This collate function ensures that data is always converted to tensors,
@@ -37,7 +37,7 @@ def safe_collate(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         batch: List of data dictionaries from the dataset.
 
     Returns:
-        Collated batch dictionary with tensor values for image/seg keys.
+        Collated batch dictionary with tensor values for image/seg keys and explicit batch_size.
     """
     if not batch:
         return {}
@@ -69,6 +69,10 @@ def safe_collate(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         else:
             # For other types (strings, etc.), keep as list
             collated[key] = values
+
+    # Add explicit batch_size to help PyTorch Lightning's batch size inference
+    # This prevents warnings about ambiguous batch size detection
+    collated["batch_size"] = len(batch)
 
     return collated
 

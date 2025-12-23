@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any
 import pandas as pd
 import torch
 from pytorch_lightning.callbacks import Callback
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -428,8 +428,11 @@ class RunMetadataCallback(Callback):
         # Ensure directory exists
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Convert OmegaConf objects to plain Python types for JSON serialization
+        meta_serializable = OmegaConf.to_container(meta, resolve=True)
+
         # Write JSON
         with open(self.meta_path, "w") as f:
-            json.dump(meta, f, indent=2)
+            json.dump(meta_serializable, f, indent=2)
 
         logger.info(f"Saved run metadata to {self.meta_path}")
