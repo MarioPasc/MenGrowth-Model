@@ -23,6 +23,24 @@ from omegaconf import DictConfig, OmegaConf
 logger = logging.getLogger(__name__)
 
 
+def _convert_for_json(obj):
+    """Recursively convert OmegaConf objects to plain Python types.
+
+    Args:
+        obj: Object to convert (may contain nested OmegaConf objects).
+
+    Returns:
+        JSON-serializable version of obj.
+    """
+    if OmegaConf.is_config(obj):
+        return OmegaConf.to_container(obj, resolve=True)
+    elif isinstance(obj, dict):
+        return {k: _convert_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_for_json(v) for v in obj]
+    return obj
+
+
 class TidyEpochCSVCallback(Callback):
     """Write epoch-level metrics to tidy CSV (one row per epoch).
 
@@ -429,7 +447,7 @@ class RunMetadataCallback(Callback):
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Convert OmegaConf objects to plain Python types for JSON serialization
-        meta_serializable = OmegaConf.to_container(meta, resolve=True)
+        meta_serializable = _convert_for_json(meta)
 
         # Write JSON
         with open(self.meta_path, "w") as f:
