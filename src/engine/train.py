@@ -174,7 +174,7 @@ def main():
     checkpoint_callback = ModelCheckpoint(
         dirpath=run_dir / "checkpoints",
         filename="vae-{epoch:03d}-{val_loss:.4f}",
-        monitor="val/loss",
+        monitor="val_epoch/loss",
         mode="min",
         save_top_k=3,
         save_last=True,
