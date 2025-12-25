@@ -44,6 +44,7 @@ from vae.data import build_subject_index, create_train_val_split, get_dataloader
 from vae.training import (
     VAELitModule,
     TCVAELitModule,
+    DIPVAELitModule,
     ReconstructionCallback,
     TrainingLoggingCallback,
     ActiveUnitsCallback,
@@ -87,16 +88,19 @@ def get_experiment_info(cfg: OmegaConf) -> tuple:
         cfg: Configuration object.
 
     Returns:
-        Tuple of (experiment_name, is_tcvae).
+        Tuple of (experiment_name, variant_type).
+        variant_type: "baseline", "tcvae", or "dipvae"
     """
     # Check for model variant
     variant = cfg.model.get("variant", None)
 
-    if variant == "tcvae_sbd":
-        return "exp2_tcvae_sbd", True
+    if variant == "dipvae_sbd":
+        return "exp2_dipvae_sbd", "dipvae"
+    elif variant == "tcvae_sbd":
+        return "exp2_tcvae_sbd", "tcvae"
     else:
         # Default to Exp1 baseline
-        return "exp1_baseline_vae", False
+        return "exp1_baseline_vae", "baseline"
 
 
 def main():
@@ -107,7 +111,7 @@ def main():
     cfg = OmegaConf.load(args.config)
 
     # Determine experiment type
-    experiment_name, is_tcvae = get_experiment_info(cfg)
+    experiment_name, variant_type = get_experiment_info(cfg)
 
     # Create run directory
     run_dir = create_run_dir(cfg.logging.save_dir, experiment_name=experiment_name)
@@ -148,8 +152,18 @@ def main():
     # Create model and Lightning module based on experiment type
     logger.info("Creating model...")
 
-    if is_tcvae:
-        # Exp2: β-TCVAE with SBD
+    if variant_type == "dipvae":
+        # Exp2b: DIP-VAE with SBD
+        lit_module = DIPVAELitModule.from_config(cfg)
+        logger.info("Created DIPVAELitModule")
+        logger.info(f"  SBD grid size: {cfg.model.sbd_grid_size}")
+        logger.info(f"  SBD upsample mode: {cfg.model.get('sbd_upsample_mode', 'resize_conv')}")
+        logger.info(f"  λ_od: {cfg.loss.lambda_od}, λ_d: {cfg.loss.lambda_d}")
+        logger.info(f"  Lambda warmup epochs: {cfg.loss.get('lambda_cov_annealing_epochs', 0)}")
+        logger.info(f"  Posterior logvar_min: {cfg.train.get('posterior_logvar_min', -6.0)}")
+        logger.info(f"  Gradient checkpointing: {cfg.train.get('gradient_checkpointing', False)}")
+    elif variant_type == "tcvae":
+        # Exp2a: β-TCVAE with SBD
         n_train = len(train_subjects)
         lit_module = TCVAELitModule.from_config(cfg, n_train=n_train)
         logger.info(f"Created TCVAELitModule with N_train={n_train}")
@@ -173,7 +187,7 @@ def main():
     # Model checkpoint callback
     checkpoint_callback = ModelCheckpoint(
         dirpath=run_dir / "checkpoints",
-        filename="vae-{epoch:03d}-{val_loss:.4f}",
+        filename="vae-{epoch:03d}",  # Simplified: checkpoint monitors val_epoch/loss
         monitor="val_epoch/loss",
         mode="min",
         save_top_k=3,

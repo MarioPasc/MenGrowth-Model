@@ -2,11 +2,12 @@
 
 This module implements training logic for:
 - Exp1: Baseline 3D VAE with ELBO loss (VAELitModule)
-- Exp2: β-TCVAE with SBD and TC loss decomposition (TCVAELitModule)
+- Exp2a: β-TCVAE with SBD and TC loss decomposition (TCVAELitModule)
+- Exp2b: DIP-VAE with SBD and covariance regularization (DIPVAELitModule)
 
-Both modules include:
+All modules include:
 - Training and validation steps with respective losses
-- Annealing schedules for KL/TC weights
+- Annealing schedules for KL/TC/covariance weights
 - Logging of all loss components
 - AdamW optimizer configuration
 """
@@ -19,7 +20,13 @@ import pytorch_lightning as pl
 from omegaconf import DictConfig
 
 from ..models import BaselineVAE, TCVAESBD
-from ..losses import compute_elbo, compute_tcvae_loss, get_capacity_schedule
+from ..losses import (
+    compute_elbo,
+    compute_tcvae_loss,
+    compute_dipvae_loss,
+    get_capacity_schedule,
+    get_lambda_cov_schedule,
+)
 from ..losses.elbo import get_beta_schedule
 from ..losses.tcvae import get_beta_tc_schedule
 
@@ -601,6 +608,334 @@ class TCVAELitModule(pl.LightningModule):
         # Latent statistics
         self.log("val_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
+        self.log("val_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
+        self.log("val_epoch/z_std", z.std(), on_step=False, on_epoch=True)
+
+        return loss_dict["loss"]
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        """Configure AdamW optimizer.
+
+        Returns:
+            AdamW optimizer instance.
+        """
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.lr,
+        )
+        return optimizer
+
+
+class DIPVAELitModule(pl.LightningModule):
+    """PyTorch Lightning module for DIP-VAE training with SBD.
+
+    DIP-VAE-II uses covariance matching to encourage disentanglement
+    without requiring density estimation (unlike TC-VAE's MWS).
+
+    Loss = recon + KL + λ_od × ||Cov_offdiag||_F² + λ_d × ||diag(Cov) - 1||_2²
+
+    Reference:
+        Kumar et al. "Variational Inference of Disentangled Latent Concepts
+        from Unlabeled Observations" (ICLR 2018), arXiv:1711.00848
+
+    Attributes:
+        model: The TCVAESBD model instance.
+        lr: Learning rate for optimizer.
+        lambda_od: Weight for off-diagonal covariance penalty.
+        lambda_d: Weight for diagonal covariance penalty.
+        lambda_cov_annealing_epochs: Number of epochs for lambda warmup.
+        current_lambda_od: Current lambda_od value (updated each epoch).
+        current_lambda_d: Current lambda_d value (updated each epoch).
+    """
+
+    def __init__(
+        self,
+        model: TCVAESBD,
+        lr: float = 1e-4,
+        lambda_od: float = 10.0,
+        lambda_d: float = 5.0,
+        lambda_cov_annealing_epochs: int = 40,
+        compute_in_fp32: bool = True,
+        loss_reduction: str = "mean",
+        kl_free_bits: float = 0.0,
+        kl_free_bits_mode: str = "batch_mean",
+        use_ddp_gather: bool = True,
+    ):
+        """Initialize DIPVAELitModule.
+
+        Args:
+            model: TCVAESBD model instance.
+            lr: Learning rate for AdamW optimizer.
+            lambda_od: Weight for off-diagonal covariance penalty (default: 10.0).
+            lambda_d: Weight for diagonal covariance penalty (default: 5.0).
+            lambda_cov_annealing_epochs: Number of epochs for linear lambda warmup.
+                Default: 40 (prevents optimizer shock).
+            compute_in_fp32: If True, compute covariance in FP32 for stability.
+            loss_reduction: Loss reduction strategy ("mean" or "sum").
+                Default "mean" for numerical stability with large volumes.
+            kl_free_bits: Minimum KL threshold per latent dimension (nats).
+            kl_free_bits_mode: Free Bits clamping mode ("batch_mean" or "per_sample").
+            use_ddp_gather: If True, use all-gather when DDP active (default: True).
+        """
+        super().__init__()
+        self.save_hyperparameters(ignore=["model"])
+
+        self.model = model
+        self.lr = lr
+        self.lambda_od = lambda_od
+        self.lambda_d = lambda_d
+        self.lambda_cov_annealing_epochs = lambda_cov_annealing_epochs
+        self.compute_in_fp32 = compute_in_fp32
+        self.loss_reduction = loss_reduction
+        self.kl_free_bits = kl_free_bits
+        self.kl_free_bits_mode = kl_free_bits_mode
+        self.use_ddp_gather = use_ddp_gather
+
+        # Initialize current lambda values (updated via schedule)
+        self.current_lambda_od = 0.0
+        self.current_lambda_d = 0.0
+
+    @classmethod
+    def from_config(cls, cfg: DictConfig) -> "DIPVAELitModule":
+        """Create DIPVAELitModule from configuration.
+
+        Args:
+            cfg: OmegaConf configuration object.
+
+        Returns:
+            Configured DIPVAELitModule instance.
+        """
+        # Determine num_groups from norm config
+        num_groups = 8
+        if cfg.model.norm == "GROUP":
+            num_groups = 8
+
+        # Get SBD grid size
+        sbd_grid_size = tuple(cfg.model.sbd_grid_size)
+
+        # Get SBD upsample mode
+        sbd_upsample_mode = cfg.model.get("sbd_upsample_mode", "resize_conv")
+
+        # Get posterior variance floor
+        posterior_logvar_min = cfg.train.get("posterior_logvar_min", -6.0)
+
+        # Get gradient checkpointing flag
+        gradient_checkpointing = cfg.train.get("gradient_checkpointing", False)
+
+        model = TCVAESBD(
+            input_channels=cfg.model.input_channels,
+            z_dim=cfg.model.z_dim,
+            base_filters=cfg.model.base_filters,
+            num_groups=num_groups,
+            sbd_grid_size=sbd_grid_size,
+            sbd_upsample_mode=sbd_upsample_mode,
+            posterior_logvar_min=posterior_logvar_min,
+            gradient_checkpointing=gradient_checkpointing,
+        )
+
+        return cls(
+            model=model,
+            lr=cfg.train.lr,
+            lambda_od=cfg.loss.lambda_od,
+            lambda_d=cfg.loss.lambda_d,
+            lambda_cov_annealing_epochs=cfg.loss.get("lambda_cov_annealing_epochs", 0),
+            compute_in_fp32=cfg.loss.get("compute_in_fp32", True),
+            loss_reduction=cfg.loss.get("reduction", cfg.train.get("loss_reduction", "mean")),
+            kl_free_bits=cfg.train.get("kl_free_bits", 0.0),
+            kl_free_bits_mode=cfg.train.get("kl_free_bits_mode", "batch_mean"),
+            use_ddp_gather=cfg.loss.get("use_ddp_gather", True),
+        )
+
+    def on_train_epoch_start(self) -> None:
+        """Update lambda_od and lambda_d at the start of each training epoch."""
+        self.current_lambda_od = get_lambda_cov_schedule(
+            epoch=self.current_epoch,
+            lambda_target=self.lambda_od,
+            lambda_annealing_epochs=self.lambda_cov_annealing_epochs,
+        )
+        self.current_lambda_d = get_lambda_cov_schedule(
+            epoch=self.current_epoch,
+            lambda_target=self.lambda_d,
+            lambda_annealing_epochs=self.lambda_cov_annealing_epochs,
+        )
+        logger.debug(
+            f"Epoch {self.current_epoch}: lambda_od = {self.current_lambda_od:.4f}, "
+            f"lambda_d = {self.current_lambda_d:.4f}"
+        )
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass through DIP-VAE+SBD.
+
+        Args:
+            x: Input tensor [B, C, D, H, W].
+
+        Returns:
+            Tuple of (x_hat, mu, logvar, z).
+        """
+        return self.model(x)
+
+    def training_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+        batch_idx: int,
+    ) -> torch.Tensor:
+        """Execute single training step.
+
+        Args:
+            batch: Dict containing "image" tensor [B, C, D, H, W].
+            batch_idx: Index of current batch.
+
+        Returns:
+            Total loss for optimization.
+        """
+        x = batch["image"]
+
+        # Forward pass
+        x_hat, mu, logvar, z = self.model(x)
+
+        # Compute DIP-VAE loss
+        loss_dict = compute_dipvae_loss(
+            x=x,
+            x_hat=x_hat,
+            mu=mu,
+            logvar=logvar,
+            z=z,
+            lambda_od=self.current_lambda_od,
+            lambda_d=self.current_lambda_d,
+            compute_in_fp32=self.compute_in_fp32,
+            reduction=self.loss_reduction,
+            kl_free_bits=self.kl_free_bits,
+            kl_free_bits_mode=self.kl_free_bits_mode,
+            use_ddp_gather=self.use_ddp_gather,
+        )
+
+        # === STEP LOGGING (minimal) ===
+        self.log("train_step/loss", loss_dict["loss"], on_step=True, on_epoch=False, prog_bar=False)
+
+        # === EPOCH LOGGING (comprehensive) ===
+        self.log("train_epoch/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log("train_epoch/recon", loss_dict["recon"], on_step=False, on_epoch=True)
+
+        # DIP-VAE covariance penalties (weighted)
+        self.log("train_epoch/cov_penalty",
+                 loss_dict["cov_penalty_od"] + loss_dict["cov_penalty_d"],
+                 on_step=False, on_epoch=True)
+        self.log("train_epoch/cov_penalty_od", loss_dict["cov_penalty_od"], on_step=False, on_epoch=True)
+        self.log("train_epoch/cov_penalty_d", loss_dict["cov_penalty_d"], on_step=False, on_epoch=True)
+
+        # Covariance diagnostics (unweighted)
+        self.log("train_epoch/cov_offdiag_fro", loss_dict["cov_offdiag_fro"], on_step=False, on_epoch=True)
+        self.log("train_epoch/cov_diag_l2", loss_dict["cov_diag_l2"], on_step=False, on_epoch=True)
+
+        # KL divergence
+        self.log("train_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_constrained", loss_dict["kl_constrained"], on_step=False, on_epoch=True)
+
+        # Normalized metrics (resolution-independent)
+        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
+        z_dim = mu.shape[1]
+        self.log("train_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        self.log("train_epoch/recon_sum", loss_dict["recon_sum"], on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
+
+        # Latent statistics
+        self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/logvar_min", logvar.min(), on_step=False, on_epoch=True)
+        self.log("train_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/z_std", z.std(), on_step=False, on_epoch=True)
+
+        # === SCHEDULE LOGGING ===
+        self.log("sched/lambda_od", self.current_lambda_od, on_step=False, on_epoch=True)
+        self.log("sched/lambda_d", self.current_lambda_d, on_step=False, on_epoch=True)
+
+        # Schedule state (linear warm-up for lambda)
+        if self.lambda_cov_annealing_epochs > 0:
+            phase = min(1.0, self.current_epoch / self.lambda_cov_annealing_epochs)
+            self.log("sched/lambda_phase", phase, on_step=False, on_epoch=True)
+
+        # === COLLAPSE PROXIES ===
+        # Expected KL floor from free bits
+        if self.kl_free_bits > 0.0:
+            expected_kl_floor = z_dim * self.kl_free_bits
+            self.log("sched/expected_kl_floor", expected_kl_floor, on_step=False, on_epoch=True)
+            self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
+
+        # === OPTIMIZER LOGGING ===
+        opt = self.optimizers()
+        if opt is not None:
+            current_lr = opt.param_groups[0]["lr"]
+            self.log("opt/lr", current_lr, on_step=False, on_epoch=True)
+
+        return loss_dict["loss"]
+
+    def validation_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+        batch_idx: int,
+    ) -> torch.Tensor:
+        """Execute single validation step.
+
+        Args:
+            batch: Dict containing "image" tensor [B, C, D, H, W].
+            batch_idx: Index of current batch.
+
+        Returns:
+            Total loss.
+        """
+        x = batch["image"]
+
+        # Forward pass
+        x_hat, mu, logvar, z = self.model(x)
+
+        # Compute DIP-VAE loss
+        loss_dict = compute_dipvae_loss(
+            x=x,
+            x_hat=x_hat,
+            mu=mu,
+            logvar=logvar,
+            z=z,
+            lambda_od=self.current_lambda_od,
+            lambda_d=self.current_lambda_d,
+            compute_in_fp32=self.compute_in_fp32,
+            reduction=self.loss_reduction,
+            kl_free_bits=self.kl_free_bits,
+            kl_free_bits_mode=self.kl_free_bits_mode,
+            use_ddp_gather=self.use_ddp_gather,
+        )
+
+        # === STEP LOGGING (minimal) ===
+        self.log("val_step/loss", loss_dict["loss"], on_step=True, on_epoch=False, prog_bar=False)
+
+        # === EPOCH LOGGING (comprehensive) ===
+        self.log("val_epoch/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log("val_epoch/recon", loss_dict["recon"], on_step=False, on_epoch=True)
+
+        # DIP-VAE covariance penalties
+        self.log("val_epoch/cov_penalty",
+                 loss_dict["cov_penalty_od"] + loss_dict["cov_penalty_d"],
+                 on_step=False, on_epoch=True)
+        self.log("val_epoch/cov_penalty_od", loss_dict["cov_penalty_od"], on_step=False, on_epoch=True)
+        self.log("val_epoch/cov_penalty_d", loss_dict["cov_penalty_d"], on_step=False, on_epoch=True)
+
+        # Covariance diagnostics
+        self.log("val_epoch/cov_offdiag_fro", loss_dict["cov_offdiag_fro"], on_step=False, on_epoch=True)
+        self.log("val_epoch/cov_diag_l2", loss_dict["cov_diag_l2"], on_step=False, on_epoch=True)
+
+        # KL divergence
+        self.log("val_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
+        self.log("val_epoch/kl_constrained", loss_dict["kl_constrained"], on_step=False, on_epoch=True)
+
+        # Normalized metrics (resolution-independent)
+        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
+        z_dim = mu.shape[1]
+        self.log("val_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        self.log("val_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
+
+        # Latent statistics
+        self.log("val_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
+        self.log("val_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
+        self.log("val_epoch/logvar_min", logvar.min(), on_step=False, on_epoch=True)
         self.log("val_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/z_std", z.std(), on_step=False, on_epoch=True)
 

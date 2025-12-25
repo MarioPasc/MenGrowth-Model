@@ -38,6 +38,8 @@ class TCVAESBD(nn.Module):
         base_filters: int = 32,
         num_groups: int = 8,
         sbd_grid_size: Tuple[int, int, int] = (8, 8, 8),
+        sbd_upsample_mode: str = "resize_conv",
+        posterior_logvar_min: float = -6.0,
         gradient_checkpointing: bool = False,
     ):
         """Initialize TCVAESBD.
@@ -48,12 +50,16 @@ class TCVAESBD(nn.Module):
             base_filters: Base number of filters for encoder/decoder.
             num_groups: Number of groups for GroupNorm.
             sbd_grid_size: Spatial resolution for SBD broadcast grid.
+            sbd_upsample_mode: SBD upsampling method ("resize_conv" or "deconv").
+            posterior_logvar_min: Minimum log-variance for posterior (prevents underflow).
+                Default: -6.0 (exp(-6) ≈ 0.0025 variance).
             gradient_checkpointing: If True, use gradient checkpointing
                 on encoder/decoder blocks to reduce memory.
         """
         super().__init__()
 
         self.z_dim = z_dim
+        self.posterior_logvar_min = posterior_logvar_min
         self.gradient_checkpointing = gradient_checkpointing
 
         # Encoder: same as Exp1 baseline
@@ -71,6 +77,7 @@ class TCVAESBD(nn.Module):
             base_filters=base_filters,
             grid_size=sbd_grid_size,
             num_groups=num_groups,
+            upsample_mode=sbd_upsample_mode,
         )
 
         # Store checkpointing flag
@@ -153,22 +160,32 @@ class TCVAESBD(nn.Module):
         self,
         mu: torch.Tensor,
         logvar: torch.Tensor,
-    ) -> torch.Tensor:
-        """Reparameterization trick for sampling from posterior.
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Reparameterization trick for sampling from posterior with variance floor.
 
         z = mu + eps * exp(0.5 * logvar), where eps ~ N(0, I)
 
+        CRITICAL: Applies variance floor BEFORE sampling to ensure numerical stability.
+        The clamped logvar is returned for consistent KL computation in the loss.
+
         Args:
             mu: Mean of posterior [B, z_dim].
-            logvar: Log-variance of posterior [B, z_dim].
+            logvar: Log-variance of posterior [B, z_dim] (unclamped).
 
         Returns:
             z: Sampled latent vector [B, z_dim].
+            logvar_clamped: Clamped log-variance [B, z_dim] (for loss computation).
         """
-        std = torch.exp(0.5 * logvar)
+        # Apply variance floor BEFORE sampling
+        logvar_clamped = torch.clamp(logvar, min=self.posterior_logvar_min)
+
+        # Sample using clamped variance
+        std = torch.exp(0.5 * logvar_clamped)
         eps = torch.randn_like(std)
         z = mu + eps * std
-        return z
+
+        # Return both z and clamped logvar for consistent loss computation
+        return z, logvar_clamped
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode input to latent distribution parameters.
@@ -205,10 +222,10 @@ class TCVAESBD(nn.Module):
         Returns:
             x_hat: Reconstruction [B, C, D, H, W].
             mu: Posterior mean [B, z_dim].
-            logvar: Posterior log-variance [B, z_dim].
+            logvar: Posterior log-variance [B, z_dim] (clamped for stability).
             z: Sampled latent vector [B, z_dim].
         """
-        mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
+        mu, logvar_raw = self.encode(x)
+        z, logvar = self.reparameterize(mu, logvar_raw)  # Get clamped logvar
         x_hat = self.decode(z)
-        return x_hat, mu, logvar, z
+        return x_hat, mu, logvar, z  # Return clamped logvar for loss

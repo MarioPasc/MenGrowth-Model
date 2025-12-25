@@ -34,6 +34,7 @@ class SpatialBroadcastDecoder(nn.Module):
         base_filters: int = 32,
         grid_size: Tuple[int, int, int] = (8, 8, 8),
         num_groups: int = 8,
+        upsample_mode: str = "resize_conv",
     ):
         """Initialize SpatialBroadcastDecoder.
 
@@ -43,6 +44,9 @@ class SpatialBroadcastDecoder(nn.Module):
             base_filters: Base number of filters for decoder.
             grid_size: Spatial resolution for broadcast grid (D, H, W).
             num_groups: Number of groups for GroupNorm.
+            upsample_mode: Upsampling method. Options:
+                - "resize_conv": Upsample → Conv3d (fixes checkerboard artifacts)
+                - "deconv": ConvTranspose3d (legacy mode)
         """
         super().__init__()
 
@@ -51,6 +55,7 @@ class SpatialBroadcastDecoder(nn.Module):
         self.base_filters = base_filters
         self.grid_size = grid_size
         self.num_groups = num_groups
+        self.upsample_mode = upsample_mode
 
         # Register coordinate grids as buffer (not trainable)
         coords = self._create_coordinate_grid(grid_size)
@@ -133,7 +138,11 @@ class SpatialBroadcastDecoder(nn.Module):
         out_channels: int,
         num_groups: int,
     ) -> nn.Sequential:
-        """Create an upsampling block with transposed convolution.
+        """Create an upsampling block.
+
+        Supports two modes:
+        - "resize_conv": Upsample + Conv3d (eliminates checkerboard artifacts)
+        - "deconv": ConvTranspose3d (legacy mode)
 
         Args:
             in_channels: Number of input channels.
@@ -142,15 +151,37 @@ class SpatialBroadcastDecoder(nn.Module):
 
         Returns:
             Sequential block for 2x upsampling.
+
+        Reference:
+            Odena et al. "Deconvolution and Checkerboard Artifacts" (2016)
+            https://distill.pub/2016/deconv-checkerboard/
         """
-        return nn.Sequential(
-            nn.ConvTranspose3d(
-                in_channels, out_channels, kernel_size=4,
-                stride=2, padding=1, bias=False
-            ),
-            nn.GroupNorm(num_groups, out_channels),
-            nn.ReLU(inplace=True),
-        )
+        if self.upsample_mode == "resize_conv":
+            # Resize-conv: fixes checkerboard artifacts
+            return nn.Sequential(
+                nn.Upsample(scale_factor=2, mode="trilinear", align_corners=False),
+                nn.Conv3d(
+                    in_channels, out_channels, kernel_size=3,
+                    padding=1, bias=False
+                ),
+                nn.GroupNorm(num_groups, out_channels),
+                nn.ReLU(inplace=True),
+            )
+        elif self.upsample_mode == "deconv":
+            # Legacy ConvTranspose3d
+            return nn.Sequential(
+                nn.ConvTranspose3d(
+                    in_channels, out_channels, kernel_size=4,
+                    stride=2, padding=1, bias=False
+                ),
+                nn.GroupNorm(num_groups, out_channels),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            raise ValueError(
+                f"Invalid upsample_mode: {self.upsample_mode}. "
+                "Must be 'resize_conv' or 'deconv'."
+            )
 
     def _initialize_weights(self):
         """Initialize network weights using He initialization."""

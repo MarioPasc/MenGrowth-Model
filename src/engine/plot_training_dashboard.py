@@ -78,11 +78,15 @@ def detect_experiment_type(df: pd.DataFrame) -> str:
         df: Epoch metrics DataFrame.
 
     Returns:
-        Experiment type: "exp1" (baseline VAE) or "exp2" (TC-VAE).
+        Experiment type: "exp1" (baseline VAE), "exp2_tc" (TC-VAE), or "exp2_dip" (DIP-VAE).
     """
-    # Exp2 has TC decomposition metrics
-    if "train_epoch/mi" in df.columns and "train_epoch/tc" in df.columns:
-        return "exp2"
+    # Exp2b: DIP-VAE has covariance penalty metrics
+    if "train_epoch/cov_penalty" in df.columns:
+        return "exp2_dip"
+    # Exp2a: TC-VAE has TC decomposition metrics
+    elif "train_epoch/mi" in df.columns and "train_epoch/tc" in df.columns:
+        return "exp2_tc"
+    # Exp1: Baseline VAE
     else:
         return "exp1"
 
@@ -128,13 +132,20 @@ def plot_dashboard(df: pd.DataFrame, experiment_type: str, output_path: Path, dp
             ax.plot(epoch, df["val_epoch/kl"], label="Val KL", linewidth=1.5, linestyle="--")
         ax.set_ylabel("KL Loss")
         ax.set_title("KL Regularization")
-    else:
-        # Exp2: TC decomposition (MI, TC, DWKL)
+    elif experiment_type == "exp2_tc":
+        # Exp2a: TC decomposition (MI, TC, DWKL)
         ax.plot(epoch, df["train_epoch/mi"], label="MI", linewidth=1.5, alpha=0.7)
         ax.plot(epoch, df["train_epoch/tc"], label="TC", linewidth=1.5, alpha=0.7)
         ax.plot(epoch, df["train_epoch/dwkl"], label="DWKL", linewidth=1.5, alpha=0.7)
         ax.set_ylabel("TC Decomposition")
         ax.set_title("TC-VAE Decomposition (MI, TC, DWKL)")
+    elif experiment_type == "exp2_dip":
+        # Exp2b: DIP-VAE covariance penalties
+        ax.plot(epoch, df["train_epoch/cov_penalty"], label="Total Cov Penalty", linewidth=1.5)
+        ax.plot(epoch, df["train_epoch/cov_penalty_od"], label="Off-diag", linewidth=1.5, linestyle="--", alpha=0.7)
+        ax.plot(epoch, df["train_epoch/cov_penalty_d"], label="Diag", linewidth=1.5, linestyle=":", alpha=0.7)
+        ax.set_ylabel("Covariance Penalty")
+        ax.set_title("DIP-VAE Covariance Penalties")
     ax.set_xlabel("Epoch")
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -154,8 +165,8 @@ def plot_dashboard(df: pd.DataFrame, experiment_type: str, output_path: Path, dp
                     linewidth=1.5, color="C3", linestyle="--", alpha=0.7)
             ax2.set_ylabel("Expected KL Floor (nats)")
             ax2.legend(loc="upper right")
-    else:
-        # Exp2: Beta_tc schedule
+    elif experiment_type == "exp2_tc":
+        # Exp2a: Beta_tc schedule
         if "sched/beta_tc" in df.columns:
             ax.plot(epoch, df["sched/beta_tc"], label="Beta TC", linewidth=1.5, color="C2")
             ax.set_ylabel("Beta TC")
@@ -165,6 +176,21 @@ def plot_dashboard(df: pd.DataFrame, experiment_type: str, output_path: Path, dp
             ax2 = ax.twinx()
             ax2.plot(epoch, df["sched/expected_kl_floor"], label="Expected KL Floor",
                     linewidth=1.5, color="C3", linestyle="--", alpha=0.7)
+            ax2.set_ylabel("Expected KL Floor (nats)")
+            ax2.legend(loc="upper right")
+    elif experiment_type == "exp2_dip":
+        # Exp2b: Lambda schedule
+        if "sched/lambda_od" in df.columns:
+            ax.plot(epoch, df["sched/lambda_od"], label="λ_od", linewidth=1.5, color="C2")
+        if "sched/lambda_d" in df.columns:
+            ax.plot(epoch, df["sched/lambda_d"], label="λ_d", linewidth=1.5, color="C3", linestyle="--")
+        ax.set_ylabel("Lambda")
+        ax.set_title("DIP-VAE Lambda Schedule")
+        # Add expected KL floor if available
+        if "sched/expected_kl_floor" in df.columns:
+            ax2 = ax.twinx()
+            ax2.plot(epoch, df["sched/expected_kl_floor"], label="Expected KL Floor",
+                    linewidth=1.5, color="C4", linestyle=":", alpha=0.7)
             ax2.set_ylabel("Expected KL Floor (nats)")
             ax2.legend(loc="upper right")
     ax.set_xlabel("Epoch")

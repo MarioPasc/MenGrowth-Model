@@ -1,0 +1,87 @@
+data:
+  root_dir: "/media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train"
+  modalities: ["t1c", "t1n", "t2f", "t2w"]
+  roi_size: [128, 128, 128]
+  spacing: [1.875, 1.875, 1.875]
+  orientation: "RAS"
+  batch_size: 8
+  num_workers: 4
+  cache_rate: 1.0
+  val_split: 0.1
+  persistent_cache_subdir: "cache"
+
+model:
+  variant: "dipvae_sbd"
+  z_dim: 128
+  input_channels: 4
+  base_filters: 32
+  norm: "GROUP"
+  sbd_grid_size: [8, 8, 8]
+  sbd_upsample_mode: "resize_conv"  # NEW: "resize_conv" fixes checkerboard artifacts
+
+loss:
+  lambda_od: 10.0                      # NEW: Off-diagonal covariance penalty
+  lambda_d: 5.0                        # NEW: Diagonal covariance penalty
+  lambda_cov_annealing_epochs: 40      # NEW: Linear warmup (prevents optimizer shock)
+  compute_in_fp32: true
+  reduction: "mean"                    # CHANGED: "sum" -> "mean" for numerical stability
+  use_ddp_gather: true                 # NEW: Enable all-gather for covariance when DDP active
+
+train:
+  seed: 42
+  max_epochs: 200
+  lr: 1e-4
+  precision: "16-mixed"
+  gradient_checkpointing: true
+  accelerator: "gpu"
+  devices: 1
+
+  # Numerical stability settings
+  loss_reduction: "mean"
+  gradient_clip_val: 5.0               # CHANGED: 0.0 -> 5.0 (enable clipping)
+  gradient_clip_algorithm: "norm"
+
+  # Posterior variance floor (prevents numerical underflow)
+  posterior_logvar_min: -6.0           # NEW: exp(-6) ≈ 0.0025 variance
+
+  # Free bits (per-dimension KL threshold for posterior collapse mitigation)
+  kl_free_bits: 0.05                   # nats per dimension (0.0 = disabled)
+                                       # With batch_mean mode and z_dim=128: floor ≈ 128 × 0.05 = 6.4 nats
+                                       # Recommended range: 0.05-0.2 based on KL/recon balance
+  kl_free_bits_mode: "batch_mean"      # "per_sample" or "batch_mean"
+                                       # batch_mean: weaker, better for small batches (B=8)
+                                       # per_sample: stronger, uniform floor across samples
+
+logging:
+  save_dir: "experiments/runs"
+  recon_every_n_epochs: 5
+  num_recon_samples: 2
+  min_logs_per_epoch: 3                # Minimum console/CSV log entries per training epoch
+
+  # Latent diagnostics (lightweight disentanglement metrics)
+  latent_diag_every_n_epochs: 10
+  latent_diag_num_samples: 32
+  latent_diag_shift_vox: 5
+  latent_diag_csv_name: "latent_diag/metrics.csv"
+  latent_diag_ids_name: "latent_diag/ids.txt"
+
+  # Active Units (AU) callback - canonical latent activity metric
+  au_dense_until: 15                   # Dense logging (every epoch) for epochs 0..15
+  au_sparse_interval: 5                # Sparse logging (every 5 epochs) after epoch 15
+  au_subset_fraction: 0.33             # Use 33% of validation dataset for AU computation
+  au_batch_size: 64                    # Batch size for AU computation (larger = more efficient)
+  eps_au: 0.01                         # Variance threshold (nats) for active dimension counting
+  au_subset_seed: 42                   # RNG seed for reproducible subset selection
+
+  # Tidy CSV logging (one row per epoch, no NaN fragmentation)
+  tidy_dir: "logs/tidy"
+  step_log_stride: 100                 # Log every N steps for step CSV (50-200 recommended for long runs)
+
+  # Segmentation label mapping (configurable for different datasets)
+  seg_labels:
+    ncr: 1  # Necrotic core
+    ed: 2   # Edema
+    et: 3   # Enhancing tumor
+
+  # Gradient norm logging (optimization stability monitoring)
+  log_grad_norm: true
