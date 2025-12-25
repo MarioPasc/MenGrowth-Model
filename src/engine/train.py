@@ -35,7 +35,14 @@ from pathlib import Path
 from omegaconf import OmegaConf
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
+
+# Import wandb conditionally
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 # Add src to path for imports
 # sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -101,6 +108,64 @@ def get_experiment_info(cfg: OmegaConf) -> tuple:
     else:
         # Default to Exp1 baseline
         return "exp1_baseline_vae", "baseline"
+
+
+def create_logger(cfg: OmegaConf, run_dir: Path, experiment_name: str):
+    """Create logger based on config (wandb or csv).
+
+    Args:
+        cfg: Configuration object
+        run_dir: Run directory path
+        experiment_name: Experiment name for wandb run naming
+
+    Returns:
+        CSVLogger or WandbLogger instance
+    """
+    logger_type = cfg.logging.get("logger", {}).get("type", "csv")
+
+    if logger_type == "wandb" and WANDB_AVAILABLE:
+        wandb_cfg = cfg.logging.logger.wandb
+
+        # Auto-generate run name if not provided
+        run_name = wandb_cfg.get("name", None)
+        if run_name is None:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_name = f"{experiment_name}_{timestamp}"
+
+        # Initialize WandbLogger
+        wandb_logger = WandbLogger(
+            project=wandb_cfg.project,
+            entity=wandb_cfg.get("entity", None),
+            name=run_name,
+            tags=list(wandb_cfg.get("tags", [])),
+            notes=wandb_cfg.get("notes", ""),
+            offline=wandb_cfg.get("offline", True),
+            save_dir=str(run_dir / "wandb"),
+            save_code=wandb_cfg.get("save_code", True),
+            log_model=wandb_cfg.get("log_model", False),
+        )
+
+        # Log config as hyperparameters
+        wandb_logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True))
+
+        logger.info(f"Wandb logger initialized: {wandb_cfg.project}/{run_name}")
+        logger.info(f"  Offline mode: {wandb_cfg.get('offline', True)}")
+        logger.info(f"  Run dir: {run_dir / 'wandb'}")
+
+        return wandb_logger
+    else:
+        # Fallback to CSV logger
+        if logger_type == "wandb" and not WANDB_AVAILABLE:
+            logger.warning("Wandb requested but not available. Falling back to CSVLogger.")
+
+        csv_logger = CSVLogger(
+            save_dir=run_dir / "logs",
+            name="",
+            version="",
+        )
+        logger.info("CSV logger initialized")
+        return csv_logger
 
 
 def main():
@@ -184,23 +249,27 @@ def main():
     # Setup callbacks
     callbacks = []
 
-    # Model checkpoint callback
+    # Model checkpoint callback (use config settings if available)
+    ckpt_cfg = cfg.logging.get("checkpointing", {})
     checkpoint_callback = ModelCheckpoint(
         dirpath=run_dir / "checkpoints",
-        filename="vae-{epoch:03d}",  # Simplified: checkpoint monitors val_epoch/loss
-        monitor="val_epoch/loss",
-        mode="min",
-        save_top_k=3,
-        save_last=True,
+        filename=ckpt_cfg.get("filename", "vae-{epoch:03d}"),
+        monitor=ckpt_cfg.get("monitor", "val_epoch/loss"),
+        mode=ckpt_cfg.get("mode", "min"),
+        save_top_k=ckpt_cfg.get("save_top_k", 3),
+        save_last=ckpt_cfg.get("save_last", True),
+        every_n_epochs=ckpt_cfg.get("every_n_epochs", 1),
     )
     callbacks.append(checkpoint_callback)
 
     # Reconstruction visualization callback
+    log_to_wandb = cfg.logging.get("logger", {}).get("type", "csv") == "wandb"
     recon_callback = ReconstructionCallback(
         run_dir=run_dir_str,
-        recon_every_n_epochs=cfg.logging.recon_every_n_epochs,
-        num_recon_samples=cfg.logging.num_recon_samples,
+        recon_every_n_epochs=cfg.logging.visual.get("recon_every_n_epochs", cfg.logging.get("recon_every_n_epochs", 5)),
+        num_recon_samples=cfg.logging.visual.get("num_recon_samples", cfg.logging.get("num_recon_samples", 2)),
         modality_names=cfg.data.modalities,
+        log_to_wandb=log_to_wandb,
     )
     callbacks.append(recon_callback)
 
@@ -295,20 +364,50 @@ def main():
     callbacks.append(logging_callback)
     logger.info(f"Configured logging: at least {min_logs_per_epoch} logs per training epoch")
 
-    # Setup logger
-    csv_logger = CSVLogger(
-        save_dir=run_dir / "logs",
-        name="",
-        version="",
-    )
+    # Wandb visual logging callbacks (if wandb is enabled)
+    if cfg.logging.get("logger", {}).get("type", "csv") == "wandb":
+        from vae.training.wandb_callbacks import (
+            WandbDashboardCallback,
+            WandbLatentVizCallback,
+        )
+        from vae.training.system_callbacks import SystemMetricsCallback
 
-    # Calculate log_every_n_steps for at least 3 entries per epoch in CSV
-    # Estimate number of training batches
-    n_train_samples = len(train_subjects)
-    batch_size = cfg.data.batch_size
-    approx_batches_per_epoch = max(1, n_train_samples // batch_size)
-    log_every_n_steps = max(1, approx_batches_per_epoch // min_logs_per_epoch)
-    logger.info(f"CSV logging: every {log_every_n_steps} steps (~{approx_batches_per_epoch // log_every_n_steps} entries/epoch)")
+        # System metrics (GPU, throughput)
+        sys_callback = SystemMetricsCallback()
+        callbacks.append(sys_callback)
+        logger.info("Configured system metrics logging")
+
+        # Dashboard visualization
+        if cfg.logging.visual.get("log_dashboard", False):
+            dashboard_callback = WandbDashboardCallback(
+                run_dir=run_dir,
+                every_n_epochs=cfg.logging.visual.get("dashboard_every_n_epochs", 10),
+            )
+            callbacks.append(dashboard_callback)
+            logger.info(f"Configured wandb dashboard logging (every {cfg.logging.visual.dashboard_every_n_epochs} epochs)")
+
+        # Latent space visualization
+        if cfg.logging.visual.get("log_latent_viz", False):
+            latent_viz_callback = WandbLatentVizCallback(
+                every_n_epochs=cfg.logging.visual.get("latent_viz_every_n_epochs", 20),
+                n_samples=cfg.logging.visual.get("latent_viz_n_samples", 100),
+            )
+            callbacks.append(latent_viz_callback)
+            logger.info(f"Configured latent visualization (every {cfg.logging.visual.latent_viz_every_n_epochs} epochs)")
+
+    # Setup logger (wandb or csv based on config)
+    pl_logger = create_logger(cfg, run_dir, experiment_name)
+
+    # Calculate log_every_n_steps from config or calculate default
+    log_every_n_steps = cfg.logging.get("log_every_n_steps", None)
+    if log_every_n_steps is None:
+        # Fall back to legacy calculation
+        n_train_samples = len(train_subjects)
+        batch_size = cfg.data.batch_size
+        approx_batches_per_epoch = max(1, n_train_samples // batch_size)
+        log_every_n_steps = max(1, approx_batches_per_epoch // min_logs_per_epoch)
+
+    logger.info(f"Logging every {log_every_n_steps} steps")
 
     # Extract gradient clipping config
     gradient_clip_val = cfg.train.get("gradient_clip_val", None)
@@ -322,7 +421,7 @@ def main():
         devices=cfg.train.get("devices", 1),
         precision=cfg.train.precision,
         callbacks=callbacks,
-        logger=csv_logger,
+        logger=pl_logger,
         log_every_n_steps=log_every_n_steps,
         enable_progress_bar=False,  # Disabled in favor of custom logging
         deterministic=True,

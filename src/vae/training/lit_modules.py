@@ -520,6 +520,23 @@ class TCVAELitModule(pl.LightningModule):
         self.log("train_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
         self.log("train_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
 
+        # Per-modality reconstruction error
+        modality_names = ["t1c", "t1n", "t2f", "t2w"]
+        for i, mod_name in enumerate(modality_names):
+            mod_recon = torch.nn.functional.mse_loss(
+                x_hat[:, i:i+1],  # Single channel
+                x[:, i:i+1],
+                reduction="mean"
+            )
+            self.log(
+                f"train_epoch/recon_{mod_name}",
+                mod_recon,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=False,
+                sync_dist=True,
+            )
+
         # Latent statistics
         self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
         self.log("train_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
@@ -605,11 +622,64 @@ class TCVAELitModule(pl.LightningModule):
         self.log("val_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
         self.log("val_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
 
+        # Per-modality reconstruction error
+        modality_names = ["t1c", "t1n", "t2f", "t2w"]
+        for i, mod_name in enumerate(modality_names):
+            mod_recon = torch.nn.functional.mse_loss(
+                x_hat[:, i:i+1],  # Single channel
+                x[:, i:i+1],
+                reduction="mean"
+            )
+            self.log(
+                f"val_epoch/recon_{mod_name}",
+                mod_recon,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=False,
+                sync_dist=True,
+            )
+
+        # SSIM and PSNR (expensive, compute once per 10 batches on first sample)
+        if batch_idx % 10 == 0:
+            from vae.utils.image_metrics import compute_ssim_3d, compute_psnr_3d
+
+            # Compute on first sample only to save time
+            x_sample = x[0:1]  # [1, 4, 128, 128, 128]
+            x_hat_sample = x_hat[0:1]
+
+            # Per-modality SSIM/PSNR
+            for i, mod_name in enumerate(modality_names):
+                ssim_val = compute_ssim_3d(
+                    x_hat_sample[:, i:i+1],
+                    x_sample[:, i:i+1],
+                )
+                psnr_val = compute_psnr_3d(
+                    x_hat_sample[:, i:i+1],
+                    x_sample[:, i:i+1],
+                )
+
+                self.log(f"val_epoch/ssim_{mod_name}", ssim_val, on_step=False, on_epoch=True)
+                self.log(f"val_epoch/psnr_{mod_name}", psnr_val, on_step=False, on_epoch=True)
+
         # Latent statistics
         self.log("val_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/z_std", z.std(), on_step=False, on_epoch=True)
+
+        # Per-dimension latent statistics (log to wandb as histograms)
+        mu_per_dim = mu.mean(dim=0)  # [z_dim]
+        logvar_per_dim = logvar.mean(dim=0)  # [z_dim]
+
+        if self.logger and hasattr(self.logger, 'experiment'):
+            try:
+                import wandb
+                self.logger.experiment.log({
+                    "val/mu_histogram": wandb.Histogram(mu_per_dim.detach().cpu().numpy()),
+                    "val/logvar_histogram": wandb.Histogram(logvar_per_dim.detach().cpu().numpy()),
+                })
+            except Exception:
+                pass  # Silently skip if not using wandb
 
         return loss_dict["loss"]
 
@@ -838,6 +908,23 @@ class DIPVAELitModule(pl.LightningModule):
         self.log("train_epoch/recon_sum", loss_dict["recon_sum"], on_step=False, on_epoch=True)
         self.log("train_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
 
+        # Per-modality reconstruction error
+        modality_names = ["t1c", "t1n", "t2f", "t2w"]
+        for i, mod_name in enumerate(modality_names):
+            mod_recon = torch.nn.functional.mse_loss(
+                x_hat[:, i:i+1],  # Single channel
+                x[:, i:i+1],
+                reduction="mean"
+            )
+            self.log(
+                f"train_epoch/recon_{mod_name}",
+                mod_recon,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=False,
+                sync_dist=True,
+            )
+
         # Latent statistics
         self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
         self.log("train_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
@@ -932,12 +1019,65 @@ class DIPVAELitModule(pl.LightningModule):
         self.log("val_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
         self.log("val_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
 
+        # Per-modality reconstruction error
+        modality_names = ["t1c", "t1n", "t2f", "t2w"]
+        for i, mod_name in enumerate(modality_names):
+            mod_recon = torch.nn.functional.mse_loss(
+                x_hat[:, i:i+1],  # Single channel
+                x[:, i:i+1],
+                reduction="mean"
+            )
+            self.log(
+                f"val_epoch/recon_{mod_name}",
+                mod_recon,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=False,
+                sync_dist=True,
+            )
+
+        # SSIM and PSNR (expensive, compute once per 10 batches on first sample)
+        if batch_idx % 10 == 0:
+            from vae.utils.image_metrics import compute_ssim_3d, compute_psnr_3d
+
+            # Compute on first sample only to save time
+            x_sample = x[0:1]  # [1, 4, 128, 128, 128]
+            x_hat_sample = x_hat[0:1]
+
+            # Per-modality SSIM/PSNR
+            for i, mod_name in enumerate(modality_names):
+                ssim_val = compute_ssim_3d(
+                    x_hat_sample[:, i:i+1],
+                    x_sample[:, i:i+1],
+                )
+                psnr_val = compute_psnr_3d(
+                    x_hat_sample[:, i:i+1],
+                    x_sample[:, i:i+1],
+                )
+
+                self.log(f"val_epoch/ssim_{mod_name}", ssim_val, on_step=False, on_epoch=True)
+                self.log(f"val_epoch/psnr_{mod_name}", psnr_val, on_step=False, on_epoch=True)
+
         # Latent statistics
         self.log("val_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/logvar_min", logvar.min(), on_step=False, on_epoch=True)
         self.log("val_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/z_std", z.std(), on_step=False, on_epoch=True)
+
+        # Per-dimension latent statistics (log to wandb as histograms)
+        mu_per_dim = mu.mean(dim=0)  # [z_dim]
+        logvar_per_dim = logvar.mean(dim=0)  # [z_dim]
+
+        if self.logger and hasattr(self.logger, 'experiment'):
+            try:
+                import wandb
+                self.logger.experiment.log({
+                    "val/mu_histogram": wandb.Histogram(mu_per_dim.detach().cpu().numpy()),
+                    "val/logvar_histogram": wandb.Histogram(logvar_per_dim.detach().cpu().numpy()),
+                })
+            except Exception:
+                pass  # Silently skip if not using wandb
 
         return loss_dict["loss"]
 

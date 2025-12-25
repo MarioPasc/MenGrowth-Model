@@ -3,6 +3,7 @@
 from .seed import set_seed
 from .logging import setup_logging
 from .io import save_config, create_run_dir, save_split_csvs
+from .image_metrics import compute_psnr_3d, compute_ssim_3d
 
 __all__ = [
     "set_seed",
@@ -10,4 +11,6 @@ __all__ = [
     "save_config",
     "create_run_dir",
     "save_split_csvs",
+    "compute_psnr_3d",
+    "compute_ssim_3d",
 ]

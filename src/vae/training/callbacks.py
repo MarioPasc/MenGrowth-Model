@@ -234,6 +234,7 @@ class ReconstructionCallback(Callback):
         recon_every_n_epochs: int = 5,
         num_recon_samples: int = 2,
         modality_names: Optional[list] = None,
+        log_to_wandb: bool = False,
     ):
         """Initialize ReconstructionCallback.
 
@@ -242,12 +243,14 @@ class ReconstructionCallback(Callback):
             recon_every_n_epochs: Save reconstructions every N epochs.
             num_recon_samples: Number of samples to visualize.
             modality_names: Names of modality channels for labeling.
+            log_to_wandb: Whether to log reconstructions to wandb.
         """
         super().__init__()
         self.run_dir = Path(run_dir)
         self.recon_every_n_epochs = recon_every_n_epochs
         self.num_recon_samples = num_recon_samples
         self.modality_names = modality_names or ["T1c", "T1n", "T2f", "T2w"]
+        self.log_to_wandb = log_to_wandb
 
         self._val_outputs = []
 
@@ -294,6 +297,9 @@ class ReconstructionCallback(Callback):
 
         if not self._val_outputs:
             return
+
+        # Store trainer reference for wandb logging
+        self._current_trainer = trainer
 
         # Collect samples
         all_x = torch.cat([o["x"] for o in self._val_outputs], dim=0)
@@ -397,7 +403,22 @@ class ReconstructionCallback(Callback):
         plt.tight_layout()
 
         filename = f"sample_{sample_idx:02d}_{modality.lower()}_{view}.png"
-        fig.savefig(output_dir / filename, dpi=100, bbox_inches='tight')
+        save_path = output_dir / filename
+        fig.savefig(save_path, dpi=100, bbox_inches='tight')
+
+        # Log to wandb if enabled
+        if self.log_to_wandb:
+            try:
+                import wandb
+                # Get trainer from the callback context (stored during epoch end)
+                if hasattr(self, '_current_trainer') and self._current_trainer.logger and hasattr(self._current_trainer.logger, 'experiment'):
+                    self._current_trainer.logger.experiment.log({
+                        f"reconstructions/{modality.lower()}_{view}_sample_{sample_idx}": wandb.Image(str(save_path)),
+                        "epoch": self._current_trainer.current_epoch,
+                    })
+            except Exception:
+                pass  # Silently skip if wandb not available
+
         plt.close(fig)
 
 
