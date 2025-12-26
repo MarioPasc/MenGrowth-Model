@@ -15,6 +15,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+import torch.nn as nn
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 
