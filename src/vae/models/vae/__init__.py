@@ -1,6 +1,9 @@
 """VAE models module."""
 
 from .baseline import BaselineVAE
-from .tcvae_sbd import TCVAESBD
+from .vae_sbd import VAESBD
 
-__all__ = ["BaselineVAE", "TCVAESBD"]
+# Backward compatibility alias
+TCVAESBD = VAESBD
+
+__all__ = ["BaselineVAE", "VAESBD", "TCVAESBD"]

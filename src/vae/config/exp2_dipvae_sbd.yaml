@@ -12,20 +12,26 @@ data:
 
 model:
   variant: "dipvae_sbd"
+  use_sbd: false                     # RECOMMENDED: false = standard decoder, true = SBD
+                                     # Start with false to verify encoder learns informative latents
+                                     # If collapse persists, architectural changes won't help
   z_dim: 128
   input_channels: 4
   base_filters: 32
   norm: "GROUP"
+  # SBD-specific parameters (only used if use_sbd=true)
   sbd_grid_size: [8, 8, 8]
-  sbd_upsample_mode: "resize_conv"  # NEW: "resize_conv" fixes checkerboard artifacts
+  sbd_upsample_mode: "resize_conv"  # "resize_conv" prevents checkerboard artifacts
 
 loss:
-  lambda_od: 10.0                      # NEW: Off-diagonal covariance penalty
-  lambda_d: 5.0                        # NEW: Diagonal covariance penalty
-  lambda_cov_annealing_epochs: 40      # NEW: Linear warmup (prevents optimizer shock)
+  lambda_od: 10.0                      # Off-diagonal covariance penalty (DIP-VAE-II)
+  lambda_d: 5.0                        # Diagonal covariance penalty (DIP-VAE-II)
+  lambda_start_epoch: 20               # RECOMMENDED: Pre-train VAE for 20 epochs before DIP
+                                       # Allows encoder to learn informative latents first
+  lambda_cov_annealing_epochs: 40      # Linear warmup after start_epoch (prevents optimizer shock)
   compute_in_fp32: true
-  reduction: "mean"                    # CHANGED: "sum" -> "mean" for numerical stability
-  use_ddp_gather: true                 # NEW: Enable all-gather for covariance when DDP active
+  reduction: "mean"                    # "mean" for numerical stability with large 3D volumes
+  use_ddp_gather: true                 # Enable all-gather for covariance when DDP active
 
 train:
   seed: 42
@@ -45,12 +51,15 @@ train:
   posterior_logvar_min: -6.0           # NEW: exp(-6) ≈ 0.0025 variance
 
   # Free bits (per-dimension KL threshold for posterior collapse mitigation)
-  kl_free_bits: 0.05                   # nats per dimension (0.0 = disabled)
-                                       # With batch_mean mode and z_dim=128: floor ≈ 128 × 0.05 = 6.4 nats
-                                       # Recommended range: 0.05-0.2 based on KL/recon balance
+  kl_free_bits: 0.2                    # RECOMMENDED: 0.2 nats/dim for stronger collapse prevention
+                                       # With batch_mean mode and z_dim=128: floor ≈ 128 × 0.2 = 25.6 nats
+                                       # Start with 0.2, reduce to 0.1 if KL too high
   kl_free_bits_mode: "batch_mean"      # "per_sample" or "batch_mean"
                                        # batch_mean: weaker, better for small batches (B=8)
                                        # per_sample: stronger, uniform floor across samples
+
+  # Collapse diagnostics (deterministic recon, z=0 ablation, μ variance)
+  log_collapse_diagnostics: true       # Log diag/recon_mu_mse, diag/recon_z0_mse, etc.
 
 logging:
   save_dir: "experiments/runs"
@@ -77,7 +86,7 @@ logging:
     mode: "min"
     save_last: true
     every_n_epochs: 1
-    filename: "dipvae-{epoch:04d}-{val_loss:.4f}"
+    filename: "dipvae-{epoch:04d}"  # Note: {val_loss} removed (key is val_epoch/loss)
 
   # Visual logging
   visual:

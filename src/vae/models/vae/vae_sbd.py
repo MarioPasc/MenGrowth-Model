@@ -1,12 +1,12 @@
-"""β-TCVAE with Spatial Broadcast Decoder for Exp2.
+"""3D VAE with configurable decoder (standard or SBD) for Exp2.
 
-This module implements the TCVAE+SBD architecture:
-- Same 3D ResNet encoder as Exp1 (with GroupNorm)
-- Spatial Broadcast Decoder (SBD) replacing the standard decoder
+This module implements a flexible VAE architecture:
+- 3D ResNet encoder (with GroupNorm)
+- Configurable decoder: Spatial Broadcast Decoder (SBD) or standard transposed-conv
 - Support for gradient checkpointing for memory efficiency
 
 The SBD provides explicit coordinate information to the decoder,
-disentangling position from content in the latent space.
+potentially disentangling position from content in the latent space.
 """
 
 from typing import Tuple, Optional
@@ -19,8 +19,8 @@ from .baseline import Encoder3D
 from ..components import SpatialBroadcastDecoder
 
 
-class TCVAESBD(nn.Module):
-    """β-TCVAE with Spatial Broadcast Decoder.
+class VAESBD(nn.Module):
+    """3D VAE with Spatial Broadcast Decoder.
 
     Architecture:
     - Encoder: 3D ResNet with GroupNorm (same as Exp1)
@@ -29,6 +29,8 @@ class TCVAESBD(nn.Module):
 
     Forward signature:
         forward(x) -> (x_hat, mu, logvar, z)
+
+    Note: This model specifically uses SBD. For standard decoder, use BaselineVAE.
     """
 
     def __init__(
@@ -42,7 +44,7 @@ class TCVAESBD(nn.Module):
         posterior_logvar_min: float = -6.0,
         gradient_checkpointing: bool = False,
     ):
-        """Initialize TCVAESBD.
+        """Initialize VAESBD.
 
         Args:
             input_channels: Number of input channels (4 for MRI modalities).
@@ -214,7 +216,7 @@ class TCVAESBD(nn.Module):
         self,
         x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass through TCVAE+SBD.
+        """Forward pass through VAE+SBD.
 
         Args:
             x: Input tensor [B, C, D, H, W].

@@ -2,12 +2,11 @@
 
 This module implements training logic for:
 - Exp1: Baseline 3D VAE with ELBO loss (VAELitModule)
-- Exp2a: β-TCVAE with SBD and TC loss decomposition (TCVAELitModule)
-- Exp2b: DIP-VAE with SBD and covariance regularization (DIPVAELitModule)
+- Exp2: DIP-VAE with configurable decoder (standard or SBD) and covariance regularization (DIPVAELitModule)
 
 All modules include:
 - Training and validation steps with respective losses
-- Annealing schedules for KL/TC/covariance weights
+- Annealing schedules for KL/covariance weights
 - Logging of all loss components
 - AdamW optimizer configuration
 """
@@ -19,16 +18,14 @@ import torch
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 
-from ..models import BaselineVAE, TCVAESBD
+from ..models import BaselineVAE
 from ..losses import (
     compute_elbo,
-    compute_tcvae_loss,
     compute_dipvae_loss,
     get_capacity_schedule,
     get_lambda_cov_schedule,
 )
 from ..losses.elbo import get_beta_schedule
-from ..losses.tcvae import get_beta_tc_schedule
 
 
 logger = logging.getLogger(__name__)
@@ -323,393 +320,25 @@ class VAELitModule(pl.LightningModule):
         return optimizer
 
 
-class TCVAELitModule(pl.LightningModule):
-    """PyTorch Lightning module for training β-TCVAE with SBD.
-
-    Handles training loop, validation, TC-decomposed loss computation,
-    logging, and optimizer configuration.
-
-    The loss decomposes into:
-    - Reconstruction (MSE sum)
-    - Mutual Information (MI)
-    - Total Correlation (TC) - weighted by beta_tc
-    - Dimension-wise KL (DWKL)
-
-    Attributes:
-        model: The TCVAESBD model.
-        n_train: Number of training samples (for MWS estimator).
-        lr: Learning rate for optimizer.
-        alpha: Weight for MI term.
-        beta_tc_target: Target beta_tc value after annealing.
-        gamma: Weight for DWKL term.
-        beta_tc_annealing_epochs: Number of epochs for TC annealing.
-        compute_in_fp32: Whether to compute TC terms in fp32.
-        kl_free_bits: Minimum KL threshold per latent dimension.
-        kl_free_bits_mode: Free Bits clamping mode.
-        current_beta_tc: Current beta_tc value (updated each epoch).
-    """
-
-    def __init__(
-        self,
-        model: TCVAESBD,
-        n_train: int,
-        lr: float = 1e-4,
-        alpha: float = 1.0,
-        beta_tc_target: float = 6.0,
-        gamma: float = 1.0,
-        beta_tc_annealing_epochs: int = 40,
-        compute_in_fp32: bool = True,
-        loss_reduction: str = "mean",
-        kl_free_bits: float = 0.0,
-        kl_free_bits_mode: str = "batch_mean",
-    ):
-        """Initialize TCVAELitModule.
-
-        Args:
-            model: TCVAESBD model instance.
-            n_train: Number of training samples (N for MWS estimator).
-            lr: Learning rate for AdamW optimizer.
-            alpha: Weight for MI term (default 1.0).
-            beta_tc_target: Target beta_tc value after annealing.
-            gamma: Weight for DWKL term (default 1.0).
-            beta_tc_annealing_epochs: Number of epochs for TC annealing.
-            compute_in_fp32: Whether to compute TC terms in float32.
-            loss_reduction: Loss reduction strategy ("mean" or "sum").
-                           Default "mean" for numerical stability in FP16.
-            kl_free_bits: Minimum KL threshold per latent dimension (nats).
-                         Set to 0.0 to disable Free Bits (default).
-            kl_free_bits_mode: Free Bits clamping mode ("batch_mean" or "per_sample").
-                              Default "batch_mean".
-        """
-        super().__init__()
-        self.save_hyperparameters(ignore=["model"])
-
-        self.model = model
-        self.n_train = n_train
-        self.lr = lr
-        self.alpha = alpha
-        self.beta_tc_target = beta_tc_target
-        self.gamma = gamma
-        self.beta_tc_annealing_epochs = beta_tc_annealing_epochs
-        self.compute_in_fp32 = compute_in_fp32
-        self.loss_reduction = loss_reduction
-        self.kl_free_bits = kl_free_bits
-        self.kl_free_bits_mode = kl_free_bits_mode
-        self.current_beta_tc = 0.0
-
-    @classmethod
-    def from_config(cls, cfg: DictConfig, n_train: int) -> "TCVAELitModule":
-        """Create TCVAELitModule from configuration.
-
-        Args:
-            cfg: Configuration object with model, loss, and train parameters.
-            n_train: Number of training samples.
-
-        Returns:
-            Configured TCVAELitModule instance.
-        """
-        # Determine num_groups from norm config
-        num_groups = 8
-        if cfg.model.norm == "GROUP":
-            num_groups = 8
-
-        # Get SBD grid size
-        sbd_grid_size = tuple(cfg.model.sbd_grid_size)
-
-        # Get gradient checkpointing flag
-        gradient_checkpointing = cfg.train.get("gradient_checkpointing", False)
-
-        model = TCVAESBD(
-            input_channels=cfg.model.input_channels,
-            z_dim=cfg.model.z_dim,
-            base_filters=cfg.model.base_filters,
-            num_groups=num_groups,
-            sbd_grid_size=sbd_grid_size,
-            gradient_checkpointing=gradient_checkpointing,
-        )
-
-        return cls(
-            model=model,
-            n_train=n_train,
-            lr=cfg.train.lr,
-            alpha=cfg.loss.alpha,
-            beta_tc_target=cfg.loss.beta_tc_target,
-            gamma=cfg.loss.gamma,
-            beta_tc_annealing_epochs=cfg.loss.beta_tc_annealing_epochs,
-            compute_in_fp32=cfg.loss.get("compute_in_fp32", True),
-            loss_reduction=cfg.loss.get("reduction", cfg.train.get("loss_reduction", "mean")),
-            kl_free_bits=cfg.train.get("kl_free_bits", 0.0),
-            kl_free_bits_mode=cfg.train.get("kl_free_bits_mode", "batch_mean"),
-        )
-
-    def on_train_epoch_start(self) -> None:
-        """Update beta_tc at the start of each training epoch."""
-        self.current_beta_tc = get_beta_tc_schedule(
-            epoch=self.current_epoch,
-            beta_tc_target=self.beta_tc_target,
-            beta_tc_annealing_epochs=self.beta_tc_annealing_epochs,
-        )
-        logger.debug(f"Epoch {self.current_epoch}: beta_tc = {self.current_beta_tc:.4f}")
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass through TCVAE+SBD.
-
-        Args:
-            x: Input tensor [B, C, D, H, W].
-
-        Returns:
-            Tuple of (x_hat, mu, logvar, z).
-        """
-        return self.model(x)
-
-    def training_step(
-        self,
-        batch: Dict[str, torch.Tensor],
-        batch_idx: int,
-    ) -> torch.Tensor:
-        """Execute single training step.
-
-        Args:
-            batch: Dict containing "image" tensor [B, C, D, H, W].
-            batch_idx: Index of current batch.
-
-        Returns:
-            Total loss for optimization.
-        """
-        x = batch["image"]
-
-        # Forward pass
-        x_hat, mu, logvar, z = self.model(x)
-
-        # Compute β-TCVAE loss
-        loss_dict = compute_tcvae_loss(
-            x=x,
-            x_hat=x_hat,
-            mu=mu,
-            logvar=logvar,
-            z=z,
-            n_data=self.n_train,
-            alpha=self.alpha,
-            beta_tc=self.current_beta_tc,
-            gamma=self.gamma,
-            compute_in_fp32=self.compute_in_fp32,
-            reduction=self.loss_reduction,
-            kl_free_bits=self.kl_free_bits,
-            kl_free_bits_mode=self.kl_free_bits_mode,
-        )
-
-        # === STEP LOGGING (minimal) ===
-        self.log("train_step/loss", loss_dict["loss"], on_step=True, on_epoch=False, prog_bar=False)
-
-        # === EPOCH LOGGING (comprehensive) ===
-        self.log("train_epoch/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=False)
-        self.log("train_epoch/recon", loss_dict["recon"], on_step=False, on_epoch=True)
-
-        # TC-VAE decomposition (MI, TC, DWKL are the primary disentanglement diagnostics)
-        # Cite: Chen et al. 2018, arXiv:1802.04942
-        self.log("train_epoch/mi", loss_dict["mi"], on_step=False, on_epoch=True)
-        self.log("train_epoch/tc", loss_dict["tc"], on_step=False, on_epoch=True)
-        self.log("train_epoch/dwkl", loss_dict["dwkl"], on_step=False, on_epoch=True)
-        self.log("train_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
-        self.log("train_epoch/kl_constrained", loss_dict["kl_constrained"], on_step=False, on_epoch=True)
-        self.log("train_epoch/kl_free_bits_penalty", loss_dict["kl_free_bits_penalty"], on_step=False, on_epoch=True)
-
-        # Normalized metrics (resolution-independent)
-        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
-        z_dim = mu.shape[1]
-        self.log("train_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
-        self.log("train_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
-
-        # Per-modality reconstruction error
-        modality_names = ["t1c", "t1n", "t2f", "t2w"]
-        for i, mod_name in enumerate(modality_names):
-            mod_recon = torch.nn.functional.mse_loss(
-                x_hat[:, i:i+1],  # Single channel
-                x[:, i:i+1],
-                reduction="mean"
-            )
-            self.log(
-                f"train_epoch/recon_{mod_name}",
-                mod_recon,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=False,
-                sync_dist=True,
-            )
-
-        # Latent statistics
-        self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
-        self.log("train_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
-        self.log("train_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
-        self.log("train_epoch/z_std", z.std(), on_step=False, on_epoch=True)
-
-        # === SCHEDULE LOGGING ===
-        self.log("sched/beta_tc", self.current_beta_tc, on_step=False, on_epoch=True)
-
-        # Schedule state (linear warm-up for beta_tc)
-        if self.beta_tc_annealing_epochs > 0:
-            phase = min(1.0, self.current_epoch / self.beta_tc_annealing_epochs)
-            self.log("sched/beta_tc_phase", phase, on_step=False, on_epoch=True)
-
-        # === COLLAPSE PROXIES ===
-        # Expected KL floor from free bits
-        if self.kl_free_bits > 0.0:
-            expected_kl_floor = z_dim * self.kl_free_bits
-            self.log("sched/expected_kl_floor", expected_kl_floor, on_step=False, on_epoch=True)
-            self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
-
-        # === OPTIMIZER LOGGING ===
-        opt = self.optimizers()
-        if opt is not None:
-            current_lr = opt.param_groups[0]["lr"]
-            self.log("opt/lr", current_lr, on_step=False, on_epoch=True)
-
-        return loss_dict["loss"]
-
-    def validation_step(
-        self,
-        batch: Dict[str, torch.Tensor],
-        batch_idx: int,
-    ) -> torch.Tensor:
-        """Execute single validation step.
-
-        Args:
-            batch: Dict containing "image" tensor [B, C, D, H, W].
-            batch_idx: Index of current batch.
-
-        Returns:
-            Total loss.
-        """
-        x = batch["image"]
-
-        # Forward pass
-        x_hat, mu, logvar, z = self.model(x)
-
-        # Compute β-TCVAE loss
-        loss_dict = compute_tcvae_loss(
-            x=x,
-            x_hat=x_hat,
-            mu=mu,
-            logvar=logvar,
-            z=z,
-            n_data=self.n_train,
-            alpha=self.alpha,
-            beta_tc=self.current_beta_tc,
-            gamma=self.gamma,
-            compute_in_fp32=self.compute_in_fp32,
-            reduction=self.loss_reduction,
-            kl_free_bits=self.kl_free_bits,
-            kl_free_bits_mode=self.kl_free_bits_mode,
-        )
-
-        # === STEP LOGGING (minimal) ===
-        self.log("val_step/loss", loss_dict["loss"], on_step=True, on_epoch=False, prog_bar=False)
-
-        # === EPOCH LOGGING (comprehensive) ===
-        self.log("val_epoch/loss", loss_dict["loss"], on_step=False, on_epoch=True, prog_bar=False)
-        self.log("val_epoch/recon", loss_dict["recon"], on_step=False, on_epoch=True)
-
-        # TC-VAE decomposition
-        self.log("val_epoch/mi", loss_dict["mi"], on_step=False, on_epoch=True)
-        self.log("val_epoch/tc", loss_dict["tc"], on_step=False, on_epoch=True)
-        self.log("val_epoch/dwkl", loss_dict["dwkl"], on_step=False, on_epoch=True)
-        self.log("val_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
-        self.log("val_epoch/kl_constrained", loss_dict["kl_constrained"], on_step=False, on_epoch=True)
-
-        # Normalized metrics (resolution-independent)
-        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
-        z_dim = mu.shape[1]
-        self.log("val_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
-        self.log("val_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
-
-        # Per-modality reconstruction error
-        modality_names = ["t1c", "t1n", "t2f", "t2w"]
-        for i, mod_name in enumerate(modality_names):
-            mod_recon = torch.nn.functional.mse_loss(
-                x_hat[:, i:i+1],  # Single channel
-                x[:, i:i+1],
-                reduction="mean"
-            )
-            self.log(
-                f"val_epoch/recon_{mod_name}",
-                mod_recon,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=False,
-                sync_dist=True,
-            )
-
-        # SSIM and PSNR (expensive, compute once per 10 batches on first sample)
-        if batch_idx % 10 == 0:
-            from vae.utils.image_metrics import compute_ssim_3d, compute_psnr_3d
-
-            # Compute on first sample only to save time
-            x_sample = x[0:1]  # [1, 4, 128, 128, 128]
-            x_hat_sample = x_hat[0:1]
-
-            # Per-modality SSIM/PSNR
-            for i, mod_name in enumerate(modality_names):
-                ssim_val = compute_ssim_3d(
-                    x_hat_sample[:, i:i+1],
-                    x_sample[:, i:i+1],
-                )
-                psnr_val = compute_psnr_3d(
-                    x_hat_sample[:, i:i+1],
-                    x_sample[:, i:i+1],
-                )
-
-                self.log(f"val_epoch/ssim_{mod_name}", ssim_val, on_step=False, on_epoch=True)
-                self.log(f"val_epoch/psnr_{mod_name}", psnr_val, on_step=False, on_epoch=True)
-
-        # Latent statistics
-        self.log("val_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
-        self.log("val_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
-        self.log("val_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
-        self.log("val_epoch/z_std", z.std(), on_step=False, on_epoch=True)
-
-        # Per-dimension latent statistics (log to wandb as histograms)
-        mu_per_dim = mu.mean(dim=0)  # [z_dim]
-        logvar_per_dim = logvar.mean(dim=0)  # [z_dim]
-
-        if self.logger and hasattr(self.logger, 'experiment'):
-            try:
-                import wandb
-                self.logger.experiment.log({
-                    "val/mu_histogram": wandb.Histogram(mu_per_dim.detach().cpu().numpy()),
-                    "val/logvar_histogram": wandb.Histogram(logvar_per_dim.detach().cpu().numpy()),
-                })
-            except Exception:
-                pass  # Silently skip if not using wandb
-
-        return loss_dict["loss"]
-
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        """Configure AdamW optimizer.
-
-        Returns:
-            AdamW optimizer instance.
-        """
-        optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.lr,
-        )
-        return optimizer
-
 
 class DIPVAELitModule(pl.LightningModule):
-    """PyTorch Lightning module for DIP-VAE training with SBD.
+    """PyTorch Lightning module for DIP-VAE training.
 
     DIP-VAE-II uses covariance matching to encourage disentanglement
-    without requiring density estimation (unlike TC-VAE's MWS).
+    without requiring density estimation.
 
     Loss = recon + KL + λ_od × ||Cov_offdiag||_F² + λ_d × ||diag(Cov) - 1||_2²
+
+    The decoder can be either:
+    - Standard transposed-conv decoder (BaselineVAE, use_sbd=false)
+    - Spatial Broadcast Decoder (VAESBD, use_sbd=true)
 
     Reference:
         Kumar et al. "Variational Inference of Disentangled Latent Concepts
         from Unlabeled Observations" (ICLR 2018), arXiv:1711.00848
 
     Attributes:
-        model: The TCVAESBD model instance.
+        model: VAE model instance (BaselineVAE or VAESBD).
         lr: Learning rate for optimizer.
         lambda_od: Weight for off-diagonal covariance penalty.
         lambda_d: Weight for diagonal covariance penalty.
@@ -720,32 +349,38 @@ class DIPVAELitModule(pl.LightningModule):
 
     def __init__(
         self,
-        model: TCVAESBD,
+        model: nn.Module,
         lr: float = 1e-4,
         lambda_od: float = 10.0,
         lambda_d: float = 5.0,
         lambda_cov_annealing_epochs: int = 40,
+        lambda_start_epoch: int = 0,
         compute_in_fp32: bool = True,
         loss_reduction: str = "mean",
         kl_free_bits: float = 0.0,
         kl_free_bits_mode: str = "batch_mean",
         use_ddp_gather: bool = True,
+        log_collapse_diagnostics: bool = True,
     ):
         """Initialize DIPVAELitModule.
 
         Args:
-            model: TCVAESBD model instance.
+            model: VAE model instance (BaselineVAE or VAESBD).
             lr: Learning rate for AdamW optimizer.
             lambda_od: Weight for off-diagonal covariance penalty (default: 10.0).
             lambda_d: Weight for diagonal covariance penalty (default: 5.0).
             lambda_cov_annealing_epochs: Number of epochs for linear lambda warmup.
                 Default: 40 (prevents optimizer shock).
+            lambda_start_epoch: Epoch to start applying covariance penalties.
+                Default: 0. Set higher to pre-train VAE before DIP regularization.
             compute_in_fp32: If True, compute covariance in FP32 for stability.
             loss_reduction: Loss reduction strategy ("mean" or "sum").
                 Default "mean" for numerical stability with large volumes.
             kl_free_bits: Minimum KL threshold per latent dimension (nats).
             kl_free_bits_mode: Free Bits clamping mode ("batch_mean" or "per_sample").
             use_ddp_gather: If True, use all-gather when DDP active (default: True).
+            log_collapse_diagnostics: If True, log additional metrics to diagnose
+                posterior collapse (deterministic recon, z=0 ablation, μ variance).
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -755,11 +390,13 @@ class DIPVAELitModule(pl.LightningModule):
         self.lambda_od = lambda_od
         self.lambda_d = lambda_d
         self.lambda_cov_annealing_epochs = lambda_cov_annealing_epochs
+        self.lambda_start_epoch = lambda_start_epoch
         self.compute_in_fp32 = compute_in_fp32
         self.loss_reduction = loss_reduction
         self.kl_free_bits = kl_free_bits
         self.kl_free_bits_mode = kl_free_bits_mode
         self.use_ddp_gather = use_ddp_gather
+        self.log_collapse_diagnostics = log_collapse_diagnostics
 
         # Initialize current lambda values (updated via schedule)
         self.current_lambda_od = 0.0
@@ -769,39 +406,18 @@ class DIPVAELitModule(pl.LightningModule):
     def from_config(cls, cfg: DictConfig) -> "DIPVAELitModule":
         """Create DIPVAELitModule from configuration.
 
+        Uses model_factory to build either BaselineVAE or VAESBD based on cfg.model.use_sbd.
+
         Args:
             cfg: OmegaConf configuration object.
 
         Returns:
             Configured DIPVAELitModule instance.
         """
-        # Determine num_groups from norm config
-        num_groups = 8
-        if cfg.model.norm == "GROUP":
-            num_groups = 8
+        from engine.model_factory import create_vae_model
 
-        # Get SBD grid size
-        sbd_grid_size = tuple(cfg.model.sbd_grid_size)
-
-        # Get SBD upsample mode
-        sbd_upsample_mode = cfg.model.get("sbd_upsample_mode", "resize_conv")
-
-        # Get posterior variance floor
-        posterior_logvar_min = cfg.train.get("posterior_logvar_min", -6.0)
-
-        # Get gradient checkpointing flag
-        gradient_checkpointing = cfg.train.get("gradient_checkpointing", False)
-
-        model = TCVAESBD(
-            input_channels=cfg.model.input_channels,
-            z_dim=cfg.model.z_dim,
-            base_filters=cfg.model.base_filters,
-            num_groups=num_groups,
-            sbd_grid_size=sbd_grid_size,
-            sbd_upsample_mode=sbd_upsample_mode,
-            posterior_logvar_min=posterior_logvar_min,
-            gradient_checkpointing=gradient_checkpointing,
-        )
+        # Use factory to create model (handles use_sbd logic)
+        model = create_vae_model(cfg)
 
         return cls(
             model=model,
@@ -809,25 +425,37 @@ class DIPVAELitModule(pl.LightningModule):
             lambda_od=cfg.loss.lambda_od,
             lambda_d=cfg.loss.lambda_d,
             lambda_cov_annealing_epochs=cfg.loss.get("lambda_cov_annealing_epochs", 0),
+            lambda_start_epoch=cfg.loss.get("lambda_start_epoch", 0),
             compute_in_fp32=cfg.loss.get("compute_in_fp32", True),
             loss_reduction=cfg.loss.get("reduction", cfg.train.get("loss_reduction", "mean")),
             kl_free_bits=cfg.train.get("kl_free_bits", 0.0),
             kl_free_bits_mode=cfg.train.get("kl_free_bits_mode", "batch_mean"),
             use_ddp_gather=cfg.loss.get("use_ddp_gather", True),
+            log_collapse_diagnostics=cfg.train.get("log_collapse_diagnostics", True),
         )
 
     def on_train_epoch_start(self) -> None:
-        """Update lambda_od and lambda_d at the start of each training epoch."""
-        self.current_lambda_od = get_lambda_cov_schedule(
-            epoch=self.current_epoch,
-            lambda_target=self.lambda_od,
-            lambda_annealing_epochs=self.lambda_cov_annealing_epochs,
-        )
-        self.current_lambda_d = get_lambda_cov_schedule(
-            epoch=self.current_epoch,
-            lambda_target=self.lambda_d,
-            lambda_annealing_epochs=self.lambda_cov_annealing_epochs,
-        )
+        """Update lambda_od and lambda_d at the start of each training epoch.
+
+        Respects lambda_start_epoch for delayed DIP regularization (pre-train VAE first).
+        """
+        # Apply delayed start: effective epoch is shifted by lambda_start_epoch
+        effective_epoch = max(0, self.current_epoch - self.lambda_start_epoch)
+        if self.current_epoch < self.lambda_start_epoch:
+            # Pre-training phase: no covariance penalty
+            self.current_lambda_od = 0.0
+            self.current_lambda_d = 0.0
+        else:
+            self.current_lambda_od = get_lambda_cov_schedule(
+                epoch=effective_epoch,
+                lambda_target=self.lambda_od,
+                lambda_annealing_epochs=self.lambda_cov_annealing_epochs,
+            )
+            self.current_lambda_d = get_lambda_cov_schedule(
+                epoch=effective_epoch,
+                lambda_target=self.lambda_d,
+                lambda_annealing_epochs=self.lambda_cov_annealing_epochs,
+            )
         logger.debug(
             f"Epoch {self.current_epoch}: lambda_od = {self.current_lambda_od:.4f}, "
             f"lambda_d = {self.current_lambda_d:.4f}"
@@ -1064,6 +692,35 @@ class DIPVAELitModule(pl.LightningModule):
         self.log("val_epoch/logvar_min", logvar.min(), on_step=False, on_epoch=True)
         self.log("val_epoch/z_mean", z.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/z_std", z.std(), on_step=False, on_epoch=True)
+
+        # === COLLAPSE DIAGNOSTICS (expensive, run on first batch only) ===
+        if self.log_collapse_diagnostics and batch_idx == 0:
+            with torch.no_grad():
+                # 1. Deterministic recon: decode z = μ (no sampling noise)
+                x_hat_mu = self.model.decode(mu)
+                recon_mu_mse = torch.nn.functional.mse_loss(x_hat_mu, x, reduction="mean")
+                self.log("diag/recon_mu_mse", recon_mu_mse, on_step=False, on_epoch=True)
+
+                # 2. z=0 ablation: test if decoder ignores z entirely
+                z_zero = torch.zeros_like(mu)
+                x_hat_z0 = self.model.decode(z_zero)
+                recon_z0_mse = torch.nn.functional.mse_loss(x_hat_z0, x, reduction="mean")
+                self.log("diag/recon_z0_mse", recon_z0_mse, on_step=False, on_epoch=True)
+
+                # 3. Decoder z-dependence: ||x̂(μ) - x̂(z_sampled)||
+                recon_delta = torch.nn.functional.mse_loss(x_hat_mu, x_hat, reduction="mean")
+                self.log("diag/recon_delta_mu_vs_sampled", recon_delta, on_step=False, on_epoch=True)
+
+                # 4. μ variance per-dim (dataset-level AU proxy for this batch)
+                mu_var_per_dim = mu.var(dim=0, unbiased=False)  # [z_dim]
+                mu_var_mean = mu_var_per_dim.mean()
+                mu_var_max = mu_var_per_dim.max()
+                self.log("diag/mu_var_mean", mu_var_mean, on_step=False, on_epoch=True)
+                self.log("diag/mu_var_max", mu_var_max, on_step=False, on_epoch=True)
+
+                # 5. Count batch-level "active" dims (var > 0.01)
+                batch_au_count = (mu_var_per_dim > 0.01).sum().float()
+                self.log("diag/batch_au_count", batch_au_count, on_step=False, on_epoch=True)
 
         # Per-dimension latent statistics (log to wandb as histograms)
         mu_per_dim = mu.mean(dim=0)  # [z_dim]
