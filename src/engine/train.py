@@ -50,7 +50,6 @@ except ImportError:
 from vae.data import build_subject_index, create_train_val_split, get_dataloaders
 from vae.training import (
     VAELitModule,
-    TCVAELitModule,
     DIPVAELitModule,
     ReconstructionCallback,
     TrainingLoggingCallback,
