@@ -192,8 +192,8 @@ class VAELitModule(pl.LightningModule):
         """
         x = batch["image"]
 
-        # Forward pass
-        x_hat, mu, logvar = self.model(x)
+        # Forward pass (now returns 4 values for consistency with VAESBD)
+        x_hat, mu, logvar, z = self.model(x)
 
         # Compute ELBO loss
         loss_dict = compute_elbo(
@@ -271,8 +271,8 @@ class VAELitModule(pl.LightningModule):
         """
         x = batch["image"]
 
-        # Forward pass
-        x_hat, mu, logvar = self.model(x)
+        # Forward pass (now returns 4 values for consistency with VAESBD)
+        x_hat, mu, logvar, z = self.model(x)
 
         # Compute ELBO loss
         loss_dict = compute_elbo(

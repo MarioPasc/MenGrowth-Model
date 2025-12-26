@@ -89,12 +89,11 @@ def get_model_signature(model: nn.Module) -> str:
         model: VAE model instance.
 
     Returns:
-        Signature string: "(x_hat, mu, logvar)" for BaselineVAE
-                         or "(x_hat, mu, logvar, z)" for VAESBD.
+        Signature string: "(x_hat, mu, logvar, z)" for all VAE models.
+
+    Note: Both BaselineVAE and VAESBD now return 4 values for consistency.
     """
-    if isinstance(model, BaselineVAE):
-        return "(x_hat, mu, logvar)"
-    elif isinstance(model, VAESBD):
+    if isinstance(model, (BaselineVAE, VAESBD)):
         return "(x_hat, mu, logvar, z)"
     else:
         return "unknown"

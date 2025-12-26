@@ -424,7 +424,7 @@ class BaselineVAE(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass through VAE.
 
         Args:
@@ -434,8 +434,9 @@ class BaselineVAE(nn.Module):
             x_hat: Reconstruction [B, C, D, H, W].
             mu: Posterior mean [B, z_dim].
             logvar: Posterior log-variance [B, z_dim].
+            z: Sampled latent vector [B, z_dim].
         """
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         x_hat = self.decode(z)
-        return x_hat, mu, logvar
+        return x_hat, mu, logvar, z
