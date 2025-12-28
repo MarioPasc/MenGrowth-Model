@@ -350,6 +350,8 @@ class BaselineVAE(nn.Module):
         z_dim: int = 128,
         base_filters: int = 32,
         num_groups: int = 8,
+        gradient_checkpointing: bool = False,
+        posterior_logvar_min: float = -6.0,
     ):
         """Initialize BaselineVAE.
 
@@ -358,10 +360,14 @@ class BaselineVAE(nn.Module):
             z_dim: Latent space dimensionality.
             base_filters: Base number of filters for encoder/decoder.
             num_groups: Number of groups for GroupNorm.
+            gradient_checkpointing: Enable gradient checkpointing to save memory.
+            posterior_logvar_min: Minimum value for log-variance (prevents numerical underflow).
         """
         super().__init__()
 
         self.z_dim = z_dim
+        self.gradient_checkpointing = gradient_checkpointing
+        self.posterior_logvar_min = posterior_logvar_min
 
         self.encoder = Encoder3D(
             input_channels=input_channels,
@@ -382,18 +388,18 @@ class BaselineVAE(nn.Module):
         mu: torch.Tensor,
         logvar: torch.Tensor,
     ) -> torch.Tensor:
-        """Reparameterization trick for sampling from posterior.
+        """Reparameterization trick (logvar already clamped in encode()).
 
         z = mu + eps * exp(0.5 * logvar), where eps ~ N(0, I)
 
         Args:
             mu: Mean of posterior [B, z_dim].
-            logvar: Log-variance of posterior [B, z_dim].
+            logvar: Log-variance of posterior [B, z_dim], ALREADY CLAMPED in encode().
 
         Returns:
             z: Sampled latent vector [B, z_dim].
         """
-        std = torch.exp(0.5 * logvar)
+        std = torch.exp(0.5 * logvar)  # No clamp needed - already done in encode()
         eps = torch.randn_like(std)
         z = mu + eps * std
         return z
@@ -401,14 +407,23 @@ class BaselineVAE(nn.Module):
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode input to latent distribution parameters.
 
+        Returns clamped logvar to ensure numerical stability across
+        all uses: reparameterization, KL computation, DIP covariance.
+
         Args:
             x: Input tensor [B, C, D, H, W].
 
         Returns:
             mu: Posterior mean [B, z_dim].
-            logvar: Posterior log-variance [B, z_dim].
+            logvar: Posterior log-variance [B, z_dim], CLAMPED at source.
         """
-        return self.encoder(x)
+        mu, logvar = self.encoder(x)
+
+        # CRITICAL: Clamp at source before any downstream use
+        # This ensures KL divergence and DIP covariance also use clamped values
+        logvar_clamped = torch.clamp(logvar, min=self.posterior_logvar_min)
+
+        return mu, logvar_clamped
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """Decode latent vector to reconstruction.

@@ -5,7 +5,7 @@ data:
   spacing: [1.875, 1.875, 1.875]
   orientation: "RAS"
   batch_size: 16
-  num_workers: 4
+  num_workers: 0
   cache_rate: 1.0
   val_split: 0.1
   persistent_cache_subdir: "cache"
@@ -19,9 +19,12 @@ model:
   input_channels: 4
   base_filters: 32
   norm: "GROUP"
+  encoder_depth: 4
+  decoder_depth: 4
   # SBD-specific parameters (only used if use_sbd=true)
   sbd_grid_size: [8, 8, 8]
   sbd_upsample_mode: "resize_conv"  # "resize_conv" prevents checkerboard artifacts
+
 
 loss:
   lambda_od: 10.0                      # Off-diagonal covariance penalty (DIP-VAE-II)
@@ -31,6 +34,8 @@ loss:
   lambda_cov_annealing_epochs: 40      # Linear warmup after start_epoch (prevents optimizer shock)
   compute_in_fp32: true
   reduction: "mean"                    # "mean" for numerical stability with large 3D volumes
+  # Multi-GPU DDP: all-gather μ,logvar across ranks for larger effective covariance batch
+  # Requires drop_last=True for equal batch sizes (enforced in datasets.py when devices > 1)
   use_ddp_gather: true                 # Enable all-gather for covariance when DDP active
 
 train:
@@ -40,7 +45,7 @@ train:
   precision: "16-mixed"
   gradient_checkpointing: true
   accelerator: "gpu"
-  devices: 1
+  devices: 1                           # If devices > 1, validation uses drop_last=True for DDP safety
 
   # Numerical stability settings
   loss_reduction: "mean"
@@ -107,29 +112,30 @@ logging:
     dashboard_every_n_epochs: 10
     log_latent_viz: true
     latent_viz_every_n_epochs: 20
-    latent_viz_n_samples: 100
+    latent_viz_n_samples: 512
 
   # Legacy settings (keep for backward compat)
   min_logs_per_epoch: 3                # Minimum console/CSV log entries per training epoch
 
   # Latent diagnostics (lightweight disentanglement metrics)
   latent_diag_every_n_epochs: 10
-  latent_diag_num_samples: 32
+  latent_diag_num_samples: 128         # Increased from 32 for better covariance estimation
+                                       # 128-512 recommended for z_dim=128
   latent_diag_shift_vox: 5
   latent_diag_csv_name: "latent_diag/metrics.csv"
   latent_diag_ids_name: "latent_diag/ids.txt"
 
   # Active Units (AU) callback - canonical latent activity metric
-  au_dense_until: 15                   # Dense logging (every epoch) for epochs 0..15
-  au_sparse_interval: 5                # Sparse logging (every 5 epochs) after epoch 15
-  au_subset_fraction: 0.33             # Use 33% of validation dataset for AU computation
+  au_dense_until: 30                   # Dense logging (every epoch) for epochs 0..30
+  au_sparse_interval: 5                # Sparse logging (every 5 epochs) after epoch 30
+  au_subset_fraction: 0.66             # Use 66% of validation dataset for AU computation
   au_batch_size: 64                    # Batch size for AU computation (larger = more efficient)
   eps_au: 0.01                         # Variance threshold (nats) for active dimension counting
   au_subset_seed: 42                   # RNG seed for reproducible subset selection
 
   # Tidy CSV logging (one row per epoch, no NaN fragmentation)
   tidy_dir: "logs/tidy"
-  step_log_stride: 100                 # Log every N steps for step CSV (50-200 recommended for long runs)
+  step_log_stride: 50                 # Log every N steps for step CSV (50-200 recommended for long runs)
 
   # Segmentation label mapping (configurable for different datasets)
   seg_labels:

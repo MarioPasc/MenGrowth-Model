@@ -217,15 +217,47 @@ def main():
     logger.info("Creating model...")
 
     if variant_type == "dipvae":
-        # Exp2b: DIP-VAE with SBD
+        # Exp2b: DIP-VAE with configurable decoder
         lit_module = DIPVAELitModule.from_config(cfg)
-        logger.info("Created DIPVAELitModule")
-        logger.info(f"  SBD grid size: {cfg.model.sbd_grid_size}")
-        logger.info(f"  SBD upsample mode: {cfg.model.get('sbd_upsample_mode', 'resize_conv')}")
-        logger.info(f"  λ_od: {cfg.loss.lambda_od}, λ_d: {cfg.loss.lambda_d}")
+
+        # CRITICAL: Derive decoder type from ACTUAL instantiated module, not config
+        # This is single source of truth - log cannot lie if wiring changes
+        from vae.models.components.sbd import SpatialBroadcastDecoder
+
+        model = lit_module.model
+        has_sbd = isinstance(model.decoder, SpatialBroadcastDecoder)
+        decoder_type = "SpatialBroadcastDecoder (SBD)" if has_sbd else "Standard Transposed-Conv"
+
+        # Verify config matches reality (detect drift)
+        config_use_sbd = cfg.model.get("use_sbd", True)
+        if has_sbd != config_use_sbd:
+            logger.warning(
+                f"Config/model mismatch: cfg.model.use_sbd={config_use_sbd} but "
+                f"instantiated decoder is {decoder_type}. Config may be stale."
+            )
+
+        logger.info("=" * 60)
+        logger.info("DIP-VAE Model Configuration")
+        logger.info("=" * 60)
+        logger.info(f"Decoder type:         {decoder_type}")
+        logger.info(f"Latent dim (z_dim):   {cfg.model.z_dim}")
+        logger.info(f"Gradient checkpoint:  {cfg.train.get('gradient_checkpointing', False)}")
+        logger.info(f"Posterior logvar_min: {cfg.train.get('posterior_logvar_min', -6.0)}")
+        logger.info("")
+        logger.info("DIP-VAE Loss Parameters:")
+        logger.info(f"  λ_od (off-diagonal): {cfg.loss.lambda_od}")
+        logger.info(f"  λ_d (diagonal):      {cfg.loss.lambda_d}")
+        logger.info(f"  Lambda start epoch:  {cfg.loss.get('lambda_start_epoch', 0)}")
         logger.info(f"  Lambda warmup epochs: {cfg.loss.get('lambda_cov_annealing_epochs', 0)}")
-        logger.info(f"  Posterior logvar_min: {cfg.train.get('posterior_logvar_min', -6.0)}")
-        logger.info(f"  Gradient checkpointing: {cfg.train.get('gradient_checkpointing', False)}")
+
+        # Only log SBD params if ACTUALLY using SBD (based on introspection)
+        if has_sbd:
+            logger.info("")
+            logger.info("SBD Decoder Parameters:")
+            logger.info(f"  Grid size:       {cfg.model.sbd_grid_size}")
+            logger.info(f"  Upsample mode:   {cfg.model.get('sbd_upsample_mode', 'resize_conv')}")
+
+        logger.info("=" * 60)
     elif variant_type == "tcvae":
         # Exp2a: β-TCVAE with SBD
         n_train = len(train_subjects)
@@ -312,19 +344,23 @@ def main():
     if cfg.logging.get("latent_diag_every_n_epochs", 0) > 0:
             from vae.training.callbacks.callbacks import LatentDiagnosticsCallback
 
-            # Get seg_labels from config (convert DictConfig to dict)
+            # Get seg_labels from config (REQUIRED, convert DictConfig to dict)
             seg_labels = cfg.logging.get("seg_labels", None)
-            if seg_labels is not None:
-                seg_labels = dict(seg_labels)  # Convert DictConfig to dict
+            if seg_labels is None:
+                raise ValueError(
+                    "logging.seg_labels must be defined in config for latent diagnostics. "
+                    "Example for BraTS: seg_labels: {ncr: 1, ed: 2, et: 3}"
+                )
+            seg_labels = dict(seg_labels)  # Convert DictConfig to dict
 
             diag_callback = LatentDiagnosticsCallback(
                 run_dir=run_dir_str,
+                seg_labels=seg_labels,  # REQUIRED parameter (now second position)
                 every_n_epochs=cfg.logging.latent_diag_every_n_epochs,
                 num_samples=cfg.logging.latent_diag_num_samples,
                 shift_vox=cfg.logging.latent_diag_shift_vox,
                 csv_name=cfg.logging.latent_diag_csv_name,
                 ids_name=cfg.logging.latent_diag_ids_name,
-                seg_labels=seg_labels,  # Pass segmentation labels if provided
             )
             callbacks.append(diag_callback)
             logger.info(f"Configured latent diagnostics every {cfg.logging.latent_diag_every_n_epochs} epochs")

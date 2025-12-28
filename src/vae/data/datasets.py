@@ -225,6 +225,20 @@ def get_dataloaders(
     use_cuda = torch.cuda.is_available()
     persistent_workers = num_workers > 0
 
+    # DDP gather safety: drop_last must be True for training when use_ddp_gather is enabled
+    # This is CRITICAL because DIP-VAE covariance all_gather happens in TRAINING step (loss computation)
+    num_devices = cfg.train.get("devices", 1)
+    use_ddp_gather = cfg.loss.get("use_ddp_gather", False)
+    train_drop_last = True  # Always True for stable training
+
+    # Log DDP-specific configuration if applicable
+    if use_ddp_gather and num_devices > 1:
+        logger.info(
+            f"DDP mode with use_ddp_gather=True (devices={num_devices}): "
+            f"enforcing drop_last=True on TRAINING loader to ensure equal batch sizes "
+            f"for all_gather in DIP-VAE covariance computation."
+        )
+
     # Create DataLoaders with custom collate function
     train_loader = DataLoader(
         train_dataset,
@@ -233,10 +247,12 @@ def get_dataloaders(
         num_workers=num_workers,
         pin_memory=use_cuda,
         persistent_workers=persistent_workers,
-        drop_last=True,
+        drop_last=train_drop_last,  # CRITICAL: Must be True for DDP gather safety
         collate_fn=safe_collate,
     )
 
+    # Validation loader: also use drop_last=True for callback safety (latent diagnostics)
+    # Secondary concern compared to training, but helps avoid uneven batches in callbacks
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
@@ -244,9 +260,17 @@ def get_dataloaders(
         num_workers=num_workers,
         pin_memory=use_cuda,
         persistent_workers=persistent_workers,
-        drop_last=False,
+        drop_last=True,  # For callback safety in multi-GPU scenarios
         collate_fn=safe_collate,
     )
+
+    # Validate DDP configuration
+    if use_ddp_gather and num_devices > 1 and not train_drop_last:
+        raise RuntimeError(
+            "use_ddp_gather=True requires drop_last=True on training loader to prevent "
+            "all_gather shape mismatch during DIP-VAE covariance computation. "
+            f"Current: drop_last={train_drop_last}"
+        )
 
     logger.info(
         f"DataLoaders created: train={len(train_loader)} batches, "

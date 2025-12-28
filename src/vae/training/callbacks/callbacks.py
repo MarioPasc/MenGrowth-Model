@@ -19,6 +19,9 @@ from pytorch_lightning.callbacks import Callback
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score
+from sklearn.model_selection import cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.compose import TransformedTargetRegressor
 
 try:
     import matplotlib
@@ -449,6 +452,7 @@ class LatentDiagnosticsCallback(Callback):
 
     Args:
         run_dir: Root directory for saving outputs.
+        seg_labels: Segmentation label mapping dict (REQUIRED, no default). Example for BraTS: {"ncr": 1, "ed": 2, "et": 3}.
         every_n_epochs: Compute diagnostics every N epochs (default: 10).
         num_samples: Number of validation samples to use (default: 32).
         shift_vox: Translation shift magnitude in voxels (default: 5).
@@ -458,7 +462,6 @@ class LatentDiagnosticsCallback(Callback):
         image_key: Batch dict key for images (default: "image").
         seg_key: Batch dict key for segmentations (default: "seg").
         id_key: Batch dict key for sample IDs (default: "id").
-        seg_labels: Segmentation label mapping dict (default: {"ncr": 1, "ed": 2, "et": 3} for BraTS).
 
     Note:
         Active Units (AU) metric is now computed by the dedicated ActiveUnitsCallback,
@@ -470,6 +473,7 @@ class LatentDiagnosticsCallback(Callback):
     def __init__(
         self,
         run_dir: Union[str, Path],
+        seg_labels: Dict[str, int],
         every_n_epochs: int = 10,
         num_samples: int = 32,
         shift_vox: int = 5,
@@ -479,12 +483,12 @@ class LatentDiagnosticsCallback(Callback):
         image_key: str = "image",
         seg_key: str = "seg",
         id_key: str = "id",
-        seg_labels: Optional[Dict[str, int]] = None,
     ):
         """Initialize LatentDiagnosticsCallback.
 
         Args:
             run_dir: Root directory for saving outputs.
+            seg_labels: Segmentation label mapping (REQUIRED). Example for BraTS: {"ncr": 1, "ed": 2, "et": 3}.
             every_n_epochs: Compute diagnostics every N epochs.
             num_samples: Number of validation samples to use.
             shift_vox: Translation shift magnitude in voxels.
@@ -494,9 +498,20 @@ class LatentDiagnosticsCallback(Callback):
             image_key: Batch dict key for images.
             seg_key: Batch dict key for segmentations.
             id_key: Batch dict key for sample IDs.
-            seg_labels: Segmentation label mapping (default: {"ncr": 1, "ed": 2, "et": 3} for BraTS).
         """
         super().__init__()
+
+        # Validate seg_labels
+        if seg_labels is None:
+            raise ValueError(
+                "seg_labels must be explicitly provided in config. "
+                "Example for BraTS: {'ncr': 1, 'ed': 2, 'et': 3}"
+            )
+        if not isinstance(seg_labels, dict) or len(seg_labels) == 0:
+            raise ValueError(
+                f"seg_labels must be a non-empty dict, got {type(seg_labels)}"
+            )
+
         self.run_dir = Path(run_dir)
         self.every_n_epochs = every_n_epochs
         self.num_samples = num_samples
@@ -507,12 +522,7 @@ class LatentDiagnosticsCallback(Callback):
         self.image_key = image_key
         self.seg_key = seg_key
         self.id_key = id_key
-
-        # Segmentation labels (configurable for different datasets)
-        if seg_labels is None:
-            self.seg_labels = {"ncr": 1, "ed": 2, "et": 3}
-        else:
-            self.seg_labels = seg_labels
+        self.seg_labels = seg_labels
 
         # Runtime state
         self._sample_ids: Optional[List[str]] = None
@@ -533,6 +543,14 @@ class LatentDiagnosticsCallback(Callback):
         if self._sample_ids is None and trainer.is_global_zero:
             self._sample_ids = self._load_sample_ids()
 
+            # If loaded successfully, verify and log
+            if self._sample_ids is not None:
+                ids_path = self.run_dir / self.ids_name
+                logger.info(
+                    f"Latent diagnostics: loaded {len(self._sample_ids)} sample IDs from {ids_path} "
+                    f"(epoch {trainer.current_epoch}: reusing same subset for consistency)"
+                )
+
             # If still None, initialize from validation dataloader
             if self._sample_ids is None:
                 val_dataloader = (
@@ -549,8 +567,10 @@ class LatentDiagnosticsCallback(Callback):
                     f.write("\n".join(self._sample_ids))
 
                 logger.info(
-                    f"Initialized {len(self._sample_ids)} sample IDs for latent diagnostics"
+                    f"Latent diagnostics: initialized {len(self._sample_ids)} sample IDs "
+                    f"(deterministic selection from first {len(self._sample_ids)} validation samples)"
                 )
+                logger.info(f"Sample IDs saved to: {ids_path}")
 
         # Broadcast to all ranks if DDP
         if trainer.world_size > 1 and self._sample_ids is not None:
@@ -581,11 +601,12 @@ class LatentDiagnosticsCallback(Callback):
         batch_ids = batch[self.id_key]
         selected_set = set(self._sample_ids)
 
-        # Extract μ for selected samples
+        # Extract μ and logvar for selected samples
         with torch.no_grad():
             pl_module.model.eval()
-            mu, _ = pl_module.model.encode(batch[self.image_key])
+            mu, logvar = pl_module.model.encode(batch[self.image_key])
             mu_cpu = mu.detach().cpu().float()  # Force FP32 on CPU
+            logvar_cpu = logvar.detach().cpu().float()  # Force FP32 on CPU
 
         # Accumulate data
         for i, bid in enumerate(batch_ids):
@@ -594,6 +615,7 @@ class LatentDiagnosticsCallback(Callback):
                     {
                         "id": bid,
                         "mu": mu_cpu[i],  # [z_dim]
+                        "logvar": logvar_cpu[i],  # [z_dim]
                         "x": batch[self.image_key][i].cpu(),  # [4, 128, 128, 128]
                         "seg": (
                             batch[self.seg_key][i].cpu()
@@ -634,6 +656,27 @@ class LatentDiagnosticsCallback(Callback):
             )
             return
 
+        # Validate segmentation labels on epoch 0
+        if trainer.current_epoch == 0:
+            all_labels_seen = set()
+            for d in unique_data:
+                if d["seg"] is not None:
+                    seg_labels_in_sample = torch.unique(d["seg"]).cpu().tolist()
+                    all_labels_seen.update(seg_labels_in_sample)
+
+            expected_labels = set(self.seg_labels.values())
+            if not expected_labels.issubset(all_labels_seen):
+                missing = expected_labels - all_labels_seen
+                logger.warning(
+                    f"Expected seg labels {expected_labels} but only found {all_labels_seen}. "
+                    f"Missing: {missing}. This may indicate empty tumor compartments in the evaluation subset."
+                )
+            else:
+                logger.info(
+                    f"Segmentation labels validated: found {sorted(all_labels_seen)} "
+                    f"(expected {sorted(expected_labels)})"
+                )
+
         # Compute diagnostics
         try:
             metrics = self._compute_diagnostics(unique_data, pl_module, trainer)
@@ -652,16 +695,32 @@ class LatentDiagnosticsCallback(Callback):
             "diag/corr_offdiag_meanabs": metrics["corr_offdiag_meanabs"],
             "diag/shift_mu_l2_mean": metrics.get("shift_mu_l2_mean", np.nan),
             "diag/shift_mu_absmean": metrics.get("shift_mu_absmean", np.nan),
-            "diag/r2_logV_ncr": metrics.get("r2_logV_ncr", np.nan),
-            "diag/r2_logV_ed": metrics.get("r2_logV_ed", np.nan),
-            "diag/r2_logV_et": metrics.get("r2_logV_et", np.nan),
-            "diag/r2_logV_total": metrics.get("r2_logV_total", np.nan),
-            "diag/r2_cz_total": metrics.get("r2_cz_total", np.nan),
-            "diag/r2_cy_total": metrics.get("r2_cy_total", np.nan),
-            "diag/r2_cx_total": metrics.get("r2_cx_total", np.nan),
-            "diag/r2_r_ncr": metrics.get("r2_r_ncr", np.nan),
-            "diag/r2_r_ed": metrics.get("r2_r_ed", np.nan),
-            "diag/r2_r_et": metrics.get("r2_r_et", np.nan),
+            # DIP-VAE-II covariance metrics
+            "diag/cov_q_offdiag_meanabs": metrics.get("cov_q_offdiag_meanabs", np.nan),
+            "diag/cov_q_offdiag_fro": metrics.get("cov_q_offdiag_fro", np.nan),
+            "diag/cov_q_diag_meanabs_error": metrics.get("cov_q_diag_meanabs_error", np.nan),
+            "diag/cov_q_diag_mean": metrics.get("cov_q_diag_mean", np.nan),
+            # Ridge probe R² (cross-validated, mean ± std)
+            "diag/r2_logV_ncr_mean": metrics.get("r2_logV_ncr_mean", np.nan),
+            "diag/r2_logV_ncr_std": metrics.get("r2_logV_ncr_std", np.nan),
+            "diag/r2_logV_ed_mean": metrics.get("r2_logV_ed_mean", np.nan),
+            "diag/r2_logV_ed_std": metrics.get("r2_logV_ed_std", np.nan),
+            "diag/r2_logV_et_mean": metrics.get("r2_logV_et_mean", np.nan),
+            "diag/r2_logV_et_std": metrics.get("r2_logV_et_std", np.nan),
+            "diag/r2_logV_total_mean": metrics.get("r2_logV_total_mean", np.nan),
+            "diag/r2_logV_total_std": metrics.get("r2_logV_total_std", np.nan),
+            "diag/r2_cz_total_mean": metrics.get("r2_cz_total_mean", np.nan),
+            "diag/r2_cz_total_std": metrics.get("r2_cz_total_std", np.nan),
+            "diag/r2_cy_total_mean": metrics.get("r2_cy_total_mean", np.nan),
+            "diag/r2_cy_total_std": metrics.get("r2_cy_total_std", np.nan),
+            "diag/r2_cx_total_mean": metrics.get("r2_cx_total_mean", np.nan),
+            "diag/r2_cx_total_std": metrics.get("r2_cx_total_std", np.nan),
+            "diag/r2_r_ncr_mean": metrics.get("r2_r_ncr_mean", np.nan),
+            "diag/r2_r_ncr_std": metrics.get("r2_r_ncr_std", np.nan),
+            "diag/r2_r_ed_mean": metrics.get("r2_r_ed_mean", np.nan),
+            "diag/r2_r_ed_std": metrics.get("r2_r_ed_std", np.nan),
+            "diag/r2_r_et_mean": metrics.get("r2_r_et_mean", np.nan),
+            "diag/r2_r_et_std": metrics.get("r2_r_et_std", np.nan),
         }
 
         # Clear accumulator
@@ -763,8 +822,9 @@ class LatentDiagnosticsCallback(Callback):
         Returns:
             Dictionary with all metrics for CSV row.
         """
-        # Build mu matrix
+        # Build mu and logvar matrices
         mu_matrix, z_dim = self._build_mu_matrix(data_list)
+        logvar_matrix = self._build_logvar_matrix(data_list)
         N = mu_matrix.shape[0]
 
         metrics = {
@@ -775,9 +835,13 @@ class LatentDiagnosticsCallback(Callback):
             "z_dim": z_dim,
         }
 
-        # Correlation
+        # Correlation (existing metric, kept for comparison)
         corr_metrics = self._compute_correlation(mu_matrix)
         metrics.update(corr_metrics)
+
+        # DIP-VAE-II covariance metrics (matches training loss computation)
+        dipvae_cov_metrics = self._compute_dipvae_covariance_metrics(mu_matrix, logvar_matrix)
+        metrics.update(dipvae_cov_metrics)
 
         # Shift sensitivity
         try:
@@ -842,6 +906,22 @@ class LatentDiagnosticsCallback(Callback):
         assert mu_matrix.dtype == torch.float32
         return mu_matrix, mu_matrix.shape[1]
 
+    def _build_logvar_matrix(
+        self, data_list: List[Dict[str, Any]]
+    ) -> torch.Tensor:
+        """Stack all logvar vectors into matrix.
+
+        Args:
+            data_list: List of dictionaries with 'logvar' key.
+
+        Returns:
+            logvar_matrix: [N, z_dim] float32 CPU tensor.
+        """
+        logvars = [d["logvar"] for d in data_list]
+        logvar_matrix = torch.stack(logvars, dim=0)  # [N, z_dim]
+        assert logvar_matrix.dtype == torch.float32
+        return logvar_matrix
+
     def _compute_correlation(self, mu_matrix: torch.Tensor) -> Dict[str, float]:
         """Mean absolute off-diagonal correlation.
 
@@ -866,6 +946,67 @@ class LatentDiagnosticsCallback(Callback):
         off_diag = corr[mask]
 
         return {"corr_offdiag_meanabs": off_diag.abs().mean().item()}
+
+    def _compute_dipvae_covariance_metrics(
+        self, mu_matrix: torch.Tensor, logvar_matrix: torch.Tensor
+    ) -> Dict[str, float]:
+        """Compute covariance metrics using DIP-VAE-II estimator.
+
+        DIP-VAE-II covariance estimator (Kumar et al., 2018):
+            Cov_q(z) = Cov_batch(μ) + mean_batch(diag(exp(logvar)))
+
+        This captures both between-sample diversity and within-sample uncertainty,
+        matching the training loss computation.
+
+        Reference: https://ar5iv.org/pdf/1711.00848 (Eq. 8-10)
+
+        Args:
+            mu_matrix: [N, z_dim] latent means.
+            logvar_matrix: [N, z_dim] latent log-variances.
+
+        Returns:
+            Dictionary with DIP-VAE-II covariance metrics:
+                - cov_q_offdiag_meanabs: Mean absolute off-diagonal element
+                - cov_q_offdiag_fro: Frobenius norm of off-diagonal (raw penalty value)
+                - cov_q_diag_meanabs_error: Mean absolute deviation of diagonal from 1
+                - cov_q_diag_mean: Mean diagonal value (should → 1.0)
+        """
+        mu = mu_matrix  # [N, z_dim]
+        logvar = logvar_matrix  # [N, z_dim]
+
+        N, d = mu.shape
+
+        # Compute in FP32 for numerical stability
+        with torch.cuda.amp.autocast(enabled=False):
+            mu = mu.float()
+            logvar = logvar.float()
+
+            # Between-sample covariance: Cov(μ)
+            mu_centered = mu - mu.mean(dim=0, keepdim=True)
+            cov_mu = torch.mm(mu_centered.t(), mu_centered) / N  # [d, d]
+
+            # Within-sample variance: E[diag(exp(logvar))]
+            mean_encoder_var = torch.exp(logvar).mean(dim=0)  # [d]
+            cov_var = torch.diag(mean_encoder_var)  # [d, d]
+
+            # Total aggregated covariance (DIP-VAE-II)
+            cov_q = cov_mu + cov_var  # [d, d]
+
+            # Extract off-diagonal elements
+            mask = ~torch.eye(d, dtype=torch.bool, device=cov_q.device)
+            off_diag = cov_q[mask]
+
+            # Extract diagonal elements
+            diag_elems = torch.diag(cov_q)
+
+            metrics = {
+                "cov_q_offdiag_meanabs": off_diag.abs().mean().item(),
+                "cov_q_offdiag_fro": torch.norm(off_diag, p="fro").item(),
+                "cov_q_diag_meanabs_error": (diag_elems - 1.0).abs().mean().item(),
+                "cov_q_diag_mean": diag_elems.mean().item(),
+            }
+
+        return metrics
 
     def _compute_shift_sensitivity(
         self,
@@ -1051,20 +1192,25 @@ class LatentDiagnosticsCallback(Callback):
         return df, 1
 
     def _ridge_probe(
-        self, mu_matrix: torch.Tensor, targets_df: pd.DataFrame
+        self, mu_matrix: torch.Tensor, targets_df: pd.DataFrame, seed: int = 42
     ) -> Dict[str, Any]:
-        """Ridge regression from standardized μ to each target.
+        """Ridge regression with proper CV (no preprocessing leakage).
+
+        Uses Pipeline + TransformedTargetRegressor to ensure scalers are fit
+        ONLY on training folds, preventing test data from leaking into preprocessing.
+        Reports mean ± std of held-out R² across 5-fold CV.
+
+        Reference: sklearn best practices for preprocessing in CV.
 
         Args:
             mu_matrix: [N, z_dim] float32 latent means.
             targets_df: DataFrame with target columns.
+            seed: Random seed for CV splits (default: 42).
 
         Returns:
-            Dictionary with r2_{target}, top5dims_{target}, n_empty_{target}.
+            Dictionary with r2_{target}_mean, r2_{target}_std, top5dims_{target}, n_empty_{target}.
         """
-        # Standardize μ
-        scaler_X = StandardScaler()
-        X = scaler_X.fit_transform(mu_matrix.numpy())  # [N, z_dim]
+        X = mu_matrix.cpu().numpy()  # [N, z_dim]
 
         results = {}
 
@@ -1098,12 +1244,13 @@ class LatentDiagnosticsCallback(Callback):
                 compartment = target_col.replace("logV_", "")
                 empty_counts[compartment] = n_empty
 
-            # Skip if too few valid samples
-            if n_valid < 2:
+            # Skip if too few valid samples for CV (need at least 10 for 5-fold)
+            if n_valid < 10:
                 logger.warning(
-                    f"Target {target_col} has only {n_valid} valid samples, skipping regression"
+                    f"Target {target_col} has only {n_valid} valid samples (need ≥10 for 5-fold CV), skipping"
                 )
-                results[f"r2_{target_col}"] = np.nan
+                results[f"r2_{target_col}_mean"] = np.nan
+                results[f"r2_{target_col}_std"] = np.nan
                 # Only add top5dims for key targets
                 if target_col in ["logV_total", "cx_total", "cy_total", "cz_total"]:
                     results[f"top5dims_{target_col}"] = ""
@@ -1113,22 +1260,42 @@ class LatentDiagnosticsCallback(Callback):
             X_valid = X[valid_mask]
             y_valid = y[valid_mask]
 
-            # Standardize y
-            scaler_y = StandardScaler()
-            y_valid_std = scaler_y.fit_transform(y_valid.reshape(-1, 1)).ravel()
+            # Pipeline: StandardScaler fit ONLY on train fold, then Ridge
+            # TransformedTargetRegressor: same for y scaling
+            # This prevents preprocessing leakage from test fold
+            model = TransformedTargetRegressor(
+                regressor=Pipeline([
+                    ('scaler', StandardScaler()),
+                    ('ridge', Ridge(alpha=1.0, random_state=seed))
+                ]),
+                transformer=StandardScaler()
+            )
 
-            # Ridge regression
-            ridge = Ridge(alpha=1.0, fit_intercept=True, random_state=0)
-            ridge.fit(X_valid, y_valid_std)
-            y_pred = ridge.predict(X_valid)
+            # Cross-validation with proper preprocessing
+            cv_scores = cross_val_score(
+                model, X_valid, y_valid,
+                cv=5,
+                scoring='r2',
+                n_jobs=1  # Single-threaded for determinism
+            )
 
-            # R² score
-            r2 = r2_score(y_valid_std, y_pred)
-            results[f"r2_{target_col}"] = r2
+            # Log mean and std across folds
+            results[f"r2_{target_col}_mean"] = np.mean(cv_scores)
+            results[f"r2_{target_col}_std"] = np.std(cv_scores)
 
-            # Top-5 coefficient dimensions (only for key targets)
+            # Top-5 coefficient dimensions (fit on all valid data for interpretability)
             if target_col in ["logV_total", "cx_total", "cy_total", "cz_total"]:
-                coef_abs = np.abs(ridge.coef_)
+                # Fit full model to get coefficients (for interpretability only)
+                model_full = TransformedTargetRegressor(
+                    regressor=Pipeline([
+                        ('scaler', StandardScaler()),
+                        ('ridge', Ridge(alpha=1.0, random_state=seed))
+                    ]),
+                    transformer=StandardScaler()
+                )
+                model_full.fit(X_valid, y_valid)
+                # Extract coefficients from the ridge regressor in the pipeline
+                coef_abs = np.abs(model_full.regressor_.named_steps['ridge'].coef_)
                 top5_idx = np.argsort(coef_abs)[::-1][:5]
                 results[f"top5dims_{target_col}"] = ";".join(map(str, top5_idx))
 
@@ -1151,16 +1318,32 @@ class LatentDiagnosticsCallback(Callback):
             "corr_offdiag_meanabs",
             "shift_mu_l2_mean",
             "shift_mu_absmean",
-            "r2_logV_ncr",
-            "r2_logV_ed",
-            "r2_logV_et",
-            "r2_logV_total",
-            "r2_cz_total",
-            "r2_cy_total",
-            "r2_cx_total",
-            "r2_r_ncr",
-            "r2_r_ed",
-            "r2_r_et",
+            # DIP-VAE-II covariance metrics (Cov_q = Cov(mu) + E[diag(var)])
+            "cov_q_offdiag_meanabs",
+            "cov_q_offdiag_fro",
+            "cov_q_diag_meanabs_error",
+            "cov_q_diag_mean",
+            # Ridge probe R² (cross-validated, mean ± std)
+            "r2_logV_ncr_mean",
+            "r2_logV_ncr_std",
+            "r2_logV_ed_mean",
+            "r2_logV_ed_std",
+            "r2_logV_et_mean",
+            "r2_logV_et_std",
+            "r2_logV_total_mean",
+            "r2_logV_total_std",
+            "r2_cz_total_mean",
+            "r2_cz_total_std",
+            "r2_cy_total_mean",
+            "r2_cy_total_std",
+            "r2_cx_total_mean",
+            "r2_cx_total_std",
+            "r2_r_ncr_mean",
+            "r2_r_ncr_std",
+            "r2_r_ed_mean",
+            "r2_r_ed_std",
+            "r2_r_et_mean",
+            "r2_r_et_std",
         ]
 
         log_dict = {}
@@ -1212,16 +1395,32 @@ class LatentDiagnosticsCallback(Callback):
             "n_empty_ed",
             "n_empty_et",
             "n_empty_total",
-            "r2_logV_ncr",
-            "r2_logV_ed",
-            "r2_logV_et",
-            "r2_logV_total",
-            "r2_cz_total",
-            "r2_cy_total",
-            "r2_cx_total",
-            "r2_r_ncr",
-            "r2_r_ed",
-            "r2_r_et",
+            # DIP-VAE-II covariance metrics
+            "cov_q_offdiag_meanabs",
+            "cov_q_offdiag_fro",
+            "cov_q_diag_meanabs_error",
+            "cov_q_diag_mean",
+            # Ridge probe R² (cross-validated, mean ± std)
+            "r2_logV_ncr_mean",
+            "r2_logV_ncr_std",
+            "r2_logV_ed_mean",
+            "r2_logV_ed_std",
+            "r2_logV_et_mean",
+            "r2_logV_et_std",
+            "r2_logV_total_mean",
+            "r2_logV_total_std",
+            "r2_cz_total_mean",
+            "r2_cz_total_std",
+            "r2_cy_total_mean",
+            "r2_cy_total_std",
+            "r2_cx_total_mean",
+            "r2_cx_total_std",
+            "r2_r_ncr_mean",
+            "r2_r_ncr_std",
+            "r2_r_ed_mean",
+            "r2_r_ed_std",
+            "r2_r_et_mean",
+            "r2_r_et_std",
             "top5dims_logV_total",
             "top5dims_cx_total",
             "top5dims_cy_total",

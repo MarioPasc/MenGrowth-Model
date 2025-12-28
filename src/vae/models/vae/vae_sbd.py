@@ -163,43 +163,49 @@ class VAESBD(nn.Module):
         mu: torch.Tensor,
         logvar: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Reparameterization trick for sampling from posterior with variance floor.
+        """Reparameterization trick (logvar already clamped in encode()).
 
         z = mu + eps * exp(0.5 * logvar), where eps ~ N(0, I)
 
-        CRITICAL: Applies variance floor BEFORE sampling to ensure numerical stability.
-        The clamped logvar is returned for consistent KL computation in the loss.
+        NOTE: logvar is ALREADY CLAMPED in encode() to ensure numerical stability
+        across all uses (KL, DIP covariance, sampling).
 
         Args:
             mu: Mean of posterior [B, z_dim].
-            logvar: Log-variance of posterior [B, z_dim] (unclamped).
+            logvar: Log-variance of posterior [B, z_dim], ALREADY CLAMPED in encode().
 
         Returns:
             z: Sampled latent vector [B, z_dim].
-            logvar_clamped: Clamped log-variance [B, z_dim] (for loss computation).
+            logvar: Passed through unchanged (for API compatibility).
         """
-        # Apply variance floor BEFORE sampling
-        logvar_clamped = torch.clamp(logvar, min=self.posterior_logvar_min)
-
-        # Sample using clamped variance
-        std = torch.exp(0.5 * logvar_clamped)
+        # Sample using variance (already clamped in encode())
+        std = torch.exp(0.5 * logvar)  # No clamp needed - already done in encode()
         eps = torch.randn_like(std)
         z = mu + eps * std
 
-        # Return both z and clamped logvar for consistent loss computation
-        return z, logvar_clamped
+        # Return both z and logvar (for API compatibility)
+        return z, logvar
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode input to latent distribution parameters.
+
+        Returns clamped logvar to ensure numerical stability across
+        all uses: reparameterization, KL computation, DIP covariance.
 
         Args:
             x: Input tensor [B, C, D, H, W].
 
         Returns:
             mu: Posterior mean [B, z_dim].
-            logvar: Posterior log-variance [B, z_dim].
+            logvar: Posterior log-variance [B, z_dim], CLAMPED at source.
         """
-        return self._encoder_forward(x)
+        mu, logvar = self._encoder_forward(x)
+
+        # CRITICAL: Clamp at source before any downstream use
+        # This ensures KL divergence and DIP covariance also use clamped values
+        logvar_clamped = torch.clamp(logvar, min=self.posterior_logvar_min)
+
+        return mu, logvar_clamped
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """Decode latent vector to reconstruction.

@@ -77,6 +77,8 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             z_dim=z_dim,
             base_filters=base_filters,
             num_groups=num_groups,
+            gradient_checkpointing=gradient_checkpointing,
+            posterior_logvar_min=posterior_logvar_min,
         )
 
     return model
