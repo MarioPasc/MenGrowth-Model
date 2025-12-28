@@ -4,7 +4,7 @@ data:
   roi_size: [128, 128, 128]
   spacing: [1.875, 1.875, 1.875]
   orientation: "RAS"
-  batch_size: 8
+  batch_size: 16
   num_workers: 4
   cache_rate: 1.0
   val_split: 0.1
@@ -50,8 +50,18 @@ train:
   # Posterior variance floor (prevents numerical underflow)
   posterior_logvar_min: -6.0           # NEW: exp(-6) ≈ 0.0025 variance
 
+  # === KL Regularization - Posterior Collapse Mitigation ===
+  # Default strategy: Cyclical Annealing + Free Bits (recommended)
+
+  # Beta annealing (controls KL weight schedule)
+  kl_beta: 1.0
+  kl_annealing_epochs: 160  # For cyclical: 4 cycles × 40 epochs/cycle
+  kl_annealing_type: "cyclical"  # Options: "linear", "cyclical"
+  kl_annealing_cycles: 4
+  kl_annealing_ratio: 0.5  # Anneal for first 50% of each cycle
+
   # Free bits (per-dimension KL threshold for posterior collapse mitigation)
-  kl_free_bits: 0.2                    # RECOMMENDED: 0.2 nats/dim for stronger collapse prevention
+  kl_free_bits: 0.01                    # RECOMMENDED: 0.2 nats/dim for stronger collapse prevention
                                        # With batch_mean mode and z_dim=128: floor ≈ 128 × 0.2 = 25.6 nats
                                        # Start with 0.2, reduce to 0.1 if KL too high
   kl_free_bits_mode: "batch_mean"      # "per_sample" or "batch_mean"
