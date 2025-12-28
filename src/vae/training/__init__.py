@@ -1,10 +1,10 @@
 """Training module."""
 
 from .lit_modules import VAELitModule, DIPVAELitModule
-from .callbacks import ReconstructionCallback, TrainingLoggingCallback
-from .au_callbacks import ActiveUnitsCallback
-from .system_callbacks import SystemMetricsCallback
-from .wandb_callbacks import WandbDashboardCallback, WandbLatentVizCallback
+from .callbacks.callbacks import ReconstructionCallback, TrainingLoggingCallback
+from .callbacks.au_callbacks import ActiveUnitsCallback
+from .callbacks.system_callbacks import SystemMetricsCallback
+from .callbacks.wandb_callbacks import WandbDashboardCallback, WandbLatentVizCallback
 
 __all__ = [
     "VAELitModule",

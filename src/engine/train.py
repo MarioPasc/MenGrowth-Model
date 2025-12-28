@@ -55,7 +55,7 @@ from vae.training import (
     TrainingLoggingCallback,
     ActiveUnitsCallback,
 )
-from vae.training.metrics_callbacks import (
+from vae.training.callbacks.metrics_callbacks import (
     TidyEpochCSVCallback,
     TidyStepCSVCallback,
     GradNormCallback,
@@ -310,7 +310,7 @@ def main():
     # === END NEW ===
 
     if cfg.logging.get("latent_diag_every_n_epochs", 0) > 0:
-            from vae.training.callbacks import LatentDiagnosticsCallback
+            from vae.training.callbacks.callbacks import LatentDiagnosticsCallback
 
             # Get seg_labels from config (convert DictConfig to dict)
             seg_labels = cfg.logging.get("seg_labels", None)
@@ -365,11 +365,11 @@ def main():
 
     # Wandb visual logging callbacks (if wandb is enabled)
     if cfg.logging.get("logger", {}).get("type", "csv") == "wandb":
-        from vae.training.wandb_callbacks import (
+        from vae.training.callbacks.wandb_callbacks import (
             WandbDashboardCallback,
             WandbLatentVizCallback,
         )
-        from vae.training.system_callbacks import SystemMetricsCallback
+        from vae.training.callbacks.system_callbacks import SystemMetricsCallback
 
         # System metrics (GPU, throughput)
         sys_callback = SystemMetricsCallback()

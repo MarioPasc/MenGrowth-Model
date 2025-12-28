@@ -88,7 +88,7 @@ def test_image_metrics_ssim():
 
 def test_system_metrics_callback():
     """Test SystemMetricsCallback instantiation."""
-    from vae.training.system_callbacks import SystemMetricsCallback
+    from vae.training.callbacks.system_callbacks import SystemMetricsCallback
 
     callback = SystemMetricsCallback()
 
@@ -100,7 +100,7 @@ def test_system_metrics_callback():
 
 def test_wandb_dashboard_callback():
     """Test WandbDashboardCallback instantiation."""
-    from vae.training.wandb_callbacks import WandbDashboardCallback
+    from vae.training.callbacks.wandb_callbacks import WandbDashboardCallback
 
     with tempfile.TemporaryDirectory() as tmpdir:
         callback = WandbDashboardCallback(
@@ -115,7 +115,7 @@ def test_wandb_dashboard_callback():
 
 def test_wandb_latent_viz_callback():
     """Test WandbLatentVizCallback instantiation."""
-    from vae.training.wandb_callbacks import WandbLatentVizCallback
+    from vae.training.callbacks.wandb_callbacks import WandbLatentVizCallback
 
     callback = WandbLatentVizCallback(
         every_n_epochs=20,
@@ -129,7 +129,7 @@ def test_wandb_latent_viz_callback():
 
 def test_reconstruction_callback_with_wandb_flag():
     """Test ReconstructionCallback accepts log_to_wandb parameter."""
-    from vae.training.callbacks import ReconstructionCallback
+    from vae.training.callbacks.callbacks import ReconstructionCallback
 
     with tempfile.TemporaryDirectory() as tmpdir:
         callback = ReconstructionCallback(
