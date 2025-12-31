@@ -240,9 +240,7 @@ class DIPVAELitModule(pl.LightningModule):
         # Forward pass
         x_hat, mu, logvar, z = self.model(x)
 
-        # Clamp logvar to prevent numerical instability
-        if self.posterior_logvar_min is not None:
-            logvar = torch.clamp(logvar, min=self.posterior_logvar_min)
+        # NOTE: logvar is already clamped at the source in model.encode()
 
         # Compute DIP-VAE loss
         loss_dict = compute_dipvae_loss(
@@ -366,9 +364,7 @@ class DIPVAELitModule(pl.LightningModule):
         # Forward pass
         x_hat, mu, logvar, z = self.model(x)
 
-        # Clamp logvar to prevent numerical instability
-        if self.posterior_logvar_min is not None:
-            logvar = torch.clamp(logvar, min=self.posterior_logvar_min)
+        # NOTE: logvar is already clamped at the source in model.encode()
 
         # Compute DIP-VAE loss
         loss_dict = compute_dipvae_loss(

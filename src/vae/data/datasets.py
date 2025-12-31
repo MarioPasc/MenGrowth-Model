@@ -187,6 +187,7 @@ def get_dataloaders(
         Tuple of (train_loader, val_loader).
     """
     # Extract config values
+    modalities = list(cfg.data.modalities)
     spacing = tuple(cfg.data.spacing)
     orientation = cfg.data.orientation
     roi_size = tuple(cfg.data.roi_size)
@@ -203,8 +204,8 @@ def get_dataloaders(
     val_cache_dir.mkdir(exist_ok=True)
 
     # Get transforms
-    train_transforms = get_train_transforms(spacing, orientation, roi_size)
-    val_transforms = get_val_transforms(spacing, orientation, roi_size)
+    train_transforms = get_train_transforms(modalities, spacing, orientation, roi_size)
+    val_transforms = get_val_transforms(modalities, spacing, orientation, roi_size)
 
     # Create PersistentDatasets
     train_dataset = PersistentDataset(

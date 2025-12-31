@@ -1,13 +1,32 @@
-from .callbacks import ReconstructionCallback, TrainingLoggingCallback
-from .au_callbacks import ActiveUnitsCallback
-from .system_callbacks import SystemMetricsCallback
-from .wandb_callbacks import WandbDashboardCallback, WandbLatentVizCallback
+"""VAE training callbacks module.
+
+Exports all callback classes for VAE training:
+- Core callbacks: Reconstruction visualization and console logging
+- Metrics callbacks: Unified CSV logging and run metadata
+- Diagnostic callbacks: Latent diagnostics and Active Units
+"""
+
+from .core_callbacks import (
+    ReconstructionCallback,
+    TrainingLoggingCallback,
+)
+from .metrics_csv_callback import (
+    UnifiedCSVCallback,
+    RunMetadataCallback,
+)
+from .diagnostics_callbacks import (
+    LatentDiagnosticsCallback,
+    ActiveUnitsCallback,
+)
 
 __all__ = [
+    # Core
     "ReconstructionCallback",
     "TrainingLoggingCallback",
+    # Metrics/CSV
+    "UnifiedCSVCallback",
+    "RunMetadataCallback",
+    # Diagnostics
+    "LatentDiagnosticsCallback",
     "ActiveUnitsCallback",
-    "SystemMetricsCallback",
-    "WandbDashboardCallback",
-    "WandbLatentVizCallback",
 ]

@@ -1,10 +1,10 @@
-"""Tidy CSV logging callbacks for VAE training.
+"""Unified CSV logging callback for VAE training.
 
-This module provides callbacks for structured, analysis-ready CSV logging:
-- TidyEpochCSVCallback: One row per epoch (no NaN fragmentation)
-- TidyStepCSVCallback: Downsampled step-level logs
-- GradNormCallback: Gradient norm monitoring for optimization stability
-- RunMetadataCallback: Run configuration and data signature metadata
+This module provides the unified CSV logging callback that consolidates:
+- Epoch-level metrics (train/val/sched/opt/latent_diag/system)
+- System metrics (GPU memory, throughput, batch time)
+- Gradient norm tracking (optional)
+- Run configuration metadata
 
 All callbacks are DDP-safe (rank-zero only file writes).
 """
@@ -12,9 +12,11 @@ All callbacks are DDP-safe (rank-zero only file writes).
 import json
 import logging
 import tempfile
+import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
+import numpy as np
 import pandas as pd
 import torch
 from pytorch_lightning.callbacks import Callback
@@ -41,33 +43,153 @@ def _convert_for_json(obj):
     return obj
 
 
-class TidyEpochCSVCallback(Callback):
-    """Write epoch-level metrics to tidy CSV (one row per epoch).
+class UnifiedCSVCallback(Callback):
+    """Unified CSV callback that consolidates all epoch-level logging.
 
-    Reads trainer.callback_metrics after validation and writes a single row
-    containing both train and val metrics, eliminating NaN fragmentation.
+    Combines functionality from:
+    - TidyEpochCSVCallback (epoch metrics collection)
+    - SystemMetricsCallback (GPU memory, throughput, batch time)
+    - GradNormCallback (gradient norm tracking)
 
-    Filters metrics by namespace prefix (train_epoch/, val_epoch/, sched/, opt/, diag/)
-    and merges LatentDiagnosticsCallback metrics if available.
+    Writes one row per epoch containing:
+    - Metadata: epoch, global_step
+    - Training metrics: train_epoch/*
+    - Validation metrics: val_epoch/* (including SSIM, PSNR)
+    - Schedule metrics: sched/*
+    - Optimizer metrics: opt/lr, opt/grad_norm, opt/grad_finite
+    - Latent diagnostics: latent_diag/* (sparse, "-" placeholder on non-diagnostic epochs)
+    - System metrics: system/* (GPU memory, throughput, execution time)
 
     Output: {run_dir}/logs/tidy/epoch_metrics.csv
 
     Args:
         run_dir: Root directory for outputs
         tidy_subdir: Subdirectory for tidy logs (default: "logs/tidy")
+        log_grad_norm: Whether to track gradient norms (default: True)
+        grad_norm_type: Norm type for gradient norm (default: 2.0 for L2)
     """
+
+    # Define all possible latent_diag/* columns for placeholder initialization
+    # These are populated by LatentDiagnosticsCallback and ActiveUnitsCallback
+    LATENT_DIAG_COLUMNS = [
+        # Active Units (from ActiveUnitsCallback)
+        "latent_diag/au_count",
+        "latent_diag/au_frac",
+        "latent_diag/au_threshold",
+        "latent_diag/au_subset_size",
+        # Correlation (from LatentDiagnosticsCallback)
+        "latent_diag/corr_offdiag_meanabs",
+        # Shift sensitivity (from LatentDiagnosticsCallback)
+        "latent_diag/shift_mu_l2_mean",
+        "latent_diag/shift_mu_absmean",
+        # DIP-VAE covariance (from LatentDiagnosticsCallback)
+        "latent_diag/cov_q_offdiag_meanabs",
+        "latent_diag/cov_q_offdiag_fro",
+        "latent_diag/cov_q_diag_meanabs_error",
+        "latent_diag/cov_q_diag_mean",
+        # Ridge probe R² scores (from LatentDiagnosticsCallback)
+        # Volume targets
+        "latent_diag/r2_logV_ncr_mean",
+        "latent_diag/r2_logV_ncr_std",
+        "latent_diag/r2_logV_ed_mean",
+        "latent_diag/r2_logV_ed_std",
+        "latent_diag/r2_logV_et_mean",
+        "latent_diag/r2_logV_et_std",
+        "latent_diag/r2_logV_total_mean",
+        "latent_diag/r2_logV_total_std",
+        # Centroid targets
+        "latent_diag/r2_cz_total_mean",
+        "latent_diag/r2_cz_total_std",
+        "latent_diag/r2_cy_total_mean",
+        "latent_diag/r2_cy_total_std",
+        "latent_diag/r2_cx_total_mean",
+        "latent_diag/r2_cx_total_std",
+        # Radius targets
+        "latent_diag/r2_r_ncr_mean",
+        "latent_diag/r2_r_ncr_std",
+        "latent_diag/r2_r_ed_mean",
+        "latent_diag/r2_r_ed_std",
+        "latent_diag/r2_r_et_mean",
+        "latent_diag/r2_r_et_std",
+    ]
 
     def __init__(
         self,
         run_dir: Path,
         tidy_subdir: str = "logs/tidy",
+        log_grad_norm: bool = True,
+        grad_norm_type: float = 2.0,
     ):
         self.csv_path = Path(run_dir) / tidy_subdir / "epoch_metrics.csv"
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         self.header_written = False
 
+        # Gradient norm tracking
+        self.log_grad_norm = log_grad_norm
+        self.grad_norm_type = grad_norm_type
+        self._grad_norms = []
+        self._grad_finite_flags = []
+
+        # System metrics tracking
+        self._epoch_start_time = None
+        self._batch_start_time = None
+        self._batch_times = []
+        self._gpu_mem_samples = []
+        self._samples_processed = 0
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        """Reset accumulators and record epoch start time."""
+        self._epoch_start_time = time.time()
+        self._batch_times = []
+        self._gpu_mem_samples = []
+        self._samples_processed = 0
+        self._grad_norms = []
+        self._grad_finite_flags = []
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        """Record batch start time for throughput calculation."""
+        self._batch_start_time = time.time()
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        """Sample GPU memory and record batch times."""
+        # Record batch time
+        if self._batch_start_time is not None:
+            batch_time = time.time() - self._batch_start_time
+            self._batch_times.append(batch_time)
+
+        # Count samples processed
+        batch_size = batch["image"].size(0)
+        self._samples_processed += batch_size
+
+        # Sample GPU memory (every 50 batches to minimize overhead)
+        if torch.cuda.is_available() and batch_idx % 50 == 0:
+            gpu_mem_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+            gpu_mem_reserved = torch.cuda.memory_reserved() / 1024**3  # GB
+            self._gpu_mem_samples.append((gpu_mem_allocated, gpu_mem_reserved))
+
+    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
+        """Compute gradient norm before optimizer step (if enabled)."""
+        if not self.log_grad_norm:
+            return
+
+        # Compute total gradient norm
+        total_norm = 0.0
+        all_finite = True
+
+        for p in pl_module.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(self.grad_norm_type)
+                total_norm += param_norm.item() ** self.grad_norm_type
+                all_finite = all_finite and torch.isfinite(param_norm).all()
+
+        total_norm = total_norm ** (1.0 / self.grad_norm_type)
+
+        # Accumulate for epoch average
+        self._grad_norms.append(total_norm)
+        self._grad_finite_flags.append(float(all_finite))
+
     def on_train_epoch_end(self, trainer, pl_module):
-        """Write epoch row after training epoch (and validation if it runs)."""
+        """Compute system metrics, collect all metrics, and write CSV row."""
         # Rank-zero safety
         if not trainer.is_global_zero:
             return
@@ -76,16 +198,38 @@ class TidyEpochCSVCallback(Callback):
         if trainer.sanity_checking:
             return
 
-        metrics = trainer.callback_metrics  # Dict[str, Tensor]
+        # Compute system metrics
+        epoch_time = time.time() - self._epoch_start_time if self._epoch_start_time else 0.0
+        samples_per_sec = self._samples_processed / epoch_time if epoch_time > 0 else 0.0
+        batch_time_avg = np.mean(self._batch_times) * 1000 if self._batch_times else 0.0  # ms
 
-        # Collect row data
+        # Average GPU memory
+        if self._gpu_mem_samples:
+            gpu_mem_allocated_avg = np.mean([x[0] for x in self._gpu_mem_samples])
+            gpu_mem_reserved_avg = np.mean([x[1] for x in self._gpu_mem_samples])
+        else:
+            gpu_mem_allocated_avg = 0.0
+            gpu_mem_reserved_avg = 0.0
+
+        # Average gradient norm (if enabled)
+        if self.log_grad_norm and self._grad_norms:
+            grad_norm_avg = np.mean(self._grad_norms)
+            grad_finite_avg = np.mean(self._grad_finite_flags)
+        else:
+            grad_norm_avg = None
+            grad_finite_avg = None
+
+        # Build row dict
         row = {
             "epoch": trainer.current_epoch,
             "global_step": trainer.global_step,
         }
 
-        # Filter by namespace prefix (NOT _epoch suffix)
-        # Lightning only creates suffixes when on_step=True, on_epoch=True (which we removed)
+        # Collect from trainer.callback_metrics (train/val/sched/opt/diag from lit_modules)
+        # Note: We filter for train_epoch/, val_epoch/, sched/, opt/, diag/
+        # diag/* from lit_modules are batch-level collapse diagnostics (e.g., diag/recon_mu_mse)
+        # latent_diag/* from diagnostic callbacks are dataset-level diagnostics
+        metrics = trainer.callback_metrics
         for key, val in metrics.items():
             if key.startswith(("train_epoch/", "val_epoch/", "sched/", "opt/", "diag/")):
                 if torch.is_tensor(val):
@@ -93,14 +237,30 @@ class TidyEpochCSVCallback(Callback):
                 else:
                     row[key] = float(val) if isinstance(val, (int, float)) else val
 
-        # Merge LatentDiagnosticsCallback metrics if available
-        # Check if the callback exists and has exported last_epoch_metrics
+        # Initialize latent_diag/* columns with "-" placeholder
+        # (will be overwritten if diagnostics ran this epoch)
+        for col in self.LATENT_DIAG_COLUMNS:
+            row[col] = "-"
+
+        # Merge diagnostic callback exports (if available)
+        # Callbacks set last_epoch_metrics with latent_diag/* keys
         for callback in trainer.callbacks:
             if hasattr(callback, "last_epoch_metrics") and callback.last_epoch_metrics is not None:
                 if callback.last_epoch_metrics.get("epoch") == trainer.current_epoch:
-                    # Merge diag/* metrics
+                    # Merge latent_diag/* metrics (overwrites "-" placeholders)
                     row.update(callback.last_epoch_metrics)
-                    break
+
+        # Add system metrics
+        row["system/gpu_mem_allocated_gb"] = gpu_mem_allocated_avg
+        row["system/gpu_mem_reserved_gb"] = gpu_mem_reserved_avg
+        row["system/samples_per_sec"] = samples_per_sec
+        row["system/batch_time_ms_avg"] = batch_time_avg
+        row["system/epoch_time_sec"] = epoch_time
+
+        # Add gradient metrics (if enabled)
+        if self.log_grad_norm and grad_norm_avg is not None:
+            row["opt/grad_norm"] = grad_norm_avg
+            row["opt/grad_finite"] = grad_finite_avg
 
         # Write to CSV
         self._append_to_csv(row)
@@ -133,199 +293,8 @@ class TidyEpochCSVCallback(Callback):
         tmp_path.replace(self.csv_path)
 
         if not self.header_written:
-            logger.info(f"Initialized tidy epoch CSV: {self.csv_path}")
+            logger.info(f"Initialized unified epoch CSV: {self.csv_path}")
             self.header_written = True
-
-
-class TidyStepCSVCallback(Callback):
-    """Write downsampled step-level metrics to CSV.
-
-    Buffers step metrics and flushes to CSV after each epoch.
-    Uses global_step as primary x-axis (not batch_idx).
-
-    Output: {run_dir}/logs/tidy/step_metrics.csv
-
-    Args:
-        run_dir: Root directory for outputs
-        stride: Log every N steps (default: 50)
-        tidy_subdir: Subdirectory for tidy logs (default: "logs/tidy")
-    """
-
-    def __init__(
-        self,
-        run_dir: Path,
-        stride: int = 50,
-        tidy_subdir: str = "logs/tidy",
-    ):
-        self.csv_path = Path(run_dir) / tidy_subdir / "step_metrics.csv"
-        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-        self.stride = stride
-        self._step_buffer = []
-        self.header_written = False
-
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        """Log step metrics with downsampling."""
-        # Rank-zero safety (only collect on rank 0 to avoid memory leak on other ranks)
-        if not trainer.is_global_zero:
-            return
-
-        # Downsample by stride
-        if trainer.global_step % self.stride != 0:
-            return
-
-        metrics = trainer.callback_metrics
-        row = self._collect_step_row(metrics, trainer, split="train")
-        self._step_buffer.append(row)
-
-    def on_validation_batch_end(
-        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
-    ):
-        """Log validation step metrics with downsampling."""
-        # Rank-zero safety (only collect on rank 0 to avoid memory leak on other ranks)
-        if not trainer.is_global_zero:
-            return
-
-        # Downsample by stride
-        if batch_idx % self.stride != 0:
-            return
-
-        metrics = trainer.callback_metrics
-        row = self._collect_step_row(metrics, trainer, split="val")
-        self._step_buffer.append(row)
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        """Flush buffer to CSV after epoch."""
-        # Rank-zero safety
-        if not trainer.is_global_zero:
-            return
-
-        if not self._step_buffer:
-            return
-
-        self._flush_buffer()
-
-    def _collect_step_row(self, metrics, trainer, split: str) -> Dict[str, Any]:
-        """Extract step-level metrics."""
-        row = {
-            "epoch": trainer.current_epoch,
-            "global_step": trainer.global_step,
-            "split": split,
-        }
-
-        # Collect step-level metrics (not epoch-level)
-        # Look for keys with step namespace (train_step/, val_step/, opt/)
-        for key, val in metrics.items():
-            # Keep step metrics matching the split
-            if key.startswith(f"{split}_step/") or key.startswith("opt/"):
-                if torch.is_tensor(val):
-                    row[key] = val.item()
-                else:
-                    row[key] = float(val) if isinstance(val, (int, float)) else val
-
-        return row
-
-    def _flush_buffer(self):
-        """Append buffer to CSV with atomic write."""
-        df_new = pd.DataFrame(self._step_buffer)
-
-        if self.csv_path.exists():
-            df_existing = pd.read_csv(self.csv_path)
-            df = pd.concat([df_existing, df_new], ignore_index=True)
-        else:
-            df = df_new
-
-        # Atomic write
-        with tempfile.NamedTemporaryFile(
-            mode="w", delete=False, dir=self.csv_path.parent, suffix=".tmp"
-        ) as tmp_f:
-            tmp_path = Path(tmp_f.name)
-            df.to_csv(tmp_f, index=False)
-
-        tmp_path.replace(self.csv_path)
-
-        if not self.header_written:
-            logger.info(
-                f"Initialized tidy step CSV: {self.csv_path} (stride={self.stride})"
-            )
-            self.header_written = True
-
-        # Clear buffer
-        self._step_buffer = []
-
-
-class GradNormCallback(Callback):
-    """Log gradient norms for optimization stability monitoring.
-
-    Computes total gradient norm (L2) across all parameters.
-    Averages over optimizer steps (not batches) for epoch-level metric.
-
-    Logs:
-        - opt/grad_norm (epoch-level average)
-        - opt/grad_finite (boolean check for NaN/Inf)
-
-    Args:
-        norm_type: Norm type (default: 2.0 for L2 norm)
-    """
-
-    def __init__(self, norm_type: float = 2.0):
-        self.norm_type = norm_type
-        self._grad_norms = []
-        self._grad_finite_flags = []
-
-    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
-        """Compute gradient norm before optimizer step."""
-        # Compute total gradient norm
-        total_norm = 0.0
-        all_finite = True
-
-        for p in pl_module.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(self.norm_type)
-                total_norm += param_norm.item() ** self.norm_type
-                all_finite = all_finite and torch.isfinite(param_norm).all()
-
-        total_norm = total_norm ** (1.0 / self.norm_type)
-
-        # Accumulate for epoch average (average over optimizer steps, not batches)
-        self._grad_norms.append(total_norm)
-        self._grad_finite_flags.append(float(all_finite))
-
-        # Log step-level (for debugging)
-        pl_module.log(
-            "opt/grad_norm_step",
-            total_norm,
-            on_step=True,
-            on_epoch=False,
-            prog_bar=False,
-        )
-        pl_module.log(
-            "opt/grad_finite_step",
-            float(all_finite),
-            on_step=True,
-            on_epoch=False,
-            prog_bar=False,
-        )
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        """Log epoch-level average."""
-        if not self._grad_norms:
-            return
-
-        # Average over optimizer steps
-        avg_norm = sum(self._grad_norms) / len(self._grad_norms)
-        avg_finite = sum(self._grad_finite_flags) / len(self._grad_finite_flags)
-
-        # Log epoch-level
-        pl_module.log(
-            "opt/grad_norm", avg_norm, on_step=False, on_epoch=True, prog_bar=False
-        )
-        pl_module.log(
-            "opt/grad_finite", avg_finite, on_step=False, on_epoch=True, prog_bar=False
-        )
-
-        # Reset accumulators
-        self._grad_norms = []
-        self._grad_finite_flags = []
 
 
 class RunMetadataCallback(Callback):
@@ -461,7 +430,7 @@ class RunMetadataCallback(Callback):
         # Collapse proxy config
         meta["collapse_metrics"] = {
             "eps_kl_dim": self.cfg.logging.get("eps_kl_dim", 0.01),
-            "note": "kl_active_frac_proxy is an online minibatch estimate; diag/au_frac is the canonical dataset-level Active Units metric",
+            "note": "kl_active_frac_proxy is an online minibatch estimate; latent_diag/au_frac is the canonical dataset-level Active Units metric",
         }
 
         # Ensure directory exists

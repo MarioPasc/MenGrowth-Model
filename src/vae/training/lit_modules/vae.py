@@ -195,9 +195,7 @@ class VAELitModule(pl.LightningModule):
         # Forward pass (now returns 4 values for consistency with VAESBD)
         x_hat, mu, logvar, z = self.model(x)
 
-        # Clamp logvar to prevent numerical instability
-        if self.posterior_logvar_min is not None:
-            logvar = torch.clamp(logvar, min=self.posterior_logvar_min)
+        # NOTE: logvar is already clamped at the source in model.encode()
 
         # Compute ELBO loss
         loss_dict = compute_elbo(
@@ -278,9 +276,7 @@ class VAELitModule(pl.LightningModule):
         # Forward pass (now returns 4 values for consistency with VAESBD)
         x_hat, mu, logvar, z = self.model(x)
 
-        # Clamp logvar to prevent numerical instability
-        if self.posterior_logvar_min is not None:
-            logvar = torch.clamp(logvar, min=self.posterior_logvar_min)
+        # NOTE: logvar is already clamped at the source in model.encode()
 
         # Compute ELBO loss
         loss_dict = compute_elbo(

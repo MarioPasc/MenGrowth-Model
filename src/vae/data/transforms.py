@@ -12,9 +12,9 @@ from typing import List, Tuple
 from monai.transforms.compose import Compose
 from monai.transforms.io.dictionary import LoadImaged
 from monai.transforms.utility.dictionary import (
-    EnsureChannelFirstd, 
-    ConcatItemsd, 
-    ToTensord
+    EnsureChannelFirstd,
+    ConcatItemsd,
+    ToTensord,
 )
 from monai.transforms.spatial.dictionary import (
     Orientationd,
@@ -22,18 +22,16 @@ from monai.transforms.spatial.dictionary import (
 )
 from monai.transforms.croppad.dictionary import (
     ResizeWithPadOrCropd,
-    RandSpatialCropd
+    RandSpatialCropd,
 )
 from monai.transforms.intensity.dictionary import NormalizeIntensityd
 
 
-MODALITY_KEYS = ["t1c", "t1n", "t2f", "t2w"]
 SEG_KEY = "seg"
-ALL_KEYS = MODALITY_KEYS + [SEG_KEY]
-
 
 
 def get_common_transforms(
+    modality_keys: List[str],
     spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
     orientation: str = "RAS",
     roi_size: Tuple[int, int, int] = (128, 128, 128),
@@ -47,6 +45,7 @@ def get_common_transforms(
       (iv) a deterministic 128³ spatial tensor (via pad/crop).
 
     Args:
+        modality_keys: List of modality key strings (e.g., ["t1c", "t1n"]).
         spacing: Target voxel spacing in mm (recommended for SRI24 whole-brain: (1.875, 1.875, 1.875)).
         orientation: Target orientation code (e.g., "RAS").
         roi_size: Target spatial size after pad/crop (default: 128³).
@@ -54,18 +53,20 @@ def get_common_transforms(
     Returns:
         List of MONAI transforms.
     """
+    all_keys = modality_keys + [SEG_KEY]
+
     return [
         # 1. Load NIfTI files (keeps affine/metadata for spacing/orientation ops)
-        LoadImaged(keys=ALL_KEYS, image_only=False),
+        LoadImaged(keys=all_keys, image_only=False),
         # 2. Ensure channel dimension is first for all keys
-        EnsureChannelFirstd(keys=ALL_KEYS),
+        EnsureChannelFirstd(keys=all_keys),
         # 3. Reorient to a standard axis code
-        Orientationd(keys=ALL_KEYS, axcodes=orientation),
+        Orientationd(keys=all_keys, axcodes=orientation),
         # 4a. Resample modalities with bilinear interpolation
         Spacingd(
-            keys=MODALITY_KEYS,
+            keys=modality_keys,
             pixdim=spacing,
-            mode=("bilinear", "bilinear", "bilinear", "bilinear"),
+            mode=["bilinear"] * len(modality_keys),
         ),
         # 4b. Resample segmentation with nearest-neighbor interpolation
         Spacingd(
@@ -74,15 +75,16 @@ def get_common_transforms(
             mode=("nearest",),
         ),
         # 5. Z-score normalize each modality per subject over nonzero voxels
-        NormalizeIntensityd(keys=MODALITY_KEYS, nonzero=True, channel_wise=True),
-        # 6. Concatenate modalities into a single "image" tensor with C=4
-        ConcatItemsd(keys=MODALITY_KEYS, name="image", dim=0),
+        NormalizeIntensityd(keys=modality_keys, nonzero=True, channel_wise=True),
+        # 6. Concatenate modalities into a single "image" tensor with C=len(modality_keys)
+        ConcatItemsd(keys=modality_keys, name="image", dim=0),
         # 7. Deterministic pad/crop to exact target size (128×128×128)
         ResizeWithPadOrCropd(keys=["image", SEG_KEY], spatial_size=roi_size),
     ]
 
 
 def get_train_transforms(
+    modality_keys: List[str],
     spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
     orientation: str = "RAS",
     roi_size: Tuple[int, int, int] = (128, 128, 128),
@@ -97,6 +99,7 @@ def get_train_transforms(
     becomes crop-dependent.
 
     Args:
+        modality_keys: List of modality key strings.
         spacing: Target voxel spacing in mm.
         orientation: Target orientation code.
         roi_size: Target spatial size.
@@ -104,13 +107,14 @@ def get_train_transforms(
     Returns:
         MONAI Compose transform pipeline.
     """
-    transforms = get_common_transforms(spacing, orientation, roi_size)
+    transforms = get_common_transforms(modality_keys, spacing, orientation, roi_size)
 
     transforms.append(ToTensord(keys=["image", SEG_KEY]))
     return Compose(transforms)
 
 
 def get_val_transforms(
+    modality_keys: List[str],
     spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
     orientation: str = "RAS",
     roi_size: Tuple[int, int, int] = (128, 128, 128),
@@ -118,6 +122,7 @@ def get_val_transforms(
     """Get validation transforms (deterministic only).
 
     Args:
+        modality_keys: List of modality key strings.
         spacing: Target voxel spacing in mm.
         orientation: Target orientation code.
         roi_size: Target spatial size.
@@ -125,6 +130,6 @@ def get_val_transforms(
     Returns:
         MONAI Compose transform pipeline.
     """
-    transforms = get_common_transforms(spacing, orientation, roi_size)
+    transforms = get_common_transforms(modality_keys, spacing, orientation, roi_size)
     transforms.append(ToTensord(keys=["image", SEG_KEY]))
     return Compose(transforms)

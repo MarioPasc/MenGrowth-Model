@@ -51,14 +51,13 @@ from vae.data import build_subject_index, create_train_val_split, get_dataloader
 from vae.training import (
     VAELitModule,
     DIPVAELitModule,
+)
+from vae.training.callbacks import (
     ReconstructionCallback,
     TrainingLoggingCallback,
     ActiveUnitsCallback,
-)
-from vae.training.callbacks.metrics_callbacks import (
-    TidyEpochCSVCallback,
-    TidyStepCSVCallback,
-    GradNormCallback,
+    LatentDiagnosticsCallback,
+    UnifiedCSVCallback,
     RunMetadataCallback,
 )
 from vae.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
@@ -304,31 +303,17 @@ def main():
     )
     callbacks.append(recon_callback)
 
-    # === NEW: Tidy CSV logging callbacks ===
+    # === Unified CSV logging ===
 
-    # Tidy epoch CSV (one row per epoch, no NaN fragmentation)
-    tidy_epoch_callback = TidyEpochCSVCallback(
+    # Unified CSV callback (consolidates epoch metrics, system metrics, gradient norms)
+    unified_csv_callback = UnifiedCSVCallback(
         run_dir=run_dir,
         tidy_subdir=cfg.logging.get("tidy_dir", "logs/tidy"),
+        log_grad_norm=cfg.logging.get("log_grad_norm", True),
+        grad_norm_type=2.0,
     )
-    callbacks.append(tidy_epoch_callback)
-    logger.info("Configured tidy epoch CSV logging")
-
-    # Tidy step CSV (downsampled step logs)
-    step_stride = cfg.logging.get("step_log_stride", 50)
-    tidy_step_callback = TidyStepCSVCallback(
-        run_dir=run_dir,
-        stride=step_stride,
-        tidy_subdir=cfg.logging.get("tidy_dir", "logs/tidy"),
-    )
-    callbacks.append(tidy_step_callback)
-    logger.info(f"Configured tidy step CSV logging (stride={step_stride})")
-
-    # Gradient norm logging (optimization stability)
-    if cfg.logging.get("log_grad_norm", False):
-        grad_norm_callback = GradNormCallback(norm_type=2.0)
-        callbacks.append(grad_norm_callback)
-        logger.info("Configured gradient norm logging")
+    callbacks.append(unified_csv_callback)
+    logger.info("Configured unified CSV logging (all metrics in epoch_metrics.csv)")
 
     # Run metadata JSON (config + data signature)
     run_meta_callback = RunMetadataCallback(
@@ -339,31 +324,29 @@ def main():
     callbacks.append(run_meta_callback)
     logger.info("Configured run metadata JSON")
 
-    # === END NEW ===
+    # === END unified CSV logging ===
 
     if cfg.logging.get("latent_diag_every_n_epochs", 0) > 0:
-            from vae.training.callbacks.callbacks import LatentDiagnosticsCallback
-
-            # Get seg_labels from config (REQUIRED, convert DictConfig to dict)
-            seg_labels = cfg.logging.get("seg_labels", None)
-            if seg_labels is None:
-                raise ValueError(
-                    "logging.seg_labels must be defined in config for latent diagnostics. "
-                    "Example for BraTS: seg_labels: {ncr: 1, ed: 2, et: 3}"
-                )
-            seg_labels = dict(seg_labels)  # Convert DictConfig to dict
-
-            diag_callback = LatentDiagnosticsCallback(
-                run_dir=run_dir_str,
-                seg_labels=seg_labels,  # REQUIRED parameter (now second position)
-                every_n_epochs=cfg.logging.latent_diag_every_n_epochs,
-                num_samples=cfg.logging.latent_diag_num_samples,
-                shift_vox=cfg.logging.latent_diag_shift_vox,
-                csv_name=cfg.logging.latent_diag_csv_name,
-                ids_name=cfg.logging.latent_diag_ids_name,
+        # Get seg_labels from config (REQUIRED, convert DictConfig to dict)
+        seg_labels = cfg.logging.get("seg_labels", None)
+        if seg_labels is None:
+            raise ValueError(
+                "logging.seg_labels must be defined in config for latent diagnostics. "
+                "Example for BraTS: seg_labels: {ncr: 1, ed: 2, et: 3}"
             )
-            callbacks.append(diag_callback)
-            logger.info(f"Configured latent diagnostics every {cfg.logging.latent_diag_every_n_epochs} epochs")
+        seg_labels = dict(seg_labels)  # Convert DictConfig to dict
+
+        diag_callback = LatentDiagnosticsCallback(
+            run_dir=run_dir_str,
+            seg_labels=seg_labels,  # REQUIRED parameter
+            spacing=tuple(cfg.data.spacing),  # Pass spacing
+            every_n_epochs=cfg.logging.latent_diag_every_n_epochs,
+            num_samples=cfg.logging.latent_diag_num_samples,
+            shift_vox=cfg.logging.latent_diag_shift_vox,
+            ids_name=cfg.logging.latent_diag_ids_name,
+        )
+        callbacks.append(diag_callback)
+        logger.info(f"Configured latent diagnostics every {cfg.logging.latent_diag_every_n_epochs} epochs")
 
     # Active Units (AU) callback - canonical latent activity tracking
     if cfg.logging.get("au_dense_until", -1) >= 0:
@@ -398,37 +381,6 @@ def main():
     )
     callbacks.append(logging_callback)
     logger.info(f"Configured logging: at least {min_logs_per_epoch} logs per training epoch")
-
-    # Wandb visual logging callbacks (if wandb is enabled)
-    if cfg.logging.get("logger", {}).get("type", "csv") == "wandb":
-        from vae.training.callbacks.wandb_callbacks import (
-            WandbDashboardCallback,
-            WandbLatentVizCallback,
-        )
-        from vae.training.callbacks.system_callbacks import SystemMetricsCallback
-
-        # System metrics (GPU, throughput)
-        sys_callback = SystemMetricsCallback()
-        callbacks.append(sys_callback)
-        logger.info("Configured system metrics logging")
-
-        # Dashboard visualization
-        if cfg.logging.visual.get("log_dashboard", False):
-            dashboard_callback = WandbDashboardCallback(
-                run_dir=run_dir,
-                every_n_epochs=cfg.logging.visual.get("dashboard_every_n_epochs", 10),
-            )
-            callbacks.append(dashboard_callback)
-            logger.info(f"Configured wandb dashboard logging (every {cfg.logging.visual.dashboard_every_n_epochs} epochs)")
-
-        # Latent space visualization
-        if cfg.logging.visual.get("log_latent_viz", False):
-            latent_viz_callback = WandbLatentVizCallback(
-                every_n_epochs=cfg.logging.visual.get("latent_viz_every_n_epochs", 20),
-                n_samples=cfg.logging.visual.get("latent_viz_n_samples", 100),
-            )
-            callbacks.append(latent_viz_callback)
-            logger.info(f"Configured latent visualization (every {cfg.logging.visual.latent_viz_every_n_epochs} epochs)")
 
     # Setup logger (wandb or csv based on config)
     pl_logger = create_logger(cfg, run_dir, experiment_name)
