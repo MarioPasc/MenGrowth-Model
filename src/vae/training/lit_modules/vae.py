@@ -27,7 +27,7 @@ from ..losses import (
     get_lambda_cov_schedule,
 )
 from ..losses.elbo import get_beta_schedule
-from vae.utils.image_metrics import compute_ssim_3d, compute_psnr_3d
+from vae.metrics import compute_ssim_3d, compute_psnr_3d
 
 
 logger = logging.getLogger(__name__)
@@ -108,21 +108,18 @@ class VAELitModule(pl.LightningModule):
     def from_config(cls, cfg: DictConfig) -> "VAELitModule":
         """Create VAELitModule from configuration.
 
+        Uses model_factory to build model (consistent with DIPVAELitModule pattern).
+
         Args:
             cfg: Configuration object with model and train parameters.
 
         Returns:
             Configured VAELitModule instance.
         """
-        # Determine num_groups from norm config
-        num_groups = cfg.model.get("num_groups", 8)
+        from engine.model_factory import create_vae_model
 
-        model = BaselineVAE(
-            input_channels=cfg.model.input_channels,
-            z_dim=cfg.model.z_dim,
-            base_filters=cfg.model.base_filters,
-            num_groups=num_groups,
-        )
+        # Use factory to create model (respects use_sbd flag if present)
+        model = create_vae_model(cfg)
 
         return cls(
             model=model,

@@ -23,6 +23,14 @@ from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.compose import TransformedTargetRegressor
 
+from vae.metrics import (
+    compute_correlation,
+    compute_dipvae_covariance,
+    compute_shift_sensitivity,
+    extract_segmentation_targets,
+    ridge_probe_cv,
+)
+
 try:
     import matplotlib
     matplotlib.use('Agg')
@@ -836,11 +844,13 @@ class LatentDiagnosticsCallback(Callback):
         }
 
         # Correlation (existing metric, kept for comparison)
-        corr_metrics = self._compute_correlation(mu_matrix)
+        corr_metrics = compute_correlation(mu_matrix, return_matrix=False)
         metrics.update(corr_metrics)
 
         # DIP-VAE-II covariance metrics (matches training loss computation)
-        dipvae_cov_metrics = self._compute_dipvae_covariance_metrics(mu_matrix, logvar_matrix)
+        dipvae_cov_metrics = compute_dipvae_covariance(mu_matrix, logvar_matrix, compute_in_fp32=True)
+        # Remove cov_q_matrix from metrics (too large for logging)
+        dipvae_cov_metrics.pop("cov_q_matrix", None)
         metrics.update(dipvae_cov_metrics)
 
         # Shift sensitivity
@@ -860,11 +870,23 @@ class LatentDiagnosticsCallback(Callback):
             )
 
         # Segmentation probes
-        targets_df, seg_available = self._extract_seg_targets(data_list)
+        targets_df, seg_available = self._extract_seg_targets_from_list(data_list)
         metrics["seg_available"] = seg_available
 
         if seg_available:
-            probe_results = self._ridge_probe(mu_matrix, targets_df)
+            probe_results = ridge_probe_cv(
+                z=mu_matrix.cpu().numpy(),
+                targets_df=targets_df,
+                n_folds=5,
+                alpha=1.0,
+                random_state=42
+            )
+            # Flatten r2 results (remove _mean and _std suffixes for backward compat in some cases)
+            for target_col in ["logV_ncr", "logV_ed", "logV_et", "logV_total",
+                               "cz_total", "cy_total", "cx_total", "r_ncr", "r_ed", "r_et"]:
+                # Keep both _mean and _std for complete info
+                if f"r2_{target_col}_mean" in probe_results:
+                    metrics[f"r2_{target_col}"] = probe_results[f"r2_{target_col}_mean"]
             metrics.update(probe_results)
         else:
             # Fill with defaults
@@ -921,92 +943,6 @@ class LatentDiagnosticsCallback(Callback):
         logvar_matrix = torch.stack(logvars, dim=0)  # [N, z_dim]
         assert logvar_matrix.dtype == torch.float32
         return logvar_matrix
-
-    def _compute_correlation(self, mu_matrix: torch.Tensor) -> Dict[str, float]:
-        """Mean absolute off-diagonal correlation.
-
-        Args:
-            mu_matrix: [N, z_dim] latent means.
-
-        Returns:
-            Dictionary with 'corr_offdiag_meanabs'.
-        """
-        # Standardize
-        mu_mean = mu_matrix.mean(dim=0)
-        mu_std_val = mu_matrix.std(dim=0, unbiased=True)
-        mu_std = (mu_matrix - mu_mean) / (mu_std_val + 1e-8)
-
-        # Correlation matrix
-        N = mu_std.shape[0]
-        corr = torch.mm(mu_std.T, mu_std) / (N - 1)  # [z_dim, z_dim]
-
-        # Off-diagonal elements
-        z_dim = corr.shape[0]
-        mask = ~torch.eye(z_dim, dtype=torch.bool)
-        off_diag = corr[mask]
-
-        return {"corr_offdiag_meanabs": off_diag.abs().mean().item()}
-
-    def _compute_dipvae_covariance_metrics(
-        self, mu_matrix: torch.Tensor, logvar_matrix: torch.Tensor
-    ) -> Dict[str, float]:
-        """Compute covariance metrics using DIP-VAE-II estimator.
-
-        DIP-VAE-II covariance estimator (Kumar et al., 2018):
-            Cov_q(z) = Cov_batch(μ) + mean_batch(diag(exp(logvar)))
-
-        This captures both between-sample diversity and within-sample uncertainty,
-        matching the training loss computation.
-
-        Reference: https://ar5iv.org/pdf/1711.00848 (Eq. 8-10)
-
-        Args:
-            mu_matrix: [N, z_dim] latent means.
-            logvar_matrix: [N, z_dim] latent log-variances.
-
-        Returns:
-            Dictionary with DIP-VAE-II covariance metrics:
-                - cov_q_offdiag_meanabs: Mean absolute off-diagonal element
-                - cov_q_offdiag_fro: Frobenius norm of off-diagonal (raw penalty value)
-                - cov_q_diag_meanabs_error: Mean absolute deviation of diagonal from 1
-                - cov_q_diag_mean: Mean diagonal value (should → 1.0)
-        """
-        mu = mu_matrix  # [N, z_dim]
-        logvar = logvar_matrix  # [N, z_dim]
-
-        N, d = mu.shape
-
-        # Compute in FP32 for numerical stability
-        with torch.cuda.amp.autocast(enabled=False):
-            mu = mu.float()
-            logvar = logvar.float()
-
-            # Between-sample covariance: Cov(μ)
-            mu_centered = mu - mu.mean(dim=0, keepdim=True)
-            cov_mu = torch.mm(mu_centered.t(), mu_centered) / N  # [d, d]
-
-            # Within-sample variance: E[diag(exp(logvar))]
-            mean_encoder_var = torch.exp(logvar).mean(dim=0)  # [d]
-            cov_var = torch.diag(mean_encoder_var)  # [d, d]
-
-            # Total aggregated covariance (DIP-VAE-II)
-            cov_q = cov_mu + cov_var  # [d, d]
-
-            # Extract off-diagonal elements
-            mask = ~torch.eye(d, dtype=torch.bool, device=cov_q.device)
-            off_diag = cov_q[mask]
-
-            # Extract diagonal elements
-            diag_elems = torch.diag(cov_q)
-
-            metrics = {
-                "cov_q_offdiag_meanabs": off_diag.abs().mean().item(),
-                "cov_q_offdiag_fro": torch.norm(off_diag, p="fro").item(),
-                "cov_q_diag_meanabs_error": (diag_elems - 1.0).abs().mean().item(),
-                "cov_q_diag_mean": diag_elems.mean().item(),
-            }
-
-        return metrics
 
     def _compute_shift_sensitivity(
         self,
@@ -1099,10 +1035,12 @@ class LatentDiagnosticsCallback(Callback):
 
         return x_shifted
 
-    def _extract_seg_targets(
+    def _extract_seg_targets_from_list(
         self, data_list: List[Dict[str, Any]]
     ) -> tuple[Optional[pd.DataFrame], int]:
         """Extract volume, centroid, and ratio features from segmentations.
+
+        Adapter method that converts data_list format to batch tensor and calls metrics function.
 
         Args:
             data_list: List of {id, mu, x, seg} dictionaries.
@@ -1116,194 +1054,30 @@ class LatentDiagnosticsCallback(Callback):
         if not has_seg:
             return None, 0
 
-        targets = []
-
+        # Collect segmentations into batch (handle None values)
+        seg_list = []
         for d in data_list:
-            if d["seg"] is None:
-                # Fill with NaN
-                targets.append(
-                    {
-                        "logV_ncr": np.nan,
-                        "logV_ed": np.nan,
-                        "logV_et": np.nan,
-                        "logV_total": np.nan,
-                        "cz_total": np.nan,
-                        "cy_total": np.nan,
-                        "cx_total": np.nan,
-                        "r_ncr": np.nan,
-                        "r_ed": np.nan,
-                        "r_et": np.nan,
-                    }
-                )
-                continue
-
-            seg = d["seg"].squeeze(0)  # [128, 128, 128]
-
-            # Volumes (voxel counts)
-            # Use configurable segmentation labels
-            ncr_label = self.seg_labels["ncr"]
-            ed_label = self.seg_labels["ed"]
-            et_label = self.seg_labels["et"]
-
-            V_ncr = (seg == ncr_label).sum().item()
-            V_ed = (seg == ed_label).sum().item()
-            V_et = (seg == et_label).sum().item()
-            V_total = V_ncr + V_ed + V_et
-
-            # Log volumes (with offset to handle zeros)
-            logV_ncr = np.log1p(V_ncr)
-            logV_ed = np.log1p(V_ed)
-            logV_et = np.log1p(V_et)
-            logV_total = np.log1p(V_total)
-
-            # Centroid (only for total tumor mask)
-            if V_total > 0:
-                mask_total = seg > 0
-                coords = torch.nonzero(mask_total, as_tuple=False).float()  # [N_voxels, 3]
-                centroid = coords.mean(dim=0)  # [3]: (D_idx, H_idx, W_idx)
-                cz, cy, cx = centroid.tolist()
+            if d["seg"] is not None:
+                seg_list.append(d["seg"])  # [1, D, H, W]
             else:
-                cz, cy, cx = np.nan, np.nan, np.nan
+                # Create dummy tensor filled with zeros
+                # Assume shape from first non-None seg or default
+                if seg_list:
+                    dummy_shape = seg_list[0].shape
+                else:
+                    dummy_shape = (1, 128, 128, 128)
+                seg_list.append(torch.zeros(dummy_shape))
 
-            # Ratios (handle division by zero)
-            if V_total > 0:
-                r_ncr = V_ncr / V_total
-                r_ed = V_ed / V_total
-                r_et = V_et / V_total
-            else:
-                r_ncr = r_ed = r_et = np.nan
+        seg_batch = torch.stack(seg_list, dim=0)  # [B, 1, D, H, W]
 
-            targets.append(
-                {
-                    "logV_ncr": logV_ncr,
-                    "logV_ed": logV_ed,
-                    "logV_et": logV_et,
-                    "logV_total": logV_total,
-                    "cz_total": cz,
-                    "cy_total": cy,
-                    "cx_total": cx,
-                    "r_ncr": r_ncr,
-                    "r_ed": r_ed,
-                    "r_et": r_et,
-                }
-            )
+        # Use metrics function
+        df = extract_segmentation_targets(
+            seg_batch=seg_batch,
+            label_map=self.seg_labels,
+            spacing=(1.875, 1.875, 1.875)  # Default BraTS spacing
+        )
 
-        df = pd.DataFrame(targets)
         return df, 1
-
-    def _ridge_probe(
-        self, mu_matrix: torch.Tensor, targets_df: pd.DataFrame, seed: int = 42
-    ) -> Dict[str, Any]:
-        """Ridge regression with proper CV (no preprocessing leakage).
-
-        Uses Pipeline + TransformedTargetRegressor to ensure scalers are fit
-        ONLY on training folds, preventing test data from leaking into preprocessing.
-        Reports mean ± std of held-out R² across 5-fold CV.
-
-        Reference: sklearn best practices for preprocessing in CV.
-
-        Args:
-            mu_matrix: [N, z_dim] float32 latent means.
-            targets_df: DataFrame with target columns.
-            seed: Random seed for CV splits (default: 42).
-
-        Returns:
-            Dictionary with r2_{target}_mean, r2_{target}_std, top5dims_{target}, n_empty_{target}.
-        """
-        X = mu_matrix.cpu().numpy()  # [N, z_dim]
-
-        results = {}
-
-        # Define targets to probe
-        target_cols = [
-            "logV_ncr",
-            "logV_ed",
-            "logV_et",
-            "logV_total",
-            "cz_total",
-            "cy_total",
-            "cx_total",
-            "r_ncr",
-            "r_ed",
-            "r_et",
-        ]
-
-        # Track empty counts
-        empty_counts = {"ncr": 0, "ed": 0, "et": 0, "total": 0}
-
-        for target_col in target_cols:
-            y = targets_df[target_col].values  # [N]
-
-            # Count invalid samples
-            valid_mask = np.isfinite(y)
-            n_valid = valid_mask.sum()
-            n_empty = len(y) - n_valid
-
-            # Update empty counts for volume targets
-            if target_col.startswith("logV_"):
-                compartment = target_col.replace("logV_", "")
-                empty_counts[compartment] = n_empty
-
-            # Skip if too few valid samples for CV (need at least 10 for 5-fold)
-            if n_valid < 10:
-                logger.warning(
-                    f"Target {target_col} has only {n_valid} valid samples (need ≥10 for 5-fold CV), skipping"
-                )
-                results[f"r2_{target_col}_mean"] = np.nan
-                results[f"r2_{target_col}_std"] = np.nan
-                # Only add top5dims for key targets
-                if target_col in ["logV_total", "cx_total", "cy_total", "cz_total"]:
-                    results[f"top5dims_{target_col}"] = ""
-                continue
-
-            # Filter to valid samples
-            X_valid = X[valid_mask]
-            y_valid = y[valid_mask]
-
-            # Pipeline: StandardScaler fit ONLY on train fold, then Ridge
-            # TransformedTargetRegressor: same for y scaling
-            # This prevents preprocessing leakage from test fold
-            model = TransformedTargetRegressor(
-                regressor=Pipeline([
-                    ('scaler', StandardScaler()),
-                    ('ridge', Ridge(alpha=1.0, random_state=seed))
-                ]),
-                transformer=StandardScaler()
-            )
-
-            # Cross-validation with proper preprocessing
-            cv_scores = cross_val_score(
-                model, X_valid, y_valid,
-                cv=5,
-                scoring='r2',
-                n_jobs=1  # Single-threaded for determinism
-            )
-
-            # Log mean and std across folds
-            results[f"r2_{target_col}_mean"] = np.mean(cv_scores)
-            results[f"r2_{target_col}_std"] = np.std(cv_scores)
-
-            # Top-5 coefficient dimensions (fit on all valid data for interpretability)
-            if target_col in ["logV_total", "cx_total", "cy_total", "cz_total"]:
-                # Fit full model to get coefficients (for interpretability only)
-                model_full = TransformedTargetRegressor(
-                    regressor=Pipeline([
-                        ('scaler', StandardScaler()),
-                        ('ridge', Ridge(alpha=1.0, random_state=seed))
-                    ]),
-                    transformer=StandardScaler()
-                )
-                model_full.fit(X_valid, y_valid)
-                # Extract coefficients from the ridge regressor in the pipeline
-                coef_abs = np.abs(model_full.regressor_.named_steps['ridge'].coef_)
-                top5_idx = np.argsort(coef_abs)[::-1][:5]
-                results[f"top5dims_{target_col}"] = f"[{','.join(map(str, top5_idx))}]"
-
-        # Add empty counts
-        for compartment, count in empty_counts.items():
-            results[f"n_empty_{compartment}"] = count
-
-        return results
 
     def _log_metrics(
         self, metrics: Dict[str, Any], pl_module: pl.LightningModule

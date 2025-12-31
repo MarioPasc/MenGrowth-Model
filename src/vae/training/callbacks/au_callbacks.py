@@ -16,6 +16,7 @@ from pytorch_lightning.callbacks import Callback
 from torch.utils.data import DataLoader, Subset
 
 from vae.data.datasets import safe_collate
+from vae.metrics import compute_active_units
 
 logger = logging.getLogger(__name__)
 
@@ -246,11 +247,12 @@ class ActiveUnitsCallback(Callback):
                 mu_list.append(mu_cpu)
 
         mu_mat = torch.cat(mu_list, dim=0)  # [N, z_dim]
-        var_per_dim = mu_mat.var(dim=0, unbiased=False)  # [z_dim]
 
-        active_mask = var_per_dim > self.eps_au
-        au_count = active_mask.sum().item()
+        # Use metrics module for AU computation
+        results = compute_active_units(mu_mat, eps_au=self.eps_au)
+
+        au_count = results["au_count"]
+        au_frac = results["au_frac"]
         z_dim = mu_mat.shape[1]
-        au_frac = au_count / z_dim
 
         return float(au_count), float(au_frac), int(z_dim)

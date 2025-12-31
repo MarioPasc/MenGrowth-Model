@@ -35,6 +35,7 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
     init_method = cfg.model.get("init_method", "kaiming")
     activation = cfg.model.get("activation", "relu")
     num_groups = cfg.model.get("num_groups", 8)
+    norm_type = cfg.model.get("norm", "group").lower()  # Support "GROUP" or "group"
 
     # Get training parameters
     posterior_logvar_min = cfg.train.get("posterior_logvar_min", -6.0)
@@ -61,6 +62,7 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             use_residual=use_residual,
             init_method=init_method,
             activation=activation,
+            norm_type=norm_type,
         )
     else:
         # Build standard baseline VAE (transposed-conv decoder)
@@ -75,6 +77,7 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             use_residual=use_residual,
             init_method=init_method,
             activation=activation,
+            norm_type=norm_type,
         )
 
     return model

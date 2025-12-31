@@ -24,7 +24,7 @@ from ...losses import (
     get_lambda_cov_schedule,
 )
 from ...losses.elbo import get_beta_schedule
-from vae.utils.image_metrics import compute_ssim_3d, compute_psnr_3d
+from vae.metrics import compute_ssim_3d, compute_psnr_3d
 
 
 logger = logging.getLogger(__name__)
