@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from .baseline import Encoder3D
+from .vae import Encoder3D
 from ..components import SpatialBroadcastDecoder
 
 
@@ -43,6 +43,11 @@ class VAESBD(nn.Module):
         sbd_upsample_mode: str = "resize_conv",
         posterior_logvar_min: float = -6.0,
         gradient_checkpointing: bool = False,
+        dropout: float = 0.0,
+        use_residual: bool = True,
+        init_method: str = "kaiming",
+        activation: str = "relu",
+        norm_type: str = "group",
     ):
         """Initialize VAESBD.
 
@@ -57,6 +62,11 @@ class VAESBD(nn.Module):
                 Default: -6.0 (exp(-6) ≈ 0.0025 variance).
             gradient_checkpointing: If True, use gradient checkpointing
                 on encoder/decoder blocks to reduce memory.
+            dropout: Dropout probability for encoder.
+            use_residual: Whether to use residual connections in encoder blocks.
+            init_method: Weight initialization method.
+            activation: Activation function name.
+            norm_type: Normalization type name.
         """
         super().__init__()
 
@@ -70,6 +80,11 @@ class VAESBD(nn.Module):
             base_filters=base_filters,
             z_dim=z_dim,
             num_groups=num_groups,
+            dropout=dropout,
+            use_residual=use_residual,
+            init_method=init_method,
+            activation=activation,
+            norm_type=norm_type,
         )
 
         # Decoder: Spatial Broadcast Decoder
@@ -117,7 +132,7 @@ class VAESBD(nn.Module):
             # Initial conv (not checkpointed, small)
             x = self.encoder.conv1(x)
             x = self.encoder.gn1(x)
-            x = self.encoder.relu(x)
+            x = self.encoder.activation(x)
 
             # Checkpointed residual layers
             for layer in self._checkpoint_encoder_layers:

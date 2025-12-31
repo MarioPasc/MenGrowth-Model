@@ -100,8 +100,8 @@ def get_experiment_info(cfg: OmegaConf) -> tuple:
     # Check for model variant
     variant = cfg.model.get("variant", None)
 
-    if variant == "dipvae_sbd":
-        return "exp2_dipvae_sbd", "dipvae"
+    if variant == "dipvae":
+        return "exp2_dipvae", "dipvae"
     elif variant == "tcvae_sbd":
         return "exp2_tcvae_sbd", "tcvae"
     else:

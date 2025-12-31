@@ -25,28 +25,16 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
 
     Returns:
         Initialized VAE model (BaselineVAE or VAESBD).
-
-    Example config:
-        model:
-          variant: "dipvae_sbd"  # for routing to DIPVAELitModule
-          use_sbd: true          # NEW: controls decoder type
-          z_dim: 128
-          input_channels: 4
-          base_filters: 32
-          norm: "GROUP"
-          # SBD-specific (only used if use_sbd=true)
-          sbd_grid_size: [8, 8, 8]
-          sbd_upsample_mode: "resize_conv"
     """
     # Common parameters
     input_channels = cfg.model.input_channels
     z_dim = cfg.model.z_dim
     base_filters = cfg.model.base_filters
-
-    # Determine num_groups from norm config
-    num_groups = 8  # default
-    if cfg.model.norm == "GROUP":
-        num_groups = 8
+    dropout = cfg.model.get("dropout", 0.0)
+    use_residual = cfg.model.get("use_residual", True)
+    init_method = cfg.model.get("init_method", "kaiming")
+    activation = cfg.model.get("activation", "relu")
+    num_groups = cfg.model.get("num_groups", 8)
 
     # Get training parameters
     posterior_logvar_min = cfg.train.get("posterior_logvar_min", -6.0)
@@ -69,6 +57,10 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             sbd_upsample_mode=sbd_upsample_mode,
             posterior_logvar_min=posterior_logvar_min,
             gradient_checkpointing=gradient_checkpointing,
+            dropout=dropout,
+            use_residual=use_residual,
+            init_method=init_method,
+            activation=activation,
         )
     else:
         # Build standard baseline VAE (transposed-conv decoder)
@@ -79,6 +71,10 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             num_groups=num_groups,
             gradient_checkpointing=gradient_checkpointing,
             posterior_logvar_min=posterior_logvar_min,
+            dropout=dropout,
+            use_residual=use_residual,
+            init_method=init_method,
+            activation=activation,
         )
 
     return model

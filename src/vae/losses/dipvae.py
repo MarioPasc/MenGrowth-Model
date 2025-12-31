@@ -125,10 +125,11 @@ def compute_dipvae_loss(
     kl_free_bits: float = 0.0,
     kl_free_bits_mode: str = "batch_mean",
     use_ddp_gather: bool = True,
+    beta: float = 1.0,
 ) -> Dict[str, torch.Tensor]:
     """Compute DIP-VAE-II loss with covariance regularization.
 
-    Loss = recon + KL + λ_od × ||Cov_offdiag||_F² + λ_d × ||diag(Cov) - 1||_2²
+    Loss = recon + beta * KL + λ_od × ||Cov_offdiag||_F² + λ_d × ||diag(Cov) - 1||_2²
 
     Uses CORRECT DIP-VAE-II covariance estimator:
         Cov_q(z) ≈ Cov_batch(μ) + mean_batch(diag(exp(logvar)))
@@ -147,6 +148,7 @@ def compute_dipvae_loss(
         kl_free_bits: Minimum KL threshold per latent dimension (nats)
         kl_free_bits_mode: Free Bits clamping mode ("batch_mean" or "per_sample")
         use_ddp_gather: If True, use all-gather when DDP active (default: True)
+        beta: Weight for KL divergence term (default: 1.0)
 
     Returns:
         Dict with keys:
@@ -252,7 +254,7 @@ def compute_dipvae_loss(
     # =========================================================================
     # Total loss
     # =========================================================================
-    total = recon + kl_constrained + cov_penalty_od + cov_penalty_d
+    total = recon + (beta * kl_constrained) + cov_penalty_od + cov_penalty_d
 
     # Check for non-finite values
     if not torch.isfinite(total):

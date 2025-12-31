@@ -1,6 +1,6 @@
 """VAE models module."""
 
-from .baseline import BaselineVAE
+from .vae import BaselineVAE
 from .vae_sbd import VAESBD
 
 # Backward compatibility alias

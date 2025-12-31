@@ -1297,7 +1297,7 @@ class LatentDiagnosticsCallback(Callback):
                 # Extract coefficients from the ridge regressor in the pipeline
                 coef_abs = np.abs(model_full.regressor_.named_steps['ridge'].coef_)
                 top5_idx = np.argsort(coef_abs)[::-1][:5]
-                results[f"top5dims_{target_col}"] = ";".join(map(str, top5_idx))
+                results[f"top5dims_{target_col}"] = f"[{','.join(map(str, top5_idx))}]"
 
         # Add empty counts
         for compartment, count in empty_counts.items():

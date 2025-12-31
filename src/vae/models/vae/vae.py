@@ -15,11 +15,39 @@ import torch.nn as nn
 from typing import Tuple
 
 
+def get_activation(name: str) -> nn.Module:
+    """Get activation function by name."""
+    if name.lower() == "relu":
+        return nn.ReLU(inplace=True)
+    elif name.lower() == "leaky_relu":
+        return nn.LeakyReLU(inplace=True)
+    elif name.lower() in ["silu", "swish"]:
+        return nn.SiLU(inplace=True)
+    elif name.lower() == "gelu":
+        return nn.GELU()
+    else:
+        raise ValueError(f"Unknown activation: {name}")
+
+
+def get_norm(name: str, channels: int, num_groups: int = 8) -> nn.Module:
+    """Get normalization layer by name."""
+    if name.lower() == "group":
+        return nn.GroupNorm(num_groups, channels)
+    elif name.lower() == "batch":
+        return nn.BatchNorm3d(channels)
+    elif name.lower() == "instance":
+        return nn.InstanceNorm3d(channels)
+    elif name.lower() == "none":
+        return nn.Identity()
+    else:
+        raise ValueError(f"Unknown norm: {name}")
+
+
 class BasicBlock3d(nn.Module):
-    """3D Residual block with GroupNorm.
+    """3D Residual block with configurable Norm and Activation.
 
     Implements: y = F(x, {W_i}) + shortcut(x)
-    where F is two 3x3x3 convolutions with GroupNorm and ReLU.
+    where F is two 3x3x3 convolutions with Norm and Activation.
     """
 
     expansion = 1
@@ -31,6 +59,9 @@ class BasicBlock3d(nn.Module):
         stride: int = 1,
         num_groups: int = 8,
         downsample: nn.Module = None,
+        use_residual: bool = True,
+        activation: str = "relu",
+        norm_type: str = "group",
     ):
         """Initialize BasicBlock3d.
 
@@ -40,21 +71,25 @@ class BasicBlock3d(nn.Module):
             stride: Stride for first convolution (for downsampling).
             num_groups: Number of groups for GroupNorm.
             downsample: Optional downsample module for skip connection.
+            use_residual: Whether to use residual skip connection.
+            activation: Activation function name.
+            norm_type: Normalization type name.
         """
         super().__init__()
+        self.use_residual = use_residual
 
         self.conv1 = nn.Conv3d(
             in_channels, out_channels, kernel_size=3,
             stride=stride, padding=1, bias=False
         )
-        self.gn1 = nn.GroupNorm(num_groups, out_channels)
-        self.relu = nn.ReLU(inplace=True)
+        self.gn1 = get_norm(norm_type, out_channels, num_groups)
+        self.activation = get_activation(activation)
 
         self.conv2 = nn.Conv3d(
             out_channels, out_channels, kernel_size=3,
             stride=1, padding=1, bias=False
         )
-        self.gn2 = nn.GroupNorm(num_groups, out_channels)
+        self.gn2 = get_norm(norm_type, out_channels, num_groups)
 
         self.downsample = downsample
         self.stride = stride
@@ -65,16 +100,17 @@ class BasicBlock3d(nn.Module):
 
         out = self.conv1(x)
         out = self.gn1(out)
-        out = self.relu(out)
+        out = self.activation(out)
 
         out = self.conv2(out)
         out = self.gn2(out)
 
-        if self.downsample is not None:
-            identity = self.downsample(x)
+        if self.use_residual:
+            if self.downsample is not None:
+                identity = self.downsample(x)
+            out += identity
 
-        out += identity
-        out = self.relu(out)
+        out = self.activation(out)
 
         return out
 
@@ -98,6 +134,11 @@ class Encoder3D(nn.Module):
         base_filters: int = 32,
         z_dim: int = 128,
         num_groups: int = 8,
+        dropout: float = 0.0,
+        use_residual: bool = True,
+        init_method: str = "kaiming",
+        activation: str = "relu",
+        norm_type: str = "group",
     ):
         """Initialize Encoder3D.
 
@@ -106,19 +147,28 @@ class Encoder3D(nn.Module):
             base_filters: Base number of filters (doubled at each stage).
             z_dim: Latent space dimensionality.
             num_groups: Number of groups for GroupNorm.
+            dropout: Dropout probability.
+            use_residual: Whether to use residual connections in blocks.
+            init_method: Weight initialization method ('kaiming', 'xavier', 'orthogonal').
+            activation: Activation function name.
+            norm_type: Normalization type name.
         """
         super().__init__()
 
         self.in_channels = base_filters
         self.num_groups = num_groups
+        self.use_residual = use_residual
+        self.init_method = init_method
+        self.activation_name = activation
+        self.norm_type = norm_type
 
         # Initial convolution: reduce spatial by 2
         self.conv1 = nn.Conv3d(
             input_channels, base_filters, kernel_size=3,
             stride=2, padding=1, bias=False
         )
-        self.gn1 = nn.GroupNorm(num_groups, base_filters)
-        self.relu = nn.ReLU(inplace=True)
+        self.gn1 = get_norm(norm_type, base_filters, num_groups)
+        self.activation = get_activation(activation)
 
         # ResNet stages (each stage has 2 blocks)
         self.layer1 = self._make_layer(base_filters, 2, stride=1)      # 64^3
@@ -130,6 +180,9 @@ class Encoder3D(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool3d(1)
 
         final_channels = base_filters * 8
+        
+        self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
+        
         self.fc_mu = nn.Linear(final_channels, z_dim)
         self.fc_logvar = nn.Linear(final_channels, z_dim)
 
@@ -148,35 +201,54 @@ class Encoder3D(nn.Module):
             downsample = nn.Sequential(
                 nn.Conv3d(self.in_channels, out_channels, kernel_size=1,
                           stride=stride, bias=False),
-                nn.GroupNorm(self.num_groups, out_channels),
+                get_norm(self.norm_type, out_channels, self.num_groups),
             )
 
         layers = []
         layers.append(BasicBlock3d(
             self.in_channels, out_channels, stride,
-            self.num_groups, downsample
+            self.num_groups, downsample,
+            use_residual=self.use_residual,
+            activation=self.activation_name,
+            norm_type=self.norm_type,
         ))
         self.in_channels = out_channels
 
         for _ in range(1, num_blocks):
             layers.append(BasicBlock3d(
                 out_channels, out_channels,
-                num_groups=self.num_groups
+                num_groups=self.num_groups,
+                use_residual=self.use_residual,
+                activation=self.activation_name,
+                norm_type=self.norm_type,
             ))
 
         return nn.Sequential(*layers)
 
     def _initialize_weights(self):
-        """Initialize network weights using He initialization."""
+        """Initialize network weights."""
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.GroupNorm):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+                if self.init_method == "kaiming":
+                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                elif self.init_method == "xavier":
+                    nn.init.xavier_normal_(m.weight)
+                elif self.init_method == "orthogonal":
+                    nn.init.orthogonal_(m.weight)
+            elif isinstance(m, (nn.GroupNorm, nn.BatchNorm3d, nn.InstanceNorm3d)):
+                if m.weight is not None:
+                    nn.init.constant_(m.weight, 1)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                nn.init.constant_(m.bias, 0)
+                if self.init_method == "kaiming":
+                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                elif self.init_method == "xavier":
+                    nn.init.xavier_normal_(m.weight)
+                elif self.init_method == "orthogonal":
+                    nn.init.orthogonal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode input to latent distribution parameters.
@@ -191,7 +263,7 @@ class Encoder3D(nn.Module):
         # Initial conv
         x = self.conv1(x)
         x = self.gn1(x)
-        x = self.relu(x)
+        x = self.activation(x)
 
         # ResNet stages
         x = self.layer1(x)
@@ -226,6 +298,9 @@ class Decoder3D(nn.Module):
         output_channels: int = 4,
         base_filters: int = 32,
         num_groups: int = 8,
+        init_method: str = "kaiming",
+        activation: str = "relu",
+        norm_type: str = "group",
     ):
         """Initialize Decoder3D.
 
@@ -234,11 +309,18 @@ class Decoder3D(nn.Module):
             output_channels: Number of output channels (4 for MRI modalities).
             base_filters: Base number of filters.
             num_groups: Number of groups for GroupNorm.
+            init_method: Weight initialization method.
+            activation: Activation function name.
+            norm_type: Normalization type name.
         """
         super().__init__()
 
         self.base_filters = base_filters
         self.initial_size = 4  # Start from 4^3 spatial size
+        self.init_method = init_method
+        self.activation_name = activation
+        self.norm_type = norm_type
+        self.num_groups = num_groups
 
         # Project latent to initial volume
         initial_channels = base_filters * 8
@@ -281,23 +363,36 @@ class Decoder3D(nn.Module):
                 in_channels, out_channels, kernel_size=4,
                 stride=2, padding=1, bias=False
             ),
-            nn.GroupNorm(num_groups, out_channels),
-            nn.ReLU(inplace=True),
+            get_norm(self.norm_type, out_channels, num_groups),
+            get_activation(self.activation_name),
         )
 
     def _initialize_weights(self):
         """Initialize network weights."""
         for m in self.modules():
             if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if self.init_method == "kaiming":
+                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                elif self.init_method == "xavier":
+                    nn.init.xavier_normal_(m.weight)
+                elif self.init_method == "orthogonal":
+                    nn.init.orthogonal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.GroupNorm):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.GroupNorm, nn.BatchNorm3d, nn.InstanceNorm3d)):
+                if m.weight is not None:
+                    nn.init.constant_(m.weight, 1)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                nn.init.constant_(m.bias, 0)
+                if self.init_method == "kaiming":
+                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                elif self.init_method == "xavier":
+                    nn.init.xavier_normal_(m.weight)
+                elif self.init_method == "orthogonal":
+                    nn.init.orthogonal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Decode latent vector to reconstruction.
@@ -352,6 +447,11 @@ class BaselineVAE(nn.Module):
         num_groups: int = 8,
         gradient_checkpointing: bool = False,
         posterior_logvar_min: float = -6.0,
+        dropout: float = 0.0,
+        use_residual: bool = True,
+        init_method: str = "kaiming",
+        activation: str = "relu",
+        norm_type: str = "group",
     ):
         """Initialize BaselineVAE.
 
@@ -362,6 +462,11 @@ class BaselineVAE(nn.Module):
             num_groups: Number of groups for GroupNorm.
             gradient_checkpointing: Enable gradient checkpointing to save memory.
             posterior_logvar_min: Minimum value for log-variance (prevents numerical underflow).
+            dropout: Dropout probability for encoder.
+            use_residual: Whether to use residual connections in encoder blocks.
+            init_method: Weight initialization method.
+            activation: Activation function name.
+            norm_type: Normalization type name.
         """
         super().__init__()
 
@@ -374,6 +479,11 @@ class BaselineVAE(nn.Module):
             base_filters=base_filters,
             z_dim=z_dim,
             num_groups=num_groups,
+            dropout=dropout,
+            use_residual=use_residual,
+            init_method=init_method,
+            activation=activation,
+            norm_type=norm_type,
         )
 
         self.decoder = Decoder3D(
@@ -381,6 +491,9 @@ class BaselineVAE(nn.Module):
             output_channels=input_channels,
             base_filters=base_filters,
             num_groups=num_groups,
+            init_method=init_method,
+            activation=activation,
+            norm_type=norm_type,
         )
 
     def reparameterize(
