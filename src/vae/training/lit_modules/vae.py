@@ -82,7 +82,8 @@ class VAELitModule(pl.LightningModule):
                               Default: "batch_mean" (recommended for small batches).
             kl_target_capacity: Target capacity (nats). None disables. Default: None.
             kl_capacity_anneal_epochs: Epochs to reach target capacity. Default: 100.
-            posterior_logvar_min: Minimum value for logvar (clamping). Default: -6.0.
+            posterior_logvar_min: Minimum value for logvar. Stored for hyperparameter
+                tracking; actual clamping happens in model.encode(). Default: -6.0.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -102,7 +103,9 @@ class VAELitModule(pl.LightningModule):
         self.kl_target_capacity = kl_target_capacity
         self.kl_capacity_anneal_epochs = kl_capacity_anneal_epochs
         self.current_capacity = 0.0 if kl_target_capacity is not None else None
-        self.posterior_logvar_min = posterior_logvar_min
+        # NOTE: posterior_logvar_min stored in hparams for tracking, but actual
+        # clamping happens in model.encode(). Use self.model.posterior_logvar_min
+        # for runtime monitoring (e.g., logvar saturation tracking).
 
     @classmethod
     def from_config(cls, cfg: DictConfig) -> "VAELitModule":
@@ -248,6 +251,31 @@ class VAELitModule(pl.LightningModule):
             self.log("sched/expected_kl_floor", expected_kl_floor, on_step=False, on_epoch=True)
             self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
 
+        # === PER-DIMENSION KL STATISTICS (collapse detection) ===
+        # Compute per-dimension KL: 0.5 * (exp(logvar) + mu^2 - 1 - logvar) [B, z_dim]
+        kl_per_dim = 0.5 * (torch.exp(logvar) + mu ** 2 - 1.0 - logvar)
+        kl_per_dim = torch.clamp(kl_per_dim, min=0.0)  # Numerical stability
+
+        # Per-sample statistics (mean across batch of min/max across dims)
+        self.log("train_epoch/kl_per_dim_min", kl_per_dim.min(dim=1).values.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_per_dim_max", kl_per_dim.max(dim=1).values.mean(), on_step=False, on_epoch=True)
+
+        # Collapsed fraction: dims with batch-mean KL < 0.01 nats
+        kl_batch_mean_per_dim = kl_per_dim.mean(dim=0)  # [z_dim]
+        collapsed_frac = (kl_batch_mean_per_dim < 0.01).float().mean()
+        self.log("train_epoch/kl_collapsed_frac", collapsed_frac, on_step=False, on_epoch=True)
+
+        # === LOGVAR SATURATION TRACKING ===
+        # Fraction of dimensions hitting the posterior_logvar_min floor
+        logvar_min = self.model.posterior_logvar_min  # -6.0
+        logvar_at_min_frac = (logvar <= logvar_min + 1e-3).float().mean()
+        self.log("train_epoch/logvar_at_min_frac", logvar_at_min_frac, on_step=False, on_epoch=True)
+
+        # === KL-TO-RECONSTRUCTION RATIO ===
+        # If << 1, KL is being ignored by the optimizer
+        kl_to_recon_ratio = loss_dict["kl_raw"] / (loss_dict["recon"] + 1e-8)
+        self.log("train_epoch/loss_ratio_kl_to_recon", kl_to_recon_ratio, on_step=False, on_epoch=True)
+
         # === OPTIMIZER LOGGING ===
         opt = self.optimizers()
         if opt is not None:
@@ -307,6 +335,30 @@ class VAELitModule(pl.LightningModule):
         # Latent statistics
         self.log("val_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True)
         self.log("val_epoch/logvar_mean", logvar.mean(), on_step=False, on_epoch=True)
+
+        # === COLLAPSE DIAGNOSTICS (expensive, run on first batch only) ===
+        if batch_idx == 0:
+            with torch.no_grad():
+                # 1. Deterministic recon: decode z = μ (no sampling noise)
+                x_hat_mu = self.model.decode(mu)
+                recon_mu_mse = torch.nn.functional.mse_loss(x_hat_mu, x, reduction="mean")
+                self.log("diag/recon_mu_mse", recon_mu_mse, on_step=False, on_epoch=True)
+
+                # 2. z=0 ablation: test if decoder ignores z entirely
+                # If recon_z0_mse ≈ recon_mu_mse, decoder has collapsed (ignores z)
+                z_zero = torch.zeros_like(mu)
+                x_hat_z0 = self.model.decode(z_zero)
+                recon_z0_mse = torch.nn.functional.mse_loss(x_hat_z0, x, reduction="mean")
+                self.log("diag/recon_z0_mse", recon_z0_mse, on_step=False, on_epoch=True)
+
+                # 3. μ variance per-dim (batch-level AU proxy)
+                mu_var_per_dim = mu.var(dim=0, unbiased=False)  # [z_dim]
+                mu_var_mean = mu_var_per_dim.mean()
+                self.log("diag/mu_var_mean", mu_var_mean, on_step=False, on_epoch=True)
+
+                # 4. Count batch-level "active" dims (var > 0.01)
+                batch_au_count = (mu_var_per_dim > 0.01).sum().float()
+                self.log("diag/batch_au_count", batch_au_count, on_step=False, on_epoch=True)
 
         return loss_dict["loss"]
 

@@ -103,7 +103,8 @@ class DIPVAELitModule(pl.LightningModule):
             log_collapse_diagnostics: If True, log additional metrics to diagnose
                 posterior collapse (deterministic recon, z=0 ablation, μ variance).
             modality_names: List of modality names for logging.
-            posterior_logvar_min: Minimum value for logvar (clamping).
+            posterior_logvar_min: Minimum value for logvar. Stored for hyperparameter
+                tracking; actual clamping happens in model.encode(). Default: -6.0.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -126,7 +127,9 @@ class DIPVAELitModule(pl.LightningModule):
         self.use_ddp_gather = use_ddp_gather
         self.log_collapse_diagnostics = log_collapse_diagnostics
         self.modality_names = modality_names or ["t1c", "t1n", "t2f", "t2w"]
-        self.posterior_logvar_min = posterior_logvar_min
+        # NOTE: posterior_logvar_min stored in hparams for tracking, but actual
+        # clamping happens in model.encode(). Use self.model.posterior_logvar_min
+        # for runtime monitoring (e.g., logvar saturation tracking).
 
         # Initialize current lambda values (updated via schedule)
         self.current_lambda_od = 0.0
@@ -336,6 +339,31 @@ class DIPVAELitModule(pl.LightningModule):
             self.log("sched/expected_kl_floor", expected_kl_floor, on_step=False, on_epoch=True)
             self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
 
+        # === PER-DIMENSION KL STATISTICS (collapse detection) ===
+        # Compute per-dimension KL: 0.5 * (exp(logvar) + mu^2 - 1 - logvar) [B, z_dim]
+        kl_per_dim = 0.5 * (torch.exp(logvar) + mu ** 2 - 1.0 - logvar)
+        kl_per_dim = torch.clamp(kl_per_dim, min=0.0)  # Numerical stability
+
+        # Per-sample statistics (mean across batch of min/max across dims)
+        self.log("train_epoch/kl_per_dim_min", kl_per_dim.min(dim=1).values.mean(), on_step=False, on_epoch=True)
+        self.log("train_epoch/kl_per_dim_max", kl_per_dim.max(dim=1).values.mean(), on_step=False, on_epoch=True)
+
+        # Collapsed fraction: dims with batch-mean KL < 0.01 nats
+        kl_batch_mean_per_dim = kl_per_dim.mean(dim=0)  # [z_dim]
+        collapsed_frac = (kl_batch_mean_per_dim < 0.01).float().mean()
+        self.log("train_epoch/kl_collapsed_frac", collapsed_frac, on_step=False, on_epoch=True)
+
+        # === LOGVAR SATURATION TRACKING ===
+        # Fraction of dimensions hitting the posterior_logvar_min floor
+        logvar_min = self.model.posterior_logvar_min  # -6.0
+        logvar_at_min_frac = (logvar <= logvar_min + 1e-3).float().mean()
+        self.log("train_epoch/logvar_at_min_frac", logvar_at_min_frac, on_step=False, on_epoch=True)
+
+        # === KL-TO-RECONSTRUCTION RATIO ===
+        # If << 1, KL is being ignored by the optimizer
+        kl_to_recon_ratio = loss_dict["kl_raw"] / (loss_dict["recon"] + 1e-8)
+        self.log("train_epoch/loss_ratio_kl_to_recon", kl_to_recon_ratio, on_step=False, on_epoch=True)
+
         # === OPTIMIZER LOGGING ===
         opt = self.optimizers()
         if opt is not None:
@@ -405,9 +433,8 @@ class DIPVAELitModule(pl.LightningModule):
         self.log("val_epoch/kl_constrained", loss_dict["kl_constrained"], on_step=False, on_epoch=True)
 
         # Normalized metrics (resolution-independent)
-        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
         z_dim = mu.shape[1]
-        self.log("val_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        # Note: recon is already mean-reduced (per-element MSE), no additional normalization needed
         self.log("val_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
 
         # Per-modality reconstruction error

@@ -73,9 +73,9 @@ train:
   kl_annealing_ratio: 0.5  # Anneal for first 50% of each cycle
 
   # Free bits (per-dimension KL threshold for posterior collapse mitigation)
-  kl_free_bits: 0.01                    # RECOMMENDED: 0.2 nats/dim for stronger collapse prevention
+  kl_free_bits: 0.2                     # 0.2 nats/dim provides strong collapse prevention
                                        # With batch_mean mode and z_dim=128: floor ≈ 128 × 0.2 = 25.6 nats
-                                       # Start with 0.2, reduce to 0.1 if KL too high
+                                       # Reduce to 0.1 if KL is too high and hurting reconstruction
   kl_free_bits_mode: "batch_mean"      # "per_sample" or "batch_mean"
                                        # batch_mean: weaker, better for small batches (B=8)
                                        # per_sample: stronger, uniform floor across samples
