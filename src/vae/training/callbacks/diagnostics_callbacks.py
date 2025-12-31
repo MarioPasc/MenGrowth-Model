@@ -145,7 +145,7 @@ class LatentDiagnosticsCallback(Callback):
         if trainer.current_epoch % self.every_n_epochs != 0:
             return
 
-        # Load or initialize sample IDs (rank 0 only)
+        # Load or initialize sample IDs (rank 0 only - file I/O is inside this guard)
         if self._sample_ids is None and trainer.is_global_zero:
             self._sample_ids = self._load_sample_ids()
 

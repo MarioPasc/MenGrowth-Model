@@ -93,6 +93,8 @@ class SpatialBroadcastDecoder(nn.Module):
         self.final_conv = nn.Conv3d(
             final_in_channels, output_channels, kernel_size=3, padding=1
         )
+        # Final activation to bound output to [-1, 1], matching Decoder3D behavior
+        self.final_act = nn.Tanh()
 
         # Initialize weights
         self._initialize_weights()
@@ -238,7 +240,8 @@ class SpatialBroadcastDecoder(nn.Module):
         x = self.up3(x)  # [B, 32, 64, 64, 64]
         x = self.up4(x)  # [B, 16, 128, 128, 128]
 
-        # Final conv to output channels
-        x_hat = self.final_conv(x)  # [B, 4, 128, 128, 128]
+        # Final conv to output channels with Tanh activation
+        x = self.final_conv(x)  # [B, 4, 128, 128, 128]
+        x_hat = self.final_act(x)  # Bound output to [-1, 1]
 
         return x_hat

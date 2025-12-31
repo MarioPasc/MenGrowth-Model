@@ -52,9 +52,10 @@ def compute_dipvae_covariance(
         logvar = logvar.float()
 
     # 1) Cov_batch(μ): Between-sample covariance
+    # Use (batch_size - 1) for unbiased sample covariance (Bessel's correction)
     mu_centered = mu - mu.mean(dim=0, keepdim=True)  # [B, d]
     batch_size = mu.size(0)
-    cov_mu = torch.mm(mu_centered.t(), mu_centered) / batch_size  # [d, d]
+    cov_mu = torch.mm(mu_centered.t(), mu_centered) / (batch_size - 1)  # [d, d]
 
     # 2) Mean encoder variance: Within-sample variance
     mean_encoder_var = torch.exp(logvar).mean(dim=0)  # [d]
@@ -238,10 +239,11 @@ def compute_dipvae_loss(
     diag_cov = torch.diag(cov_q)  # [d]
 
     # Off-diagonal penalty: ||Cov_offdiag||_F^2
-    # Create mask for off-diagonal elements
+    # Create mask to zero out diagonal elements; the resulting matrix has zeros on diagonal
+    # Frobenius norm of this matrix equals sqrt(sum of squared off-diagonal elements)
     mask = torch.ones_like(cov_q) - torch.eye(z_dim, device=cov_q.device, dtype=cov_q.dtype)
-    cov_offdiag = cov_q * mask
-    cov_offdiag_fro = torch.norm(cov_offdiag, p="fro")  # Frobenius norm (diagnostic)
+    cov_offdiag = cov_q * mask  # [d, d] matrix with zeros on diagonal
+    cov_offdiag_fro = torch.norm(cov_offdiag, p="fro")  # Frobenius norm = sqrt(sum(offdiag^2))
     cov_penalty_od = lambda_od * (cov_offdiag_fro ** 2)
 
     # Diagonal penalty: ||diag(Cov) - 1||_2^2

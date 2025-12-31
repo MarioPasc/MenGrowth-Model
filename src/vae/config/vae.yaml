@@ -16,6 +16,15 @@ model:
   base_filters: 32
   use_sbd: false  # Baseline VAE uses standard transposed-conv decoder
   norm: "GROUP"   # Normalization type (now properly used via model_factory)
+  # SBD config keys (included for compatibility if use_sbd is changed to true)
+  sbd_grid_size: [8, 8, 8]
+  sbd_upsample_mode: "resize_conv"
+
+  # Architecture customizations
+  architecture:
+    pre_activation: false             # Use pre-activation ResNet blocks (NORM->ACT->CONV)
+    blocks_per_layer: [2, 2, 2, 2]    # Number of blocks in each of the 4 encoder stages
+    upsample_mode: "resize_conv"      # Decoder upsampling: "resize_conv" or "deconv"
 
 train:
   seed: 42

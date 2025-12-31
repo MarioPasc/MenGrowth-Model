@@ -3,7 +3,7 @@
 
 This script orchestrates the training process for:
 - Exp1: Baseline 3D VAE with ELBO loss
-- Exp2: β-TCVAE with Spatial Broadcast Decoder
+- Exp2: DIP-VAE with configurable decoder (standard or SBD)
 
 Workflow:
 1. Load configuration from YAML
@@ -17,10 +17,10 @@ Workflow:
 
 Usage:
     # Exp1
-    python scripts/train.py --config src/vae/config/exp1_baseline_vae.yaml
+    python scripts/train.py --config src/vae/config/vae.yaml
 
     # Exp2
-    python scripts/train.py --config src/vae/config/exp2_tcvae_sbd.yaml
+    python scripts/train.py --config src/vae/config/dipvae.yaml
 
     # Resume from checkpoint
     python scripts/train.py --config path/to/config.yaml --resume path/to/checkpoint.ckpt
@@ -94,15 +94,13 @@ def get_experiment_info(cfg: OmegaConf) -> tuple:
 
     Returns:
         Tuple of (experiment_name, variant_type).
-        variant_type: "baseline", "tcvae", or "dipvae"
+        variant_type: "baseline" or "dipvae"
     """
     # Check for model variant
     variant = cfg.model.get("variant", None)
 
     if variant == "dipvae":
         return "exp2_dipvae", "dipvae"
-    elif variant == "tcvae_sbd":
-        return "exp2_tcvae_sbd", "tcvae"
     else:
         # Default to Exp1 baseline
         return "exp1_baseline_vae", "baseline"
@@ -257,14 +255,6 @@ def main():
             logger.info(f"  Upsample mode:   {cfg.model.get('sbd_upsample_mode', 'resize_conv')}")
 
         logger.info("=" * 60)
-    elif variant_type == "tcvae":
-        # Exp2a: β-TCVAE with SBD
-        n_train = len(train_subjects)
-        lit_module = TCVAELitModule.from_config(cfg, n_train=n_train)
-        logger.info(f"Created TCVAELitModule with N_train={n_train}")
-        logger.info(f"  SBD grid size: {cfg.model.sbd_grid_size}")
-        logger.info(f"  β_tc target: {cfg.loss.beta_tc_target}")
-        logger.info(f"  Gradient checkpointing: {cfg.train.get('gradient_checkpointing', False)}")
     else:
         # Exp1: Baseline VAE
         lit_module = VAELitModule.from_config(cfg)

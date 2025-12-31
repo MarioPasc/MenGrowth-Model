@@ -90,8 +90,9 @@ def compute_dipvae_covariance(
             logvar = logvar.float()
 
             # Between-sample covariance: Cov(μ)
+            # Use (N - 1) for unbiased sample covariance (Bessel's correction)
             mu_centered = mu - mu.mean(dim=0, keepdim=True)
-            cov_mu = torch.mm(mu_centered.t(), mu_centered) / N  # [d, d]
+            cov_mu = torch.mm(mu_centered.t(), mu_centered) / (N - 1)  # [d, d]
 
             # Within-sample variance: E[diag(exp(logvar))]
             mean_encoder_var = torch.exp(logvar).mean(dim=0)  # [d]

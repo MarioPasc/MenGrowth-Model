@@ -19,7 +19,7 @@ Example:
     >>> print(f"PSNR: {psnr.item():.2f} dB")
 """
 
-from .image_quality import compute_psnr_3d, compute_ssim_3d
+from .image_quality import compute_psnr_3d, compute_ssim_2d_slices, compute_ssim_3d
 from .latent_statistics import (
     compute_correlation,
     compute_dipvae_covariance,
@@ -32,7 +32,8 @@ from .regression_probes import extract_segmentation_targets, ridge_probe_cv
 __all__ = [
     # Image quality metrics
     "compute_psnr_3d",
-    "compute_ssim_3d",
+    "compute_ssim_2d_slices",
+    "compute_ssim_3d",  # Deprecated alias for compute_ssim_2d_slices
     # Latent statistics
     "compute_correlation",
     "compute_dipvae_covariance",

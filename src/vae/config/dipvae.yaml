@@ -17,6 +17,12 @@ model:
   base_filters: 32
   norm: "GROUP"  # Normalization type (now properly used via model_factory)
 
+  # Architecture customizations
+  architecture:
+    pre_activation: false             # Use pre-activation ResNet blocks (NORM->ACT->CONV)
+    blocks_per_layer: [2, 2, 2, 2]    # Number of blocks in each of the 4 encoder stages
+    upsample_mode: "resize_conv"      # Decoder upsampling: "resize_conv" or "deconv"
+
   # Spatial Broadcast Decoder (SBD)
   use_sbd: true                     # RECOMMENDED: false = standard decoder, true = SBD
                                      # Start with false to verify encoder learns informative latents

@@ -1,442 +1,22 @@
-"""Baseline 3D VAE model for multi-modal MRI.
-
-This module implements a 3D Variational Autoencoder with:
-- 3D ResNet encoder with GroupNorm (suitable for small batch sizes)
-- Diagonal Gaussian posterior q(z|x) = N(mu, diag(exp(logvar)))
-- Symmetric transposed-convolution decoder
-- Reparameterization trick for gradient flow
-
-Input: [B, 4, 128, 128, 128] (4 MRI modalities)
-Output: x_hat [B, 4, 128, 128, 128], mu [B, z_dim], logvar [B, z_dim]
+"""
+This module implements a baseline 3D Variational Autoencoder, combining a
+ResNet-style encoder and a convolutional decoder into an end-to-end model.
 """
 
 import torch
 import torch.nn as nn
-from typing import Tuple
+from typing import Tuple, List
 
-
-def get_activation(name: str) -> nn.Module:
-    """Get activation function by name."""
-    if name.lower() == "relu":
-        return nn.ReLU(inplace=True)
-    elif name.lower() == "leaky_relu":
-        return nn.LeakyReLU(inplace=True)
-    elif name.lower() in ["silu", "swish"]:
-        return nn.SiLU(inplace=True)
-    elif name.lower() == "gelu":
-        return nn.GELU()
-    else:
-        raise ValueError(f"Unknown activation: {name}")
-
-
-def get_norm(name: str, channels: int, num_groups: int = 8) -> nn.Module:
-    """Get normalization layer by name."""
-    if name.lower() == "group":
-        return nn.GroupNorm(num_groups, channels)
-    elif name.lower() == "batch":
-        return nn.BatchNorm3d(channels)
-    elif name.lower() == "instance":
-        return nn.InstanceNorm3d(channels)
-    elif name.lower() == "none":
-        return nn.Identity()
-    else:
-        raise ValueError(f"Unknown norm: {name}")
-
-
-class BasicBlock3d(nn.Module):
-    """3D Residual block with configurable Norm and Activation.
-
-    Implements: y = F(x, {W_i}) + shortcut(x)
-    where F is two 3x3x3 convolutions with Norm and Activation.
-    """
-
-    expansion = 1
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        stride: int = 1,
-        num_groups: int = 8,
-        downsample: nn.Module = None,
-        use_residual: bool = True,
-        activation: str = "relu",
-        norm_type: str = "group",
-    ):
-        """Initialize BasicBlock3d.
-
-        Args:
-            in_channels: Number of input channels.
-            out_channels: Number of output channels.
-            stride: Stride for first convolution (for downsampling).
-            num_groups: Number of groups for GroupNorm.
-            downsample: Optional downsample module for skip connection.
-            use_residual: Whether to use residual skip connection.
-            activation: Activation function name.
-            norm_type: Normalization type name.
-        """
-        super().__init__()
-        self.use_residual = use_residual
-
-        self.conv1 = nn.Conv3d(
-            in_channels, out_channels, kernel_size=3,
-            stride=stride, padding=1, bias=False
-        )
-        self.gn1 = get_norm(norm_type, out_channels, num_groups)
-        self.activation = get_activation(activation)
-
-        self.conv2 = nn.Conv3d(
-            out_channels, out_channels, kernel_size=3,
-            stride=1, padding=1, bias=False
-        )
-        self.gn2 = get_norm(norm_type, out_channels, num_groups)
-
-        self.downsample = downsample
-        self.stride = stride
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass."""
-        identity = x
-
-        out = self.conv1(x)
-        out = self.gn1(out)
-        out = self.activation(out)
-
-        out = self.conv2(out)
-        out = self.gn2(out)
-
-        if self.use_residual:
-            if self.downsample is not None:
-                identity = self.downsample(x)
-            out += identity
-
-        out = self.activation(out)
-
-        return out
-
-
-class Encoder3D(nn.Module):
-    """3D ResNet encoder for VAE.
-
-    Architecture (for 128^3 input):
-        - Initial conv: 128 -> 64 (stride 2)
-        - Stage 1: 64^3, channels=base_filters
-        - Stage 2: 32^3, channels=base_filters*2
-        - Stage 3: 16^3, channels=base_filters*4
-        - Stage 4: 8^3, channels=base_filters*8
-        - AdaptiveAvgPool -> flatten
-        - Linear heads for mu and logvar
-    """
-
-    def __init__(
-        self,
-        input_channels: int = 4,
-        base_filters: int = 32,
-        z_dim: int = 128,
-        num_groups: int = 8,
-        dropout: float = 0.0,
-        use_residual: bool = True,
-        init_method: str = "kaiming",
-        activation: str = "relu",
-        norm_type: str = "group",
-    ):
-        """Initialize Encoder3D.
-
-        Args:
-            input_channels: Number of input channels (4 for MRI modalities).
-            base_filters: Base number of filters (doubled at each stage).
-            z_dim: Latent space dimensionality.
-            num_groups: Number of groups for GroupNorm.
-            dropout: Dropout probability.
-            use_residual: Whether to use residual connections in blocks.
-            init_method: Weight initialization method ('kaiming', 'xavier', 'orthogonal').
-            activation: Activation function name.
-            norm_type: Normalization type name.
-        """
-        super().__init__()
-
-        self.in_channels = base_filters
-        self.num_groups = num_groups
-        self.use_residual = use_residual
-        self.init_method = init_method
-        self.activation_name = activation
-        self.norm_type = norm_type
-
-        # Initial convolution: reduce spatial by 2
-        self.conv1 = nn.Conv3d(
-            input_channels, base_filters, kernel_size=3,
-            stride=2, padding=1, bias=False
-        )
-        self.gn1 = get_norm(norm_type, base_filters, num_groups)
-        self.activation = get_activation(activation)
-
-        # ResNet stages (each stage has 2 blocks)
-        self.layer1 = self._make_layer(base_filters, 2, stride=1)      # 64^3
-        self.layer2 = self._make_layer(base_filters * 2, 2, stride=2)  # 32^3
-        self.layer3 = self._make_layer(base_filters * 4, 2, stride=2)  # 16^3
-        self.layer4 = self._make_layer(base_filters * 8, 2, stride=2)  # 8^3
-
-        # Global pooling and latent heads
-        self.avgpool = nn.AdaptiveAvgPool3d(1)
-
-        final_channels = base_filters * 8
-        
-        self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
-        
-        self.fc_mu = nn.Linear(final_channels, z_dim)
-        self.fc_logvar = nn.Linear(final_channels, z_dim)
-
-        # Initialize weights
-        self._initialize_weights()
-
-    def _make_layer(
-        self,
-        out_channels: int,
-        num_blocks: int,
-        stride: int = 1,
-    ) -> nn.Sequential:
-        """Create a residual layer with multiple blocks."""
-        downsample = None
-        if stride != 1 or self.in_channels != out_channels:
-            downsample = nn.Sequential(
-                nn.Conv3d(self.in_channels, out_channels, kernel_size=1,
-                          stride=stride, bias=False),
-                get_norm(self.norm_type, out_channels, self.num_groups),
-            )
-
-        layers = []
-        layers.append(BasicBlock3d(
-            self.in_channels, out_channels, stride,
-            self.num_groups, downsample,
-            use_residual=self.use_residual,
-            activation=self.activation_name,
-            norm_type=self.norm_type,
-        ))
-        self.in_channels = out_channels
-
-        for _ in range(1, num_blocks):
-            layers.append(BasicBlock3d(
-                out_channels, out_channels,
-                num_groups=self.num_groups,
-                use_residual=self.use_residual,
-                activation=self.activation_name,
-                norm_type=self.norm_type,
-            ))
-
-        return nn.Sequential(*layers)
-
-    def _initialize_weights(self):
-        """Initialize network weights."""
-        for m in self.modules():
-            if isinstance(m, nn.Conv3d):
-                if self.init_method == "kaiming":
-                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                elif self.init_method == "xavier":
-                    nn.init.xavier_normal_(m.weight)
-                elif self.init_method == "orthogonal":
-                    nn.init.orthogonal_(m.weight)
-            elif isinstance(m, (nn.GroupNorm, nn.BatchNorm3d, nn.InstanceNorm3d)):
-                if m.weight is not None:
-                    nn.init.constant_(m.weight, 1)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                if self.init_method == "kaiming":
-                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                elif self.init_method == "xavier":
-                    nn.init.xavier_normal_(m.weight)
-                elif self.init_method == "orthogonal":
-                    nn.init.orthogonal_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Encode input to latent distribution parameters.
-
-        Args:
-            x: Input tensor [B, C, D, H, W].
-
-        Returns:
-            mu: Mean of posterior [B, z_dim].
-            logvar: Log-variance of posterior [B, z_dim].
-        """
-        # Initial conv
-        x = self.conv1(x)
-        x = self.gn1(x)
-        x = self.activation(x)
-
-        # ResNet stages
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-
-        # Global pooling and flatten
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-
-        # Latent parameters
-        mu = self.fc_mu(x)
-        logvar = self.fc_logvar(x)
-
-        return mu, logvar
-
-
-class Decoder3D(nn.Module):
-    """3D transposed-convolution decoder for VAE.
-
-    Symmetric architecture to encoder:
-        - Linear: z_dim -> (base_filters*8) * 4^3
-        - Reshape to [B, base_filters*8, 4, 4, 4]
-        - 4x upsample blocks using ConvTranspose3d
-        - Final conv to output channels
-    """
-
-    def __init__(
-        self,
-        z_dim: int = 128,
-        output_channels: int = 4,
-        base_filters: int = 32,
-        num_groups: int = 8,
-        init_method: str = "kaiming",
-        activation: str = "relu",
-        norm_type: str = "group",
-    ):
-        """Initialize Decoder3D.
-
-        Args:
-            z_dim: Latent space dimensionality.
-            output_channels: Number of output channels (4 for MRI modalities).
-            base_filters: Base number of filters.
-            num_groups: Number of groups for GroupNorm.
-            init_method: Weight initialization method.
-            activation: Activation function name.
-            norm_type: Normalization type name.
-        """
-        super().__init__()
-
-        self.base_filters = base_filters
-        self.initial_size = 4  # Start from 4^3 spatial size
-        self.init_method = init_method
-        self.activation_name = activation
-        self.norm_type = norm_type
-        self.num_groups = num_groups
-
-        # Project latent to initial volume
-        initial_channels = base_filters * 8
-        self.fc = nn.Linear(z_dim, initial_channels * self.initial_size ** 3)
-
-        # Upsample blocks: 4->8->16->32->64->128
-        self.up1 = self._make_upsample_block(
-            base_filters * 8, base_filters * 8, num_groups
-        )  # 4 -> 8
-        self.up2 = self._make_upsample_block(
-            base_filters * 8, base_filters * 4, num_groups
-        )  # 8 -> 16
-        self.up3 = self._make_upsample_block(
-            base_filters * 4, base_filters * 2, num_groups
-        )  # 16 -> 32
-        self.up4 = self._make_upsample_block(
-            base_filters * 2, base_filters, num_groups
-        )  # 32 -> 64
-        self.up5 = self._make_upsample_block(
-            base_filters, base_filters, num_groups
-        )  # 64 -> 128
-
-        # Final convolution to output channels
-        self.final_conv = nn.Conv3d(
-            base_filters, output_channels, kernel_size=3, padding=1
-        )
-
-        # Initialize weights
-        self._initialize_weights()
-
-    def _make_upsample_block(
-        self,
-        in_channels: int,
-        out_channels: int,
-        num_groups: int,
-    ) -> nn.Sequential:
-        """Create an upsample block with transposed convolution."""
-        return nn.Sequential(
-            nn.ConvTranspose3d(
-                in_channels, out_channels, kernel_size=4,
-                stride=2, padding=1, bias=False
-            ),
-            get_norm(self.norm_type, out_channels, num_groups),
-            get_activation(self.activation_name),
-        )
-
-    def _initialize_weights(self):
-        """Initialize network weights."""
-        for m in self.modules():
-            if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
-                if self.init_method == "kaiming":
-                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                elif self.init_method == "xavier":
-                    nn.init.xavier_normal_(m.weight)
-                elif self.init_method == "orthogonal":
-                    nn.init.orthogonal_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, (nn.GroupNorm, nn.BatchNorm3d, nn.InstanceNorm3d)):
-                if m.weight is not None:
-                    nn.init.constant_(m.weight, 1)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                if self.init_method == "kaiming":
-                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                elif self.init_method == "xavier":
-                    nn.init.xavier_normal_(m.weight)
-                elif self.init_method == "orthogonal":
-                    nn.init.orthogonal_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        """Decode latent vector to reconstruction.
-
-        Args:
-            z: Latent vector [B, z_dim].
-
-        Returns:
-            x_hat: Reconstructed output [B, output_channels, 128, 128, 128].
-        """
-        batch_size = z.size(0)
-
-        # Project and reshape
-        x = self.fc(z)
-        x = x.view(batch_size, self.base_filters * 8,
-                   self.initial_size, self.initial_size, self.initial_size)
-
-        # Upsample stages
-        x = self.up1(x)  # 4 -> 8
-        x = self.up2(x)  # 8 -> 16
-        x = self.up3(x)  # 16 -> 32
-        x = self.up4(x)  # 32 -> 64
-        x = self.up5(x)  # 64 -> 128
-
-        # Final conv
-        x_hat = self.final_conv(x)
-
-        return x_hat
+from ..components import Encoder3D, Decoder3D
 
 
 class BaselineVAE(nn.Module):
     """Baseline 3D Variational Autoencoder.
 
-    Combines encoder and decoder with reparameterization trick for
-    end-to-end training via backpropagation.
-
-    Forward signature:
-        forward(x) -> (x_hat, mu, logvar)
-
-    Where:
-        - x: Input [B, 4, 128, 128, 128]
-        - x_hat: Reconstruction [B, 4, 128, 128, 128]
-        - mu: Posterior mean [B, z_dim]
-        - logvar: Posterior log-variance [B, z_dim]
+    This class brings together the encoder and decoder components to form a complete
+    VAE model. It handles the reparameterization trick for end-to-end training.
+    The architecture is highly configurable, supporting different depths,
+    normalization layers, and upsampling methods.
     """
 
     def __init__(
@@ -445,13 +25,16 @@ class BaselineVAE(nn.Module):
         z_dim: int = 128,
         base_filters: int = 32,
         num_groups: int = 8,
-        gradient_checkpointing: bool = False,
+        blocks_per_layer: List[int] = (2, 2, 2, 2),
         posterior_logvar_min: float = -6.0,
         dropout: float = 0.0,
         use_residual: bool = True,
         init_method: str = "kaiming",
         activation: str = "relu",
         norm_type: str = "group",
+        pre_activation: bool = False,
+        upsample_mode: str = "resize_conv",
+        gradient_checkpointing: bool = False,
     ):
         """Initialize BaselineVAE.
 
@@ -460,30 +43,39 @@ class BaselineVAE(nn.Module):
             z_dim: Latent space dimensionality.
             base_filters: Base number of filters for encoder/decoder.
             num_groups: Number of groups for GroupNorm.
-            gradient_checkpointing: Enable gradient checkpointing to save memory.
-            posterior_logvar_min: Minimum value for log-variance (prevents numerical underflow).
+            blocks_per_layer: List of block counts for each encoder stage.
+            posterior_logvar_min: Minimum value for log-variance.
             dropout: Dropout probability for encoder.
             use_residual: Whether to use residual connections in encoder blocks.
             init_method: Weight initialization method.
             activation: Activation function name.
             norm_type: Normalization type name.
+            pre_activation: Use pre-activation layout in encoder ResNet blocks.
+            upsample_mode: Upsampling method for decoder ("resize_conv" or "deconv").
+            gradient_checkpointing: If True, enables gradient checkpointing for memory
+                efficiency. Not implemented in BaselineVAE (no-op), included for API
+                compatibility with VAESBD and model_factory.
         """
         super().__init__()
 
         self.z_dim = z_dim
-        self.gradient_checkpointing = gradient_checkpointing
         self.posterior_logvar_min = posterior_logvar_min
+        # Note: gradient_checkpointing is accepted for API compatibility but not
+        # implemented in BaselineVAE. See VAESBD for actual implementation.
+        self.gradient_checkpointing = gradient_checkpointing
 
         self.encoder = Encoder3D(
             input_channels=input_channels,
             base_filters=base_filters,
             z_dim=z_dim,
             num_groups=num_groups,
+            blocks_per_layer=blocks_per_layer,
             dropout=dropout,
             use_residual=use_residual,
             init_method=init_method,
             activation=activation,
             norm_type=norm_type,
+            pre_activation=pre_activation,
         )
 
         self.decoder = Decoder3D(
@@ -494,6 +86,7 @@ class BaselineVAE(nn.Module):
             init_method=init_method,
             activation=activation,
             norm_type=norm_type,
+            upsample_mode=upsample_mode,
         )
 
     def reparameterize(
@@ -501,18 +94,18 @@ class BaselineVAE(nn.Module):
         mu: torch.Tensor,
         logvar: torch.Tensor,
     ) -> torch.Tensor:
-        """Reparameterization trick (logvar already clamped in encode()).
+        """Reparameterization trick.
 
         z = mu + eps * exp(0.5 * logvar), where eps ~ N(0, I)
 
         Args:
             mu: Mean of posterior [B, z_dim].
-            logvar: Log-variance of posterior [B, z_dim], ALREADY CLAMPED in encode().
+            logvar: Log-variance of posterior [B, z_dim], already clamped in encode().
 
         Returns:
             z: Sampled latent vector [B, z_dim].
         """
-        std = torch.exp(0.5 * logvar)  # No clamp needed - already done in encode()
+        std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         z = mu + eps * std
         return z
@@ -520,20 +113,20 @@ class BaselineVAE(nn.Module):
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode input to latent distribution parameters.
 
-        Returns clamped logvar to ensure numerical stability across
-        all uses: reparameterization, KL computation, DIP covariance.
+        This method is the single source of truth for the posterior. It returns
+        a clamped log-variance to ensure numerical stability in all downstream
+        computations (KL divergence, sampling, DIP-VAE covariance).
 
         Args:
             x: Input tensor [B, C, D, H, W].
 
         Returns:
             mu: Posterior mean [B, z_dim].
-            logvar: Posterior log-variance [B, z_dim], CLAMPED at source.
+            logvar: Posterior log-variance [B, z_dim], CLAMPED at the source.
         """
         mu, logvar = self.encoder(x)
 
-        # CRITICAL: Clamp at source before any downstream use
-        # This ensures KL divergence and DIP covariance also use clamped values
+        # CRITICAL: Clamp at the source before any downstream use.
         logvar_clamped = torch.clamp(logvar, min=self.posterior_logvar_min)
 
         return mu, logvar_clamped
@@ -553,16 +146,17 @@ class BaselineVAE(nn.Module):
         self,
         x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass through VAE.
+        """Forward pass through the complete VAE.
 
         Args:
             x: Input tensor [B, C, D, H, W].
 
         Returns:
-            x_hat: Reconstruction [B, C, D, H, W].
-            mu: Posterior mean [B, z_dim].
-            logvar: Posterior log-variance [B, z_dim].
-            z: Sampled latent vector [B, z_dim].
+            A tuple containing:
+            - x_hat: Reconstructed output [B, C, D, H, W].
+            - mu: Posterior mean [B, z_dim].
+            - logvar: Clamped posterior log-variance [B, z_dim].
+            - z: Sampled latent vector [B, z_dim].
         """
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)

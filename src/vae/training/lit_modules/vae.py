@@ -27,7 +27,7 @@ from ..losses import (
     get_lambda_cov_schedule,
 )
 from ..losses.elbo import get_beta_schedule
-from vae.metrics import compute_ssim_3d, compute_psnr_3d
+from vae.metrics import compute_ssim_2d_slices, compute_psnr_3d
 
 
 logger = logging.getLogger(__name__)
@@ -220,9 +220,8 @@ class VAELitModule(pl.LightningModule):
         self.log("train_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
 
         # Normalized metrics (resolution-independent)
-        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
         z_dim = mu.shape[1]
-        self.log("train_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        # Note: recon is already mean-reduced (per-element MSE), no additional normalization needed
         self.log("train_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
 
         # Latent statistics
@@ -301,9 +300,8 @@ class VAELitModule(pl.LightningModule):
         self.log("val_epoch/kl_raw", loss_dict["kl_raw"], on_step=False, on_epoch=True)
 
         # Normalized metrics (resolution-independent)
-        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
         z_dim = mu.shape[1]
-        self.log("val_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        # Note: recon is already mean-reduced (per-element MSE), no additional normalization needed
         self.log("val_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
 
         # Latent statistics

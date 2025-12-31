@@ -393,20 +393,7 @@ class RunMetadataCallback(Callback):
                     self.cfg.train.kl_capacity_anneal_epochs
                 )
 
-        # Exp2a-specific (β-TCVAE)
-        if "loss" in self.cfg and "beta_tc_target" in self.cfg.loss:
-            meta["schedule"]["beta_tc_target"] = self.cfg.loss.beta_tc_target
-            meta["schedule"]["beta_tc_annealing_epochs"] = (
-                self.cfg.loss.beta_tc_annealing_epochs
-            )
-            meta["schedule"]["alpha"] = self.cfg.loss.alpha
-            meta["schedule"]["gamma"] = self.cfg.loss.gamma
-            meta["schedule"]["kl_free_bits"] = self.cfg.train.get("kl_free_bits", 0.0)
-            meta["schedule"]["kl_free_bits_mode"] = self.cfg.train.get(
-                "kl_free_bits_mode", "batch_mean"
-            )
-
-        # Exp2b-specific (DIP-VAE)
+        # Exp2-specific (DIP-VAE)
         if "loss" in self.cfg and "lambda_od" in self.cfg.loss:
             meta["schedule"]["lambda_od"] = self.cfg.loss.lambda_od
             meta["schedule"]["lambda_d"] = self.cfg.loss.lambda_d

@@ -157,7 +157,12 @@ class TrainingLoggingCallback(Callback):
 
         # Log validation progress
         if (batch_idx + 1) % self.log_val_every_n_batches == 0:
-            total_batches = len(trainer.val_dataloaders)
+            # Get length of the first validation dataloader (handles both list and single dataloader cases)
+            try:
+                val_dl = trainer.val_dataloaders[0] if isinstance(trainer.val_dataloaders, list) else trainer.val_dataloaders
+                total_batches = len(val_dl)
+            except (TypeError, AttributeError):
+                total_batches = "?"
             metrics_str = self._format_logged_metrics(trainer, prefix="val/")
             logger.info(
                 f"  [Val] Batch {batch_idx + 1}/{total_batches} | "

@@ -24,7 +24,7 @@ from ...losses import (
     get_lambda_cov_schedule,
 )
 from ...losses.elbo import get_beta_schedule
-from vae.metrics import compute_ssim_3d, compute_psnr_3d
+from vae.metrics import compute_ssim_2d_slices, compute_psnr_3d
 
 
 logger = logging.getLogger(__name__)
@@ -282,9 +282,8 @@ class DIPVAELitModule(pl.LightningModule):
         self.log("train_epoch/kl_constrained", loss_dict["kl_constrained"], on_step=False, on_epoch=True)
 
         # Normalized metrics (resolution-independent)
-        num_voxels = x.shape[2] * x.shape[3] * x.shape[4]  # D * H * W
         z_dim = mu.shape[1]
-        self.log("train_epoch/recon_per_voxel", loss_dict["recon"] / num_voxels, on_step=False, on_epoch=True)
+        # Note: recon is already mean-reduced (per-element MSE), no additional normalization needed
         self.log("train_epoch/recon_sum", loss_dict["recon_sum"], on_step=False, on_epoch=True)
         self.log("train_epoch/kl_per_dim", loss_dict["kl_raw"] / z_dim, on_step=False, on_epoch=True)
 
@@ -437,7 +436,7 @@ class DIPVAELitModule(pl.LightningModule):
             # Per-modality SSIM/PSNR
             for i, mod_name in enumerate(self.modality_names):
                 if i >= x_sample.shape[1]: break
-                ssim_val = compute_ssim_3d(
+                ssim_val = compute_ssim_2d_slices(
                     x_hat_sample[:, i:i+1],
                     x_sample[:, i:i+1],
                 )
@@ -496,8 +495,9 @@ class DIPVAELitModule(pl.LightningModule):
                     "val/mu_histogram": wandb.Histogram(mu_per_dim.detach().cpu().numpy()),
                     "val/logvar_histogram": wandb.Histogram(logvar_per_dim.detach().cpu().numpy()),
                 })
-            except Exception:
-                pass  # Silently skip if not using wandb
+            except Exception as e:
+                # Skip if not using wandb or histogram logging fails
+                logger.debug(f"WandB histogram logging skipped: {e}")
 
         return loss_dict["loss"]
 

@@ -5,7 +5,7 @@ for 3D volumes, optimized for batch processing with mixed precision.
 
 Functions:
     compute_psnr_3d: Peak Signal-to-Noise Ratio for 3D volumes
-    compute_ssim_3d: Structural Similarity Index for 3D volumes
+    compute_ssim_2d_slices: 2D SSIM computed slice-by-slice and averaged
 """
 
 import torch
@@ -39,27 +39,29 @@ def compute_psnr_3d(
     mse = F.mse_loss(pred, target, reduction=reduction)
 
     if reduction == "none":
-        # Per-sample PSNR
-        mse = mse.view(mse.size(0), -1).mean(dim=1)
+        # Per-sample PSNR: mse has shape [B, C, D, H, W] from reduction="none"
+        # Reshape to [B, C*D*H*W] and compute mean per sample to get per-sample MSE
+        mse = mse.view(mse.size(0), -1).mean(dim=1)  # [B]
 
     psnr = 20 * torch.log10(data_range / torch.sqrt(mse + 1e-8))
     return psnr
 
 
-def compute_ssim_3d(
+def compute_ssim_2d_slices(
     pred: torch.Tensor,
     target: torch.Tensor,
     window_size: int = 11,
     data_range: float = 1.0,
 ) -> torch.Tensor:
-    """Compute Structural Similarity Index for 3D volumes.
+    """Compute SSIM for 3D volumes using 2D slice-by-slice averaging.
 
-    Uses sliding window approach with Gaussian weighting.
-    Simplified implementation for speed (no multi-scale).
+    **NOTE**: This is NOT true 3D SSIM. It computes 2D SSIM on each axial
+    (depth) slice independently and averages. This approach:
+    - Ignores inter-slice structural correlations
+    - Is faster than full 3D SSIM with 3D convolution kernels
+    - Is appropriate when axial slices are the primary clinical view
 
-    For 3D volumes, SSIM is computed slice-by-slice along the depth dimension
-    and averaged. This is faster than full 3D SSIM and suitable for medical
-    imaging where axial slices are often the primary view.
+    For true 3D structural similarity, a 3D Gaussian kernel would be needed.
 
     Args:
         pred: Predicted volume [B, C, D, H, W]
@@ -68,12 +70,12 @@ def compute_ssim_3d(
         data_range: Maximum possible pixel value
 
     Returns:
-        Mean SSIM value (scalar)
+        Mean SSIM value across all slices (scalar)
 
     Example:
         >>> pred = torch.randn(2, 1, 64, 64, 64)
         >>> target = pred + 0.05 * torch.randn_like(pred)
-        >>> ssim = compute_ssim_3d(pred, target)
+        >>> ssim = compute_ssim_2d_slices(pred, target)
         >>> print(f"SSIM: {ssim.item():.4f}")
     """
     # Use torchmetrics for efficient GPU implementation
@@ -116,3 +118,7 @@ def compute_ssim_3d(
         )
 
         return correlation.mean()
+
+
+# Backward-compatible alias (deprecated - use compute_ssim_2d_slices instead)
+compute_ssim_3d = compute_ssim_2d_slices

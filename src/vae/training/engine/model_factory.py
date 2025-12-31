@@ -37,6 +37,12 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
     num_groups = cfg.model.get("num_groups", 8)
     norm_type = cfg.model.get("norm", "group").lower()  # Support "GROUP" or "group"
 
+    # Get architectural parameters with defaults for backward compatibility
+    arch_cfg = cfg.model.get("architecture", {})
+    pre_activation = arch_cfg.get("pre_activation", False)
+    blocks_per_layer = arch_cfg.get("blocks_per_layer", [2, 2, 2, 2])
+    upsample_mode = arch_cfg.get("upsample_mode", "resize_conv")
+
     # Get training parameters
     posterior_logvar_min = cfg.train.get("posterior_logvar_min", -6.0)
     gradient_checkpointing = cfg.train.get("gradient_checkpointing", False)
@@ -54,6 +60,7 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             z_dim=z_dim,
             base_filters=base_filters,
             num_groups=num_groups,
+            blocks_per_layer=blocks_per_layer,
             sbd_grid_size=sbd_grid_size,
             sbd_upsample_mode=sbd_upsample_mode,
             posterior_logvar_min=posterior_logvar_min,
@@ -63,6 +70,7 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             init_method=init_method,
             activation=activation,
             norm_type=norm_type,
+            pre_activation=pre_activation,
         )
     else:
         # Build standard baseline VAE (transposed-conv decoder)
@@ -71,6 +79,7 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             z_dim=z_dim,
             base_filters=base_filters,
             num_groups=num_groups,
+            blocks_per_layer=blocks_per_layer,
             gradient_checkpointing=gradient_checkpointing,
             posterior_logvar_min=posterior_logvar_min,
             dropout=dropout,
@@ -78,6 +87,8 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
             init_method=init_method,
             activation=activation,
             norm_type=norm_type,
+            pre_activation=pre_activation,
+            upsample_mode=upsample_mode,
         )
 
     return model
