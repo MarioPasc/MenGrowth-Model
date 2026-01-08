@@ -115,7 +115,7 @@ class VAELitModule(pl.LightningModule):
         Returns:
             Configured VAELitModule instance.
         """
-        from engine.model_factory import create_vae_model
+        from vae.training.engine.model_factory import create_vae_model
 
         # Use factory to create model (respects use_sbd flag if present)
         model = create_vae_model(cfg)
