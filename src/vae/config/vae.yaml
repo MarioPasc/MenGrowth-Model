@@ -41,10 +41,13 @@ train:
   kl_annealing_cycles: 4
   kl_annealing_ratio: 0.5  # Anneal for first 50% of each cycle
 
-  # Free bits (per-dimension KL threshold)
-  kl_free_bits: 0.05  # nats per dimension (0.0 = disabled)
-                     # With batch_mean mode: floor ≈ 128 × 0.1 = 12.8 nats
-                     # Tune in range 0.05-0.2 based on KL/recon balance
+  # Free bits (per-dimension KL threshold for posterior collapse prevention)
+  # CRITICAL: With reduction="mean", free bits floor >> MSE_mean (~1).
+  # This ensures the model MUST encode information to beat the floor.
+  # Without free bits, KL would collapse to near-zero (posterior = prior).
+  kl_free_bits: 0.1                # nats per dimension (0.0 = disabled)
+                                   # With batch_mean mode and z_dim=128: floor ≈ 128 × 0.1 = 12.8 nats
+                                   # Tune in range 0.05-0.2 based on KL/recon balance
   kl_free_bits_mode: "batch_mean"  # "per_sample" or "batch_mean"
                                    # batch_mean: weaker, better for small batches (B=2)
                                    # per_sample: stronger, uniform floor across samples
@@ -70,8 +73,17 @@ train:
   accelerator: "gpu"
   devices: 1
 
+  # === Loss Reduction Strategy ===
+  # We use "mean" reduction for MSE but do NOT scale KL by 1/N.
+  # This creates apparent imbalance (KL >> recon in magnitude) but is correct:
+  # - Sum reduction would give MSE ~16M for 128³ volumes, causing FP16 overflow
+  # - Mean reduction gives MSE ~1, numerically stable for FP16
+  # - Keeping KL unscaled ensures free bits floor (25.6 nats) >> MSE (~1)
+  # - The imbalance is handled by cyclical annealing and free bits floor
+  # See tests/test_loss_reduction_analysis.py for detailed analysis.
+  loss_reduction: "mean"
+
   # Numerical stability settings for FP16 mixed precision
-  loss_reduction: "mean"  # Use mean reduction instead of sum for numerical stability
   gradient_clip_val: 1.0  # Clip gradient L2 norm to prevent FP16 overflow
   gradient_clip_algorithm: "norm"  # Gradient clipping algorithm: "norm" or "value"
 

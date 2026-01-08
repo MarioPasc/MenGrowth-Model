@@ -256,7 +256,28 @@ def compute_dipvae_loss(
     # =========================================================================
     # Total loss
     # =========================================================================
-    total = recon + (beta * kl_constrained) + cov_penalty_od + cov_penalty_d
+
+    # NOTE: We intentionally do NOT scale regularization terms by 1/N when using
+    # reduction="mean". Although reconstruction is averaged (scaled by 1/N), keeping
+    # KL and covariance penalties unscaled ensures:
+    # 1. Free bits floor remains effective (25.6 nats >> MSE_mean ~1)
+    # 2. Covariance penalties drive disentanglement (not negligible)
+    # 3. Lambda/beta parameters retain their standard interpretation
+    #
+    # The apparent "imbalance" (regularization >> reconstruction in loss magnitude)
+    # is intentional and handled by:
+    # - Free bits: enforces minimum information encoding per latent dim
+    # - Delayed start (lambda_start_epoch): pre-trains VAE before DIP penalties
+    # - Lambda annealing: gradually introduces covariance pressure
+    # - Beta/cyclical annealing: periodically relieves KL pressure
+    #
+    # See tests/test_loss_reduction_analysis.py for detailed analysis.
+
+    kl_term = beta * kl_constrained
+    cov_od_term = cov_penalty_od
+    cov_d_term = cov_penalty_d
+
+    total = recon + kl_term + cov_od_term + cov_d_term
 
     # Check for non-finite values
     if not torch.isfinite(total):

@@ -5,7 +5,7 @@ It is configurable in depth and choice of residual block layout.
 
 import torch
 import torch.nn as nn
-from typing import Tuple, List
+from typing import Tuple, List, Sequence
 
 from .basic import BasicBlock3d, get_activation, get_norm
 
@@ -28,7 +28,7 @@ class Encoder3D(nn.Module):
         base_filters: int = 32,
         z_dim: int = 128,
         num_groups: int = 8,
-        blocks_per_layer: List[int] = (2, 2, 2, 2),
+        blocks_per_layer: Sequence[int] = (2, 2, 2, 2),
         dropout: float = 0.0,
         use_residual: bool = True,
         init_method: str = "kaiming",

@@ -329,7 +329,11 @@ class ReconstructionCallback(Callback):
         sample_idx: int,
         output_dir: Path,
     ) -> None:
-        """Save visualization for a single sample.
+        """Save visualization for a single sample as a 3x3 grid per modality.
+
+        Each modality gets one image with:
+        - Rows: Axial, Coronal, Sagittal views
+        - Columns: Input, Reconstruction, Absolute Difference
 
         Args:
             x: Original input [C, D, H, W].
@@ -346,63 +350,79 @@ class ReconstructionCallback(Callback):
             x_hat_mod = x_hat[mod_idx]
             diff = np.abs(x_hat_mod - x_mod)
 
-            # Extract central slices
+            # Extract central slices for all three views
+            # Each entry: (original, reconstruction, difference)
             slices = {
-                "axial": (x_mod[center_d, :, :], x_hat_mod[center_d, :, :], diff[center_d, :, :]),
-                "coronal": (x_mod[:, center_h, :], x_hat_mod[:, center_h, :], diff[:, center_h, :]),
-                "sagittal": (x_mod[:, :, center_w], x_hat_mod[:, :, center_w], diff[:, :, center_w]),
+                "Axial": (x_mod[center_d, :, :], x_hat_mod[center_d, :, :], diff[center_d, :, :]),
+                "Coronal": (x_mod[:, center_h, :], x_hat_mod[:, center_h, :], diff[:, center_h, :]),
+                "Sagittal": (x_mod[:, :, center_w], x_hat_mod[:, :, center_w], diff[:, :, center_w]),
             }
 
-            for view_name, (orig, recon, d) in slices.items():
-                self._save_comparison_figure(
-                    orig, recon, d,
-                    mod_name, view_name,
-                    sample_idx, output_dir,
-                )
+            self._save_grid_figure(
+                slices,
+                mod_name,
+                sample_idx,
+                output_dir,
+            )
 
-    def _save_comparison_figure(
+    def _save_grid_figure(
         self,
-        original: np.ndarray,
-        reconstruction: np.ndarray,
-        difference: np.ndarray,
+        slices: dict,
         modality: str,
-        view: str,
         sample_idx: int,
         output_dir: Path,
     ) -> None:
-        """Save a comparison figure showing input, reconstruction, and difference.
+        """Save a 3x3 grid figure showing all views for a modality.
+
+        Grid layout:
+        - Rows: Axial, Coronal, Sagittal
+        - Columns: Input, Reconstruction, Absolute Difference
 
         Args:
-            original: Original slice [H, W].
-            reconstruction: Reconstructed slice [H, W].
-            difference: Absolute difference [H, W].
+            slices: Dict mapping view name to (original, reconstruction, difference) tuples.
             modality: Modality name for title.
-            view: View name (axial/coronal/sagittal).
             sample_idx: Sample index.
             output_dir: Output directory.
         """
-        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        view_names = ["Axial", "Coronal", "Sagittal"]
+        col_names = ["Input", "Reconstruction", "Difference"]
 
-        # Determine color limits from original
-        vmin, vmax = original.min(), original.max()
+        fig, axes = plt.subplots(3, 3, figsize=(12, 12))
 
-        axes[0].imshow(original, cmap='gray', vmin=vmin, vmax=vmax)
-        axes[0].set_title(f"Input ({modality})")
-        axes[0].axis('off')
+        for row_idx, view_name in enumerate(view_names):
+            orig, recon, diff = slices[view_name]
 
-        axes[1].imshow(reconstruction, cmap='gray', vmin=vmin, vmax=vmax)
-        axes[1].set_title("Reconstruction")
-        axes[1].axis('off')
+            # Determine color limits from original for consistent scaling
+            vmin, vmax = orig.min(), orig.max()
 
-        im = axes[2].imshow(difference, cmap='hot')
-        axes[2].set_title("Absolute Difference")
-        axes[2].axis('off')
-        plt.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04)
+            # Input
+            axes[row_idx, 0].imshow(orig, cmap='gray', vmin=vmin, vmax=vmax)
+            axes[row_idx, 0].axis('off')
 
-        fig.suptitle(f"{modality} - {view.capitalize()}", fontsize=12)
-        plt.tight_layout()
+            # Reconstruction
+            axes[row_idx, 1].imshow(recon, cmap='gray', vmin=vmin, vmax=vmax)
+            axes[row_idx, 1].axis('off')
 
-        filename = f"sample_{sample_idx:02d}_{modality.lower()}_{view}.png"
+            # Difference
+            im = axes[row_idx, 2].imshow(diff, cmap='hot')
+            axes[row_idx, 2].axis('off')
+
+            # Row labels on the left
+            axes[row_idx, 0].set_ylabel(view_name, fontsize=12, rotation=90, labelpad=10)
+            axes[row_idx, 0].yaxis.set_visible(True)
+            axes[row_idx, 0].tick_params(left=False, labelleft=False)
+
+        # Column titles
+        for col_idx, col_name in enumerate(col_names):
+            axes[0, col_idx].set_title(col_name, fontsize=12)
+
+        # Add colorbar for difference column
+        fig.colorbar(im, ax=axes[:, 2], fraction=0.02, pad=0.02, label='Abs. Diff.')
+
+        fig.suptitle(f"{modality} - Sample {sample_idx}", fontsize=14)
+        plt.tight_layout(rect=[0, 0, 0.95, 0.96])
+
+        filename = f"sample_{sample_idx:02d}_{modality.lower()}_grid.png"
         save_path = output_dir / filename
         fig.savefig(save_path, dpi=100, bbox_inches='tight')
 
@@ -410,10 +430,9 @@ class ReconstructionCallback(Callback):
         if self.log_to_wandb:
             try:
                 import wandb
-                # Get trainer from the callback context (stored during epoch end)
                 if hasattr(self, '_current_trainer') and self._current_trainer.logger and hasattr(self._current_trainer.logger, 'experiment'):
                     self._current_trainer.logger.experiment.log({
-                        f"reconstructions/{modality.lower()}_{view}_sample_{sample_idx}": wandb.Image(str(save_path)),
+                        f"reconstructions/{modality.lower()}_sample_{sample_idx}": wandb.Image(str(save_path)),
                         "epoch": self._current_trainer.current_epoch,
                     })
             except Exception:

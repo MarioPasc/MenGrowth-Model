@@ -34,20 +34,44 @@ model:
 
 
 loss:
+  # === DIP-VAE-II Covariance Penalties ===
+  # Loss = MSE_mean + beta*KL + lambda_od*||Cov_offdiag||_F² + lambda_d*||diag(Cov)-1||_2²
+  #
+  # IMPORTANT: With reduction="mean", regularization terms (KL + Cov) will dominate
+  # the loss magnitude (~96% with default lambdas). This is INTENTIONAL because:
+  # 1. Free bits ensures minimum information encoding (prevents KL collapse)
+  # 2. Strong covariance penalties enforce disentanglement
+  # 3. Delayed start allows reconstruction to stabilize first
+  #
+  # See tests/test_loss_reduction_analysis.py for detailed analysis.
+
   lambda_od: 10.0                      # Off-diagonal covariance penalty (DIP-VAE-II)
+                                       # Higher = stronger decorrelation between latent dims
   lambda_d: 5.0                        # Diagonal covariance penalty (DIP-VAE-II)
-  lambda_start_epoch: 20               # RECOMMENDED: Pre-train VAE for 20 epochs before DIP
+                                       # Higher = stronger push toward unit variance
+  lambda_start_epoch: 20               # CRITICAL: Pre-train VAE for 20 epochs before DIP
                                        # Allows encoder to learn informative latents first
+                                       # Without this, covariance on random latents is meaningless
   lambda_cov_annealing_epochs: 40      # Linear warmup after start_epoch (prevents optimizer shock)
-  compute_in_fp32: true
-  reduction: "mean"                    # "mean" for numerical stability with large 3D volumes
+                                       # Full lambda reached at epoch 20 + 40 = 60
+  compute_in_fp32: true                # Compute covariance in FP32 for numerical stability
+
+  # === Loss Reduction Strategy ===
+  # We use "mean" reduction for MSE but do NOT scale KL/covariance by 1/N.
+  # This creates apparent imbalance (regularization >> recon in magnitude) but is correct:
+  # - Sum reduction would give MSE ~16M, causing FP16 overflow
+  # - Mean reduction gives MSE ~1, numerically stable for FP16
+  # - Keeping regularization unscaled ensures free bits and covariance penalties are effective
+  # - The imbalance is handled by delayed start, annealing, and free bits floor
+  reduction: "mean"
+
   # Multi-GPU DDP: all-gather μ,logvar across ranks for larger effective covariance batch
   # Requires drop_last=True for equal batch sizes (enforced in datasets.py when devices > 1)
-  use_ddp_gather: true                 # Enable all-gather for covariance when DDP active
+  use_ddp_gather: true
 
 train:
   seed: 42
-  max_epochs: 200
+  max_epochs: 500
   lr: 1e-4
   precision: "16-mixed"
   gradient_checkpointing: true
@@ -73,6 +97,9 @@ train:
   kl_annealing_ratio: 0.5  # Anneal for first 50% of each cycle
 
   # Free bits (per-dimension KL threshold for posterior collapse mitigation)
+  # CRITICAL: With reduction="mean", free bits floor (25.6) >> MSE_mean (~1).
+  # This ensures the model MUST encode information to beat the floor.
+  # Without free bits, KL would collapse to near-zero (posterior = prior).
   kl_free_bits: 0.2                     # 0.2 nats/dim provides strong collapse prevention
                                        # With batch_mean mode and z_dim=128: floor ≈ 128 × 0.2 = 25.6 nats
                                        # Reduce to 0.1 if KL is too high and hurting reconstruction

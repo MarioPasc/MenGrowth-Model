@@ -155,6 +155,16 @@ def compute_elbo(
         # Standard beta-weighted KL
         kl_weighted = beta * kl_normalized
 
+    # NOTE: We intentionally do NOT scale KL by 1/N when using reduction="mean".
+    # Although reconstruction is averaged (scaled by 1/N), keeping KL unscaled ensures:
+    # 1. Free bits floor remains effective (25.6 nats >> MSE_mean ~1)
+    # 2. Beta parameter retains its standard interpretation
+    # 3. Regularization pressure prevents posterior collapse
+    # The "imbalance" is handled by:
+    # - Free bits: enforces minimum information encoding
+    # - Cyclical annealing: periodically relieves KL pressure
+    # - Beta tuning: explicit control over reconstruction-vs-regularization tradeoff
+
     # Total loss
     total = recon + kl_weighted
 

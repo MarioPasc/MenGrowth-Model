@@ -88,9 +88,8 @@ class Decoder3D(nn.Module):
         self.final_conv = nn.Conv3d(
             base_filters, output_channels, kernel_size=3, padding=1
         )
-        # Add a final activation function for the output
-        self.final_act = nn.Tanh()
-
+        # Final activation: None (linear) because input data is Z-scored (unbounded)
+        # self.final_act = nn.Tanh()  <-- REMOVED
 
         # Initialize weights
         self._initialize_weights()
@@ -171,8 +170,7 @@ class Decoder3D(nn.Module):
         x = self.up5(x)  # 64 -> 128
 
         # Final conv
-        x = self.final_conv(x)
-        x_hat = self.final_act(x)
-
+        x_hat = self.final_conv(x)
+        # x_hat = self.final_act(x)  <-- REMOVED
 
         return x_hat
