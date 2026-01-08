@@ -12,22 +12,18 @@ All modules include:
 """
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
-import torch.nn as nn
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 
-from src.vae.models import BaselineVAE
-from src.vae.losses import (
+from ...models import BaselineVAE
+from ...losses import (
     compute_elbo,
-    compute_dipvae_loss,
     get_capacity_schedule,
-    get_lambda_cov_schedule,
     get_beta_schedule
 )
-from vae.metrics import compute_ssim_2d_slices, compute_psnr_3d
 
 
 logger = logging.getLogger(__name__)
