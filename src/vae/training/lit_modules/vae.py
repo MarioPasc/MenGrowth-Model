@@ -54,11 +54,12 @@ class VAELitModule(pl.LightningModule):
         kl_annealing_type: str = "cyclical",
         kl_annealing_cycles: int = 4,
         kl_annealing_ratio: float = 0.5,
-        kl_free_bits: float = 0.5,
+        kl_free_bits: float = 0.1,  # Match config default (0.1 nats/dim)
         kl_free_bits_mode: str = "batch_mean",
         kl_target_capacity: Optional[float] = None,
         kl_capacity_anneal_epochs: int = 100,
         posterior_logvar_min: float = -6.0,
+        weight_decay: float = 0.01,
     ):
         """Initialize VAELitModule.
 
@@ -73,13 +74,14 @@ class VAELitModule(pl.LightningModule):
                               Default "cyclical" for posterior collapse mitigation.
             kl_annealing_cycles: Number of cycles for cyclical annealing. Default: 4.
             kl_annealing_ratio: Fraction of each cycle for annealing. Default: 0.5.
-            kl_free_bits: Free bits threshold per dimension (nats). Default: 0.5.
+            kl_free_bits: Free bits threshold per dimension (nats). Default: 0.1.
             kl_free_bits_mode: Free bits clamping mode ("per_sample" or "batch_mean").
                               Default: "batch_mean" (recommended for small batches).
             kl_target_capacity: Target capacity (nats). None disables. Default: None.
             kl_capacity_anneal_epochs: Epochs to reach target capacity. Default: 100.
             posterior_logvar_min: Minimum value for logvar. Stored for hyperparameter
                 tracking; actual clamping happens in model.encode(). Default: -6.0.
+            weight_decay: AdamW weight decay (L2 regularization). Default: 0.01.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -99,6 +101,7 @@ class VAELitModule(pl.LightningModule):
         self.kl_target_capacity = kl_target_capacity
         self.kl_capacity_anneal_epochs = kl_capacity_anneal_epochs
         self.current_capacity = 0.0 if kl_target_capacity is not None else None
+        self.weight_decay = weight_decay
         # NOTE: posterior_logvar_min stored in hparams for tracking, but actual
         # clamping happens in model.encode(). Use self.model.posterior_logvar_min
         # for runtime monitoring (e.g., logvar saturation tracking).
@@ -130,11 +133,12 @@ class VAELitModule(pl.LightningModule):
             kl_annealing_type=cfg.train.get("kl_annealing_type", "cyclical"),
             kl_annealing_cycles=cfg.train.get("kl_annealing_cycles", 4),
             kl_annealing_ratio=cfg.train.get("kl_annealing_ratio", 0.5),
-            kl_free_bits=cfg.train.get("kl_free_bits", 0.5),
+            kl_free_bits=cfg.train.get("kl_free_bits", 0.1),  # Match config default
             kl_free_bits_mode=cfg.train.get("kl_free_bits_mode", "batch_mean"),
             kl_target_capacity=cfg.train.get("kl_target_capacity", None),
             kl_capacity_anneal_epochs=cfg.train.get("kl_capacity_anneal_epochs", 100),
             posterior_logvar_min=cfg.train.get("posterior_logvar_min", -6.0),
+            weight_decay=cfg.train.get("weight_decay", 0.01),
         )
 
     def on_train_epoch_start(self) -> None:
@@ -367,5 +371,6 @@ class VAELitModule(pl.LightningModule):
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.lr,
+            weight_decay=self.weight_decay,
         )
         return optimizer

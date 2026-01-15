@@ -229,7 +229,9 @@ def get_dataloaders(
     # DDP gather safety: drop_last must be True for training when use_ddp_gather is enabled
     # This is CRITICAL because DIP-VAE covariance all_gather happens in TRAINING step (loss computation)
     num_devices = cfg.train.get("devices", 1)
-    use_ddp_gather = cfg.loss.get("use_ddp_gather", False)
+    # Safe access: cfg.loss may not exist in baseline VAE config (vae.yaml)
+    loss_cfg = cfg.get("loss", {})
+    use_ddp_gather = loss_cfg.get("use_ddp_gather", False) if loss_cfg else False
     train_drop_last = True  # Always True for stable training
 
     # Log DDP-specific configuration if applicable

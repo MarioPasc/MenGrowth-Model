@@ -87,6 +87,14 @@ train:
   gradient_clip_val: 1.0  # Clip gradient L2 norm to prevent FP16 overflow
   gradient_clip_algorithm: "norm"  # Gradient clipping algorithm: "norm" or "value"
 
+  # Optimizer settings
+  weight_decay: 0.01  # AdamW weight decay (L2 regularization)
+
+# Loss configuration (minimal for baseline VAE, full config in dipvae.yaml)
+loss:
+  reduction: "mean"  # MSE reduction strategy
+  use_ddp_gather: false  # Not used in baseline VAE, included for API consistency
+
 logging:
   save_dir: "experiments/runs"
   recon_every_n_epochs: 5

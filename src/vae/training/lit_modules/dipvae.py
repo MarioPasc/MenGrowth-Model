@@ -77,6 +77,7 @@ class DIPVAELitModule(pl.LightningModule):
         log_collapse_diagnostics: bool = True,
         modality_names: Optional[list] = None,
         posterior_logvar_min: float = -6.0,
+        weight_decay: float = 0.01,
     ):
         """Initialize DIPVAELitModule.
 
@@ -105,6 +106,7 @@ class DIPVAELitModule(pl.LightningModule):
             modality_names: List of modality names for logging.
             posterior_logvar_min: Minimum value for logvar. Stored for hyperparameter
                 tracking; actual clamping happens in model.encode(). Default: -6.0.
+            weight_decay: AdamW weight decay (L2 regularization). Default: 0.01.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -127,6 +129,7 @@ class DIPVAELitModule(pl.LightningModule):
         self.use_ddp_gather = use_ddp_gather
         self.log_collapse_diagnostics = log_collapse_diagnostics
         self.modality_names = modality_names or ["t1c", "t1n", "t2f", "t2w"]
+        self.weight_decay = weight_decay
         # NOTE: posterior_logvar_min stored in hparams for tracking, but actual
         # clamping happens in model.encode(). Use self.model.posterior_logvar_min
         # for runtime monitoring (e.g., logvar saturation tracking).
@@ -173,6 +176,7 @@ class DIPVAELitModule(pl.LightningModule):
             log_collapse_diagnostics=cfg.train.get("log_collapse_diagnostics", True),
             modality_names=cfg.data.get("modalities", ["t1c", "t1n", "t2f", "t2w"]),
             posterior_logvar_min=cfg.train.get("posterior_logvar_min", -6.0),
+            weight_decay=cfg.train.get("weight_decay", 0.01),
         )
 
     def on_train_epoch_start(self) -> None:
@@ -319,9 +323,10 @@ class DIPVAELitModule(pl.LightningModule):
         self.log("sched/lambda_od", self.current_lambda_od, on_step=False, on_epoch=True)
         self.log("sched/lambda_d", self.current_lambda_d, on_step=False, on_epoch=True)
 
-        # Schedule state (linear warm-up for lambda)
+        # Schedule state (linear warm-up for lambda, accounting for delayed start)
         if self.lambda_cov_annealing_epochs > 0:
-            phase = min(1.0, self.current_epoch / self.lambda_cov_annealing_epochs)
+            effective_epoch = max(0, self.current_epoch - self.lambda_start_epoch)
+            phase = min(1.0, effective_epoch / self.lambda_cov_annealing_epochs)
             self.log("sched/lambda_phase", phase, on_step=False, on_epoch=True)
 
         # Schedule state (for cyclical annealing)
@@ -537,5 +542,6 @@ class DIPVAELitModule(pl.LightningModule):
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.lr,
+            weight_decay=self.weight_decay,
         )
         return optimizer
