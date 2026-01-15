@@ -4,7 +4,7 @@ data:
   roi_size: [128, 128, 128]
   spacing: [1.875, 1.875, 1.875]
   orientation: "RAS"
-  batch_size: 16
+  batch_size: 8
   num_workers: 0
   cache_rate: 1.0
   val_split: 0.1
@@ -71,7 +71,7 @@ loss:
 
 train:
   seed: 42
-  max_epochs: 500
+  max_epochs: 1000
   lr: 1e-4
   precision: "16-mixed"
   gradient_checkpointing: true
@@ -162,7 +162,7 @@ logging:
   # Active Units (AU) callback - canonical latent activity metric
   au_dense_until: 30                   # Dense logging (every epoch) for epochs 0..30
   au_sparse_interval: 5                # Sparse logging (every 5 epochs) after epoch 30
-  au_subset_fraction: 0.66             # Use 66% of validation dataset for AU computation
+  au_subset_fraction: 0.99             # Use 99% of validation dataset for AU computation
   au_batch_size: 64                    # Batch size for AU computation (larger = more efficient)
   eps_au: 0.01                         # Variance threshold (nats) for active dimension counting
   au_subset_seed: 42                   # RNG seed for reproducible subset selection

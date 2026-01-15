@@ -17,7 +17,7 @@ echo "Job started at: $(date)"
 # ========================================================================
 # DISTRIBUTED TRAINING CONFIGURATION
 # ========================================================================
-EXPERIMENT_NAME="disvae"
+EXPERIMENT_NAME="dipvae"
 CONDA_ENV_NAME="vae-dynamics"
 
 REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
