@@ -59,8 +59,9 @@ from vae.training.callbacks import (
     LatentDiagnosticsCallback,
     UnifiedCSVCallback,
     RunMetadataCallback,
+    GradientStatsCallback,
 )
-from vae.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs
+from vae.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs, update_runs_index
 
 
 logger = logging.getLogger(__name__)
@@ -174,9 +175,12 @@ def main():
     # Determine experiment type
     experiment_name, variant_type = get_experiment_info(cfg)
 
-    # Create run directory
-    run_dir = create_run_dir(cfg.logging.save_dir, experiment_name=experiment_name)
+    # Create run directory with informative naming
+    run_dir = create_run_dir(cfg.logging.save_dir, cfg=cfg, experiment_type=experiment_name)
     run_dir_str = str(run_dir)
+
+    # Update runs index with running status
+    update_runs_index(run_dir, cfg, experiment_name, status="running")
 
     # Setup logging to console and file
     setup_logging(run_dir_str)
@@ -298,21 +302,19 @@ def main():
     # Unified CSV callback (consolidates epoch metrics, system metrics, gradient norms)
     unified_csv_callback = UnifiedCSVCallback(
         run_dir=run_dir,
-        tidy_subdir=cfg.logging.get("tidy_dir", "logs/tidy"),
         log_grad_norm=cfg.logging.get("log_grad_norm", True),
         grad_norm_type=2.0,
     )
     callbacks.append(unified_csv_callback)
-    logger.info("Configured unified CSV logging (all metrics in epoch_metrics.csv)")
+    logger.info("Configured unified CSV logging (all metrics in logs/metrics.csv)")
 
-    # Run metadata JSON (config + data signature)
+    # Run metadata JSON (config + data signature + hardware info)
     run_meta_callback = RunMetadataCallback(
         run_dir=run_dir,
         cfg=cfg,
-        tidy_subdir=cfg.logging.get("tidy_dir", "logs/tidy"),
     )
     callbacks.append(run_meta_callback)
-    logger.info("Configured run metadata JSON")
+    logger.info("Configured run metadata JSON (config/run_meta.json)")
 
     # === END unified CSV logging ===
 
@@ -372,6 +374,11 @@ def main():
     callbacks.append(logging_callback)
     logger.info(f"Configured logging: at least {min_logs_per_epoch} logs per training epoch")
 
+    # Gradient stats callback for stability analysis
+    grad_stats_callback = GradientStatsCallback(run_dir=run_dir)
+    callbacks.append(grad_stats_callback)
+    logger.info("Configured gradient stats logging (diagnostics/gradients/grad_stats.csv)")
+
     # Setup logger (wandb or csv based on config)
     pl_logger = create_logger(cfg, run_dir, experiment_name)
 
@@ -430,6 +437,35 @@ def main():
     logger.info("Training complete!")
     logger.info(f"Best checkpoint: {checkpoint_callback.best_model_path}")
     logger.info(f"Best val/loss: {checkpoint_callback.best_model_score:.4f}")
+
+    # Get final AU metrics from callback if available
+    final_au_count = None
+    final_au_frac = None
+    if cfg.logging.get("au_dense_until", -1) >= 0:
+        if au_callback.last_epoch_metrics is not None:
+            final_au_count = au_callback.last_epoch_metrics.get("latent_diag/au_count")
+            final_au_frac = au_callback.last_epoch_metrics.get("latent_diag/au_frac")
+
+    # Update runs index with completed status and final metrics
+    best_val_loss = checkpoint_callback.best_model_score
+    best_epoch = None
+    if checkpoint_callback.best_model_path:
+        # Extract epoch from checkpoint path (e.g., "vae-epoch=042.ckpt")
+        import re
+        match = re.search(r"epoch[=_](\d+)", checkpoint_callback.best_model_path)
+        if match:
+            best_epoch = int(match.group(1))
+
+    update_runs_index(
+        run_dir=run_dir,
+        cfg=cfg,
+        experiment_type=experiment_name,
+        status="completed",
+        best_val_loss=float(best_val_loss) if best_val_loss is not None else None,
+        best_epoch=best_epoch,
+        final_au_count=final_au_count,
+        final_au_frac=final_au_frac,
+    )
 
 
 if __name__ == "__main__":

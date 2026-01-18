@@ -17,6 +17,7 @@ from .metrics_csv_callback import (
 from .diagnostics_callbacks import (
     LatentDiagnosticsCallback,
     ActiveUnitsCallback,
+    GradientStatsCallback,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     # Diagnostics
     "LatentDiagnosticsCallback",
     "ActiveUnitsCallback",
+    "GradientStatsCallback",
 ]

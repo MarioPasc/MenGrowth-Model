@@ -64,7 +64,7 @@ class LatentDiagnosticsCallback(Callback):
         num_samples: Number of validation samples to use (default: 32).
         shift_vox: Translation shift magnitude in voxels (default: 5).
         eps_au: Variance threshold (nats) - kept for backward compatibility but no longer used.
-        ids_name: Relative path for sample IDs file (default: "latent_diag/ids.txt").
+        ids_name: Relative path for sample IDs file (default: "diagnostics/latent_probes/ids.txt").
         image_key: Batch dict key for images (default: "image").
         seg_key: Batch dict key for segmentations (default: "seg").
         id_key: Batch dict key for sample IDs (default: "id").
@@ -85,7 +85,7 @@ class LatentDiagnosticsCallback(Callback):
         num_samples: int = 32,
         shift_vox: int = 5,
         eps_au: float = 0.01,
-        ids_name: str = "latent_diag/ids.txt",
+        ids_name: str = "diagnostics/latent_probes/ids.txt",
         image_key: str = "image",
         seg_key: str = "seg",
         id_key: str = "id",
@@ -744,6 +744,7 @@ class ActiveUnitsCallback(Callback):
     """Canonical Active Units callback with adaptive scheduling.
 
     Computes AU = count(Var(μ_i) > δ) on fixed validation subset.
+    Also tracks AU history over training to a CSV file.
 
     Schedule:
         - Dense: every epoch for epochs 0..au_dense_until
@@ -758,7 +759,7 @@ class ActiveUnitsCallback(Callback):
         au_batch_size: Batch size for computation (default 64).
         eps_au: Variance threshold in nats (default 0.01).
         au_subset_seed: RNG seed for subset (default 42).
-        au_ids_path: Relative path for indices file (default "latent_diag/au_ids.txt").
+        au_ids_path: Relative path for indices file (default "diagnostics/active_units/au_ids.txt").
         image_key: Batch dict key for images (default "image").
     """
 
@@ -772,7 +773,7 @@ class ActiveUnitsCallback(Callback):
         au_batch_size: int = 64,
         eps_au: float = 0.01,
         au_subset_seed: int = 42,
-        au_ids_path: str = "latent_diag/au_ids.txt",
+        au_ids_path: str = "diagnostics/active_units/au_ids.txt",
         image_key: str = "image",
     ):
         super().__init__()
@@ -787,9 +788,13 @@ class ActiveUnitsCallback(Callback):
         self.au_ids_path = au_ids_path
         self.image_key = image_key
 
+        # AU history CSV path
+        self.au_history_path = self.run_dir / "diagnostics" / "active_units" / "au_history.csv"
+
         self._subset_indices: Optional[List[int]] = None
         self._subset_dataloader: Optional[DataLoader] = None
         self.last_epoch_metrics: Optional[Dict[str, Any]] = None
+        self._au_history_initialized = False
 
     def _should_compute(self, epoch: int) -> bool:
         """Check if AU should be computed this epoch.
@@ -930,10 +935,37 @@ class ActiveUnitsCallback(Callback):
             "latent_diag/au_subset_size": len(self._subset_indices),
         }
 
+        # Append to AU history CSV
+        self._append_to_au_history(trainer.current_epoch, au_count, au_frac, z_dim)
+
         logger.info(
             f"AU at epoch {trainer.current_epoch}: "
             f"{au_count}/{z_dim} active ({au_frac:.3f})"
         )
+
+    def _append_to_au_history(
+        self, epoch: int, au_count: float, au_frac: float, z_dim: int
+    ) -> None:
+        """Append AU metrics to history CSV.
+
+        Args:
+            epoch: Current epoch.
+            au_count: Number of active units.
+            au_frac: Fraction of active units.
+            z_dim: Total latent dimensions.
+        """
+        # Ensure directory exists
+        self.au_history_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write header if first entry
+        if not self._au_history_initialized and not self.au_history_path.exists():
+            with open(self.au_history_path, "w") as f:
+                f.write("epoch,au_count,au_frac,z_dim,threshold\n")
+            self._au_history_initialized = True
+
+        # Append row
+        with open(self.au_history_path, "a") as f:
+            f.write(f"{epoch},{au_count},{au_frac:.6f},{z_dim},{self.eps_au}\n")
 
     def _compute_au(self, pl_module: pl.LightningModule) -> tuple:
         """Compute AU on subset.
@@ -975,3 +1007,116 @@ class ActiveUnitsCallback(Callback):
         z_dim = mu_mat.shape[1]
 
         return float(au_count), float(au_frac), int(z_dim)
+
+
+class GradientStatsCallback(Callback):
+    """Callback to track gradient statistics per epoch.
+
+    Tracks gradient norms, NaN/Inf counts, and saves to CSV for stability analysis.
+
+    Output: {run_dir}/diagnostics/gradients/grad_stats.csv
+
+    Columns:
+        - epoch: Training epoch
+        - grad_norm_mean: Mean gradient norm across batches
+        - grad_norm_max: Maximum gradient norm
+        - grad_norm_min: Minimum gradient norm
+        - grad_nan_count: Number of batches with NaN gradients
+        - grad_inf_count: Number of batches with Inf gradients
+
+    Args:
+        run_dir: Root directory for outputs.
+        grad_norm_type: Norm type for gradient norm (default: 2.0 for L2).
+    """
+
+    def __init__(
+        self,
+        run_dir: Union[str, Path],
+        grad_norm_type: float = 2.0,
+    ):
+        super().__init__()
+        self.run_dir = Path(run_dir)
+        self.grad_norm_type = grad_norm_type
+        self.csv_path = self.run_dir / "diagnostics" / "gradients" / "grad_stats.csv"
+
+        # Per-epoch accumulators
+        self._grad_norms = []
+        self._grad_nan_count = 0
+        self._grad_inf_count = 0
+        self._header_written = False
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        """Reset accumulators at epoch start."""
+        self._grad_norms = []
+        self._grad_nan_count = 0
+        self._grad_inf_count = 0
+
+    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
+        """Compute gradient statistics before optimizer step."""
+        total_norm = 0.0
+        has_nan = False
+        has_inf = False
+
+        for p in pl_module.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(self.grad_norm_type)
+                total_norm += param_norm.item() ** self.grad_norm_type
+
+                if torch.isnan(param_norm).any():
+                    has_nan = True
+                if torch.isinf(param_norm).any():
+                    has_inf = True
+
+        total_norm = total_norm ** (1.0 / self.grad_norm_type)
+
+        self._grad_norms.append(total_norm)
+        if has_nan:
+            self._grad_nan_count += 1
+        if has_inf:
+            self._grad_inf_count += 1
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        """Write gradient stats to CSV at epoch end."""
+        # Rank-zero safety
+        if not trainer.is_global_zero:
+            return
+
+        # Skip if no gradients collected (e.g., sanity check)
+        if not self._grad_norms:
+            return
+
+        # Ensure directory exists
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Compute statistics
+        grad_norms = np.array(self._grad_norms)
+        stats = {
+            "epoch": trainer.current_epoch,
+            "grad_norm_mean": float(np.mean(grad_norms)),
+            "grad_norm_max": float(np.max(grad_norms)),
+            "grad_norm_min": float(np.min(grad_norms)),
+            "grad_norm_std": float(np.std(grad_norms)),
+            "grad_nan_count": self._grad_nan_count,
+            "grad_inf_count": self._grad_inf_count,
+        }
+
+        # Write header if needed
+        if not self._header_written and not self.csv_path.exists():
+            with open(self.csv_path, "w") as f:
+                f.write(",".join(stats.keys()) + "\n")
+            self._header_written = True
+
+        # Append row
+        with open(self.csv_path, "a") as f:
+            values = [str(v) for v in stats.values()]
+            f.write(",".join(values) + "\n")
+
+        # Log warning if NaN or Inf detected
+        if self._grad_nan_count > 0:
+            logger.warning(
+                f"Epoch {trainer.current_epoch}: {self._grad_nan_count} batches with NaN gradients"
+            )
+        if self._grad_inf_count > 0:
+            logger.warning(
+                f"Epoch {trainer.current_epoch}: {self._grad_inf_count} batches with Inf gradients"
+            )

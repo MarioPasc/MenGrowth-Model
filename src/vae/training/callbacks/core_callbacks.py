@@ -225,7 +225,7 @@ class ReconstructionCallback(Callback):
     comparing input vs reconstruction vs absolute difference.
 
     Visualizations are saved to:
-        <run_dir>/recon/epoch_<E>/sample_<S>_mod<M>_<view>.png
+        <run_dir>/visualizations/reconstructions/epoch_<E>/sample_<S>_<mod>_grid.png
     """
 
     def __init__(
@@ -247,6 +247,7 @@ class ReconstructionCallback(Callback):
         """
         super().__init__()
         self.run_dir = Path(run_dir)
+        self.recon_base_dir = self.run_dir / "visualizations" / "reconstructions"
         self.recon_every_n_epochs = recon_every_n_epochs
         self.num_recon_samples = num_recon_samples
         self.modality_names = modality_names or ["T1c", "T1n", "T2f", "T2w"]
@@ -308,7 +309,7 @@ class ReconstructionCallback(Callback):
         num_samples = min(self.num_recon_samples, len(all_x))
 
         # Create output directory
-        epoch_dir = self.run_dir / "recon" / f"epoch_{epoch:04d}"
+        epoch_dir = self.recon_base_dir / f"epoch_{epoch:04d}"
         epoch_dir.mkdir(parents=True, exist_ok=True)
 
         for sample_idx in range(num_samples):

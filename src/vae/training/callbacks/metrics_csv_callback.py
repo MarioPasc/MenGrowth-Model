@@ -13,6 +13,7 @@ import json
 import logging
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -21,6 +22,8 @@ import pandas as pd
 import torch
 from pytorch_lightning.callbacks import Callback
 from omegaconf import DictConfig, OmegaConf
+
+from vae.utils.io import get_hardware_info
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +63,10 @@ class UnifiedCSVCallback(Callback):
     - Latent diagnostics: latent_diag/* (sparse, "-" placeholder on non-diagnostic epochs)
     - System metrics: system/* (GPU memory, throughput, execution time)
 
-    Output: {run_dir}/logs/tidy/epoch_metrics.csv
+    Output: {run_dir}/logs/metrics.csv
 
     Args:
         run_dir: Root directory for outputs
-        tidy_subdir: Subdirectory for tidy logs (default: "logs/tidy")
         log_grad_norm: Whether to track gradient norms (default: True)
         grad_norm_type: Norm type for gradient norm (default: 2.0 for L2)
     """
@@ -116,11 +118,10 @@ class UnifiedCSVCallback(Callback):
     def __init__(
         self,
         run_dir: Path,
-        tidy_subdir: str = "logs/tidy",
         log_grad_norm: bool = True,
         grad_norm_type: float = 2.0,
     ):
-        self.csv_path = Path(run_dir) / tidy_subdir / "epoch_metrics.csv"
+        self.csv_path = Path(run_dir) / "logs" / "metrics.csv"
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         self.header_written = False
 
@@ -301,28 +302,32 @@ class RunMetadataCallback(Callback):
     """Save run configuration and data signature to JSON.
 
     Writes metadata at training start for reproducibility and auditability.
+    Updates with end_time and final status at training end.
 
-    Output: {run_dir}/logs/tidy/run_meta.json
+    Output: {run_dir}/config/run_meta.json
 
     Includes:
         - Experiment config (seed, epochs, batch_size, lr, z_dim, precision)
         - Data signature (input_shape, voxel_count, normalization, recon_likelihood)
         - Schedule config (beta, annealing, free_bits, capacity)
+        - Hardware info (hostname, GPU, CUDA version, PyTorch version)
+        - Timing info (start_time, end_time)
+        - Status (running, completed, failed)
 
     Args:
         run_dir: Root directory for outputs
         cfg: OmegaConf configuration
-        tidy_subdir: Subdirectory for tidy logs (default: "logs/tidy")
     """
 
     def __init__(
         self,
         run_dir: Path,
         cfg: DictConfig,
-        tidy_subdir: str = "logs/tidy",
     ):
-        self.meta_path = Path(run_dir) / tidy_subdir / "run_meta.json"
+        self.meta_path = Path(run_dir) / "config" / "run_meta.json"
+        self.run_dir = Path(run_dir)
         self.cfg = cfg
+        self._start_time = None
 
     def on_train_start(self, trainer, pl_module):
         """Write metadata at training start."""
@@ -330,20 +335,33 @@ class RunMetadataCallback(Callback):
         if not trainer.is_global_zero:
             return
 
+        # Record start time
+        self._start_time = datetime.now()
+
         # Determine experiment type
         experiment = self.cfg.model.get("variant", "baseline_vae")
 
+        # Get run_id from directory name
+        run_id = self.run_dir.name
+
         # Base metadata
         meta = {
+            "run_id": run_id,
             "experiment": experiment,
-            "run_dir": str(self.meta_path.parent.parent.parent),
+            "run_dir": str(self.run_dir),
             "seed": self.cfg.train.seed,
             "max_epochs": self.cfg.train.max_epochs,
             "batch_size": self.cfg.data.batch_size,
             "lr": self.cfg.train.lr,
             "z_dim": self.cfg.model.z_dim,
             "precision": self.cfg.train.precision,
+            "start_time": self._start_time.isoformat(),
+            "end_time": None,
+            "status": "running",
         }
+
+        # Hardware info
+        meta["hardware"] = get_hardware_info()
 
         # Data signature (for reproducibility and comparison)
         # Compute voxel count from roi_size
@@ -431,3 +449,33 @@ class RunMetadataCallback(Callback):
             json.dump(meta_serializable, f, indent=2)
 
         logger.info(f"Saved run metadata to {self.meta_path}")
+
+    def on_train_end(self, trainer, pl_module):
+        """Update metadata with end_time and status at training end."""
+        # Rank-zero safety
+        if not trainer.is_global_zero:
+            return
+
+        # Read existing metadata
+        if not self.meta_path.exists():
+            return
+
+        with open(self.meta_path, "r") as f:
+            meta = json.load(f)
+
+        # Update with end info
+        end_time = datetime.now()
+        meta["end_time"] = end_time.isoformat()
+        meta["status"] = "completed"
+
+        # Calculate training duration
+        if self._start_time is not None:
+            duration = end_time - self._start_time
+            meta["training_duration_sec"] = duration.total_seconds()
+            meta["training_duration_human"] = str(duration)
+
+        # Write updated JSON
+        with open(self.meta_path, "w") as f:
+            json.dump(meta, f, indent=2)
+
+        logger.info(f"Updated run metadata with completion status")

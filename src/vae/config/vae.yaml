@@ -97,16 +97,19 @@ loss:
 
 logging:
   save_dir: "experiments/runs"
-  recon_every_n_epochs: 5
-  num_recon_samples: 2
+  run_tag: null  # Optional custom suffix for run directory name
+
+  # Visualization settings
+  visual:
+    recon_every_n_epochs: 5
+    num_recon_samples: 2
   min_logs_per_epoch: 3  # Minimum console/CSV log entries per training epoch
 
   # Latent diagnostics (lightweight disentanglement metrics)
   latent_diag_every_n_epochs: 10
   latent_diag_num_samples: 32
   latent_diag_shift_vox: 5
-  latent_diag_csv_name: "latent_diag/metrics.csv"
-  latent_diag_ids_name: "latent_diag/ids.txt"
+  latent_diag_ids_name: "diagnostics/latent_probes/ids.txt"
 
   # Active Units (AU) callback - canonical latent activity metric
   au_dense_until: 15        # Dense logging (every epoch) for epochs 0..15
@@ -115,10 +118,6 @@ logging:
   au_batch_size: 64         # Batch size for AU computation (larger = more efficient)
   eps_au: 0.01              # Variance threshold (nats) for active dimension counting
   au_subset_seed: 42        # RNG seed for reproducible subset selection
-
-  # Tidy CSV logging (one row per epoch, no NaN fragmentation)
-  tidy_dir: "logs/tidy"
-  step_log_stride: 100  # Log every N steps for step CSV (50-200 recommended for long runs)
 
   # Segmentation label mapping (configurable for different datasets)
   seg_labels:
