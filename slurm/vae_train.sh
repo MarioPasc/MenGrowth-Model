@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-#SBATCH -J vae_baseline
-#SBATCH --time=1-12:00:00
+#SBATCH -J log_vae
+#SBATCH --time=2-12:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
@@ -17,7 +17,7 @@ echo "Job started at: $(date)"
 # ========================================================================
 # DISTRIBUTED TRAINING CONFIGURATION
 # ========================================================================
-EXPERIMENT_NAME="exp1_baseline_vae"
+EXPERIMENT_NAME="vae"
 CONDA_ENV_NAME="vae-dynamics"
 
 REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
