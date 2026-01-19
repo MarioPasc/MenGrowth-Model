@@ -388,7 +388,7 @@ class ReconstructionCallback(Callback):
         view_names = ["Axial", "Coronal", "Sagittal"]
         col_names = ["Input", "Reconstruction", "Difference"]
 
-        fig, axes = plt.subplots(3, 3, figsize=(12, 12))
+        fig, axes = plt.subplots(3, 3, figsize=(12, 12), constrained_layout=True)
 
         for row_idx, view_name in enumerate(view_names):
             orig, recon, diff = slices[view_name]
@@ -421,7 +421,6 @@ class ReconstructionCallback(Callback):
         fig.colorbar(im, ax=axes[:, 2], fraction=0.02, pad=0.02, label='Abs. Diff.')
 
         fig.suptitle(f"{modality} - Sample {sample_idx}", fontsize=14)
-        plt.tight_layout(rect=[0, 0, 0.95, 0.96])
 
         filename = f"sample_{sample_idx:02d}_{modality.lower()}_grid.png"
         save_path = output_dir / filename

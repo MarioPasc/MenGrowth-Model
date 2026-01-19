@@ -15,11 +15,13 @@ References:
 """
 
 from typing import Dict, List, Optional, Tuple, Union
+import logging
 import numpy as np
 import torch
 from scipy import ndimage
 from skimage import measure
 
+logger = logging.getLogger(__name__)
 
 # Default BraTS segmentation labels
 DEFAULT_SEG_LABELS = {
@@ -27,6 +29,61 @@ DEFAULT_SEG_LABELS = {
     "ed": 2,   # Peritumoral edema
     "et": 3,   # Enhancing tumor
 }
+
+
+def validate_semantic_features(
+    features: Dict[str, float],
+    fix_invalid: bool = True,
+    log_warnings: bool = True,
+) -> Tuple[Dict[str, float], bool]:
+    """Validate semantic features for NaN/Inf values.
+
+    Args:
+        features: Dictionary of semantic features
+        fix_invalid: If True, replace NaN/Inf with safe defaults
+        log_warnings: If True, log warnings for invalid values
+
+    Returns:
+        Tuple of (validated_features, had_invalid) where had_invalid is True
+        if any NaN/Inf values were found
+    """
+    had_invalid = False
+    validated = {}
+
+    for name, value in features.items():
+        if not np.isfinite(value):
+            had_invalid = True
+            if log_warnings:
+                logger.warning(
+                    f"Invalid value in semantic feature '{name}': {value}"
+                )
+
+            if fix_invalid:
+                # Use safe defaults based on feature type
+                if name.startswith("vol_"):
+                    # Log volume: log(1) = 0 for empty/invalid
+                    validated[name] = 0.0
+                elif name.startswith("loc_"):
+                    # Location: center of ROI
+                    validated[name] = 0.5
+                elif name.startswith("sphericity_") or name.startswith("solidity_"):
+                    # Sphericity/solidity: 0 for invalid
+                    validated[name] = 0.0
+                elif name.startswith("surface_area_"):
+                    # Log surface area: log(1) = 0
+                    validated[name] = 0.0
+                elif name.startswith("aspect_"):
+                    # Aspect ratio: 1.0 (no distortion)
+                    validated[name] = 1.0
+                else:
+                    # Unknown: default to 0
+                    validated[name] = 0.0
+            else:
+                validated[name] = value
+        else:
+            validated[name] = value
+
+    return validated, had_invalid
 
 
 def extract_semantic_features(
@@ -129,6 +186,11 @@ def extract_semantic_features(
                     features[f"surface_area_{label_name}"] = 0.0
                     features[f"aspect_xy_{label_name}"] = 1.0
                     features[f"aspect_xz_{label_name}"] = 1.0
+
+    # Validate all features for NaN/Inf and fix if necessary
+    features, had_invalid = validate_semantic_features(features, fix_invalid=True)
+    if had_invalid:
+        logger.warning("Some semantic features had invalid values and were fixed")
 
     return features
 

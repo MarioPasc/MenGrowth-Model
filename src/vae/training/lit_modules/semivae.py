@@ -483,6 +483,96 @@ class SemiVAELitModule(pl.LightningModule):
         # Mean squared deviation
         return (deviation ** 2).mean()
 
+    def _check_nan_in_latents(
+        self,
+        mu: torch.Tensor,
+        logvar: torch.Tensor,
+        z: torch.Tensor,
+        step_type: str = "train",
+    ) -> bool:
+        """Check for NaN/Inf in latent tensors and log diagnostics.
+
+        Args:
+            mu: Posterior mean [B, z_dim]
+            logvar: Posterior logvar [B, z_dim]
+            z: Sampled latent [B, z_dim]
+            step_type: "train" or "val" for logging prefix
+
+        Returns:
+            True if NaN/Inf detected, False otherwise
+        """
+        has_nan = False
+
+        # Check full tensors
+        if torch.isnan(mu).any() or torch.isinf(mu).any():
+            nan_count = torch.isnan(mu).sum().item()
+            inf_count = torch.isinf(mu).sum().item()
+            logger.error(
+                f"NaN/Inf in mu at {step_type} step {self.global_step}: "
+                f"NaN={nan_count}, Inf={inf_count}"
+            )
+            has_nan = True
+
+        if torch.isnan(logvar).any() or torch.isinf(logvar).any():
+            nan_count = torch.isnan(logvar).sum().item()
+            inf_count = torch.isinf(logvar).sum().item()
+            logger.error(
+                f"NaN/Inf in logvar at {step_type} step {self.global_step}: "
+                f"NaN={nan_count}, Inf={inf_count}"
+            )
+            has_nan = True
+
+        if torch.isnan(z).any() or torch.isinf(z).any():
+            nan_count = torch.isnan(z).sum().item()
+            inf_count = torch.isinf(z).sum().item()
+            logger.error(
+                f"NaN/Inf in z at {step_type} step {self.global_step}: "
+                f"NaN={nan_count}, Inf={inf_count}"
+            )
+            has_nan = True
+
+        # If NaN detected, identify which partition(s) are affected
+        if has_nan:
+            partition_info = self.model.get_partition_info()
+            for name, config in partition_info.items():
+                start, end = config["start_idx"], config["end_idx"]
+                mu_part = mu[:, start:end]
+                if torch.isnan(mu_part).any() or torch.isinf(mu_part).any():
+                    nan_frac = (torch.isnan(mu_part) | torch.isinf(mu_part)).float().mean().item()
+                    logger.error(
+                        f"  Partition '{name}' (dims {start}:{end}) has NaN/Inf: "
+                        f"{nan_frac*100:.1f}% affected"
+                    )
+
+            # Log to wandb/tensorboard for visibility
+            self.log(f"{step_type}_nan/detected", 1.0, sync_dist=True)
+
+        return has_nan
+
+    def _check_nan_in_semantic_targets(
+        self,
+        semantic_targets: Dict[str, torch.Tensor],
+    ) -> bool:
+        """Check for NaN/Inf in semantic targets.
+
+        Args:
+            semantic_targets: Dictionary of semantic target tensors
+
+        Returns:
+            True if NaN/Inf detected, False otherwise
+        """
+        has_nan = False
+        for name, target in semantic_targets.items():
+            if torch.isnan(target).any() or torch.isinf(target).any():
+                nan_count = torch.isnan(target).sum().item()
+                inf_count = torch.isinf(target).sum().item()
+                logger.error(
+                    f"NaN/Inf in semantic target '{name}' at step {self.global_step}: "
+                    f"NaN={nan_count}, Inf={inf_count}, shape={target.shape}"
+                )
+                has_nan = True
+        return has_nan
+
     def training_step(
         self,
         batch: Dict[str, torch.Tensor],
@@ -502,6 +592,9 @@ class SemiVAELitModule(pl.LightningModule):
         # Forward pass
         x_hat, mu, logvar, z, semantic_preds = self.model(x)
 
+        # Check for NaN/Inf in latents (critical for diagnosing training issues)
+        self._check_nan_in_latents(mu, logvar, z, "train")
+
         # Reconstruction loss
         recon_loss = self._compute_reconstruction_loss(x, x_hat)
 
@@ -518,6 +611,10 @@ class SemiVAELitModule(pl.LightningModule):
 
         if "semantic_features" in batch:
             semantic_targets = batch["semantic_features"]
+
+            # Check for NaN/Inf in semantic targets (data pipeline issue)
+            self._check_nan_in_semantic_targets(semantic_targets)
+
             semantic_losses = self._compute_semantic_losses(semantic_preds, semantic_targets)
 
             # Weighted sum of semantic losses
@@ -599,6 +696,9 @@ class SemiVAELitModule(pl.LightningModule):
         # Forward pass
         x_hat, mu, logvar, z, semantic_preds = self.model(x)
 
+        # Check for NaN/Inf in latents
+        self._check_nan_in_latents(mu, logvar, z, "val")
+
         # Reconstruction loss
         recon_loss = self._compute_reconstruction_loss(x, x_hat)
 
@@ -615,6 +715,10 @@ class SemiVAELitModule(pl.LightningModule):
 
         if "semantic_features" in batch:
             semantic_targets = batch["semantic_features"]
+
+            # Check for NaN/Inf in semantic targets
+            self._check_nan_in_semantic_targets(semantic_targets)
+
             semantic_losses = self._compute_semantic_losses(semantic_preds, semantic_targets)
 
             if "z_vol_mse" in semantic_losses:

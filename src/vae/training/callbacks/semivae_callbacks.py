@@ -556,6 +556,12 @@ class SemiVAELatentVisualizationCallback(Callback):
                 ax.set_title(f"{name} (dim < 2, skipped)")
                 continue
 
+            # Check for NaN/Inf values before PCA
+            if not np.isfinite(mu_part).all():
+                ax.set_title(f"{name} (contains NaN/Inf, skipped)")
+                logger.warning(f"Partition {name} contains NaN/Inf values, skipping PCA")
+                continue
+
             # PCA to 2D
             pca = PCA(n_components=2)
             mu_2d = pca.fit_transform(mu_part)

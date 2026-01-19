@@ -85,7 +85,8 @@ def compute_dipvae_covariance(
 
     # Compute in FP32 for numerical stability
     if compute_in_fp32:
-        with torch.cuda.amp.autocast(enabled=False):
+        device_type = 'cuda' if mu.is_cuda else 'cpu'
+        with torch.amp.autocast(device_type=device_type, enabled=False):
             mu = mu.float()
             logvar = logvar.float()
 
