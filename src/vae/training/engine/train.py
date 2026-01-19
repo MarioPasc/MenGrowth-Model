@@ -450,6 +450,9 @@ def main():
 
     # === SemiVAE-specific callbacks ===
     if variant_type == "semivae":
+        # Get validation dataset for callbacks
+        val_dataset = val_loader.dataset
+
         # Get diagnostic frequency from config
         semivae_diag_every = cfg.logging.get("semivae_diag_every_n_epochs", 10)
         semivae_num_samples = cfg.logging.get("semivae_diag_num_samples", 100)
@@ -457,6 +460,7 @@ def main():
         # SemiVAE diagnostics (partition stats, semantic quality, cross-correlations)
         semivae_diag_callback = SemiVAEDiagnosticsCallback(
             run_dir=run_dir,
+            val_dataset=val_dataset,
             every_n_epochs=semivae_diag_every,
             num_samples=semivae_num_samples,
         )
@@ -473,6 +477,7 @@ def main():
             viz_every = cfg.logging.get("semivae_viz_every_n_epochs", 25)
             semivae_viz_callback = SemiVAELatentVisualizationCallback(
                 run_dir=run_dir,
+                val_dataset=val_dataset,
                 every_n_epochs=viz_every,
                 num_samples=semivae_num_samples,
             )

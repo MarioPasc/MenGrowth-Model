@@ -843,8 +843,14 @@ class SemiVAELitModule(pl.LightningModule):
     def on_fit_start(self) -> None:
         """Called at the start of fit. Update dataset size."""
         if hasattr(self.trainer, "datamodule") and self.trainer.datamodule is not None:
-            self.dataset_size = len(self.trainer.datamodule.train_dataset)
-        elif hasattr(self.trainer, "train_dataloader"):
+            # Check if datamodule has train_dataset attribute
+            if hasattr(self.trainer.datamodule, "train_dataset"):
+                try:
+                    self.dataset_size = len(self.trainer.datamodule.train_dataset)
+                except Exception:
+                    pass
+        if self.dataset_size == 1000 and hasattr(self.trainer, "train_dataloader"):
+            # Fallback: try to get size from dataloader
             try:
                 self.dataset_size = len(self.trainer.train_dataloader.dataset)
             except Exception:

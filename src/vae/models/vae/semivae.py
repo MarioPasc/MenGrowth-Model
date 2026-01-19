@@ -171,6 +171,7 @@ class SemiVAE(nn.Module):
                 output_channels=input_channels,
                 base_filters=base_filters,
                 upsample_mode=upsample_mode,
+                use_spectral_norm=use_spectral_norm,
             )
 
         # Parse latent partitioning configuration

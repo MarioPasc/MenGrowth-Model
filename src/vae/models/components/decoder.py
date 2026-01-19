@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from typing import Tuple
 
-from .basic import get_activation, get_norm
+from .basic import get_activation, get_norm, maybe_spectral_norm
 
 
 class Decoder3D(nn.Module):
@@ -38,6 +38,7 @@ class Decoder3D(nn.Module):
         activation: str = "relu",
         norm_type: str = "group",
         upsample_mode: str = "resize_conv",
+        use_spectral_norm: bool = False,
     ):
         """Initialize Decoder3D.
 
@@ -52,6 +53,8 @@ class Decoder3D(nn.Module):
             upsample_mode: Upsampling method. Options:
                 - "resize_conv": Upsample -> Conv3d (avoids checkerboard artifacts).
                 - "deconv": ConvTranspose3d (legacy).
+            use_spectral_norm: If True, apply spectral normalization to conv layers
+                               for Lipschitz continuity (required for Neural ODE).
         """
         super().__init__()
 
@@ -62,6 +65,7 @@ class Decoder3D(nn.Module):
         self.norm_type = norm_type
         self.num_groups = num_groups
         self.upsample_mode = upsample_mode
+        self.use_spectral_norm = use_spectral_norm
 
         # Project latent to initial volume
         initial_channels = base_filters * 8
@@ -85,8 +89,9 @@ class Decoder3D(nn.Module):
         )  # 64 -> 128
 
         # Final convolution to output channels
-        self.final_conv = nn.Conv3d(
-            base_filters, output_channels, kernel_size=3, padding=1
+        self.final_conv = maybe_spectral_norm(
+            nn.Conv3d(base_filters, output_channels, kernel_size=3, padding=1),
+            use_spectral_norm=use_spectral_norm,
         )
         # Final activation: None (linear) because input data is Z-scored (unbounded)
         # self.final_act = nn.Tanh()  <-- REMOVED
@@ -101,18 +106,26 @@ class Decoder3D(nn.Module):
     ) -> nn.Sequential:
         """Create an upsample block."""
         if self.upsample_mode == "resize_conv":
+            conv = maybe_spectral_norm(
+                nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                use_spectral_norm=self.use_spectral_norm,
+            )
             return nn.Sequential(
                 nn.Upsample(scale_factor=2, mode="trilinear", align_corners=False),
-                nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                conv,
                 get_norm(self.norm_type, out_channels, self.num_groups),
                 get_activation(self.activation_name),
             )
         elif self.upsample_mode == "deconv":
-            return nn.Sequential(
+            conv = maybe_spectral_norm(
                 nn.ConvTranspose3d(
                     in_channels, out_channels, kernel_size=4,
                     stride=2, padding=1, bias=False
                 ),
+                use_spectral_norm=self.use_spectral_norm,
+            )
+            return nn.Sequential(
+                conv,
                 get_norm(self.norm_type, out_channels, self.num_groups),
                 get_activation(self.activation_name),
             )
