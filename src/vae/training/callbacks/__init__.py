@@ -4,6 +4,7 @@ Exports all callback classes for VAE training:
 - Core callbacks: Reconstruction visualization and console logging
 - Metrics callbacks: Unified CSV logging and run metadata
 - Diagnostic callbacks: Latent diagnostics and Active Units
+- SemiVAE callbacks: Partition diagnostics and semantic tracking
 """
 
 from .core_callbacks import (
@@ -19,6 +20,11 @@ from .diagnostics_callbacks import (
     ActiveUnitsCallback,
     GradientStatsCallback,
 )
+from .semivae_callbacks import (
+    SemiVAEDiagnosticsCallback,
+    SemiVAELatentVisualizationCallback,
+    SemiVAESemanticTrackingCallback,
+)
 
 __all__ = [
     # Core
@@ -31,4 +37,8 @@ __all__ = [
     "LatentDiagnosticsCallback",
     "ActiveUnitsCallback",
     "GradientStatsCallback",
+    # SemiVAE
+    "SemiVAEDiagnosticsCallback",
+    "SemiVAELatentVisualizationCallback",
+    "SemiVAESemanticTrackingCallback",
 ]

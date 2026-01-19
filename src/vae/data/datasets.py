@@ -17,6 +17,7 @@ from monai.data import PersistentDataset
 from omegaconf import DictConfig
 
 from .transforms import get_train_transforms, get_val_transforms
+from .semantic_features import SemanticFeatureNormalizer
 
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ def safe_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     out MONAI metadata keys that can cause issues with PyTorch Lightning's
     batch size extraction.
 
-    Only processes keys needed for training: "image", "seg", and "id".
+    Processes keys needed for training: "image", "seg", "id", and "semantic_features".
     This prevents issues with MONAI MetaTensor metadata (scalars, 0-d arrays).
 
     Args:
@@ -69,6 +70,23 @@ def safe_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         else:
             # For other types (strings, etc.), keep as list
             collated[key] = values
+
+    # Handle semantic_features (nested dict of tensors)
+    if "semantic_features" in batch[0]:
+        semantic_features = {}
+        # Get all partition keys from first sample
+        partition_keys = batch[0]["semantic_features"].keys()
+
+        for pkey in partition_keys:
+            # Stack tensors for each partition
+            values = [item["semantic_features"][pkey] for item in batch]
+            if isinstance(values[0], torch.Tensor):
+                semantic_features[pkey] = torch.stack(values, dim=0)
+            elif isinstance(values[0], np.ndarray):
+                tensors = [torch.from_numpy(v) for v in values]
+                semantic_features[pkey] = torch.stack(tensors, dim=0)
+
+        collated["semantic_features"] = semantic_features
 
     # Add explicit batch_size to help PyTorch Lightning's batch size inference
     # This prevents warnings about ambiguous batch size detection
@@ -169,6 +187,67 @@ def create_train_val_split(
     return train_subjects, val_subjects
 
 
+def create_train_val_test_split(
+    subjects: List[Dict[str, str]],
+    val_split: float,
+    test_split: float,
+    seed: int,
+) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[Dict[str, str]]]:
+    """Create deterministic train/val/test split from subject list.
+
+    The test set is held out for final evaluation after training completes.
+    Only train and val sets are used during the training loop.
+
+    Args:
+        subjects: List of subject data dictionaries.
+        val_split: Fraction of subjects for validation (0.0 to 1.0).
+        test_split: Fraction of subjects for test (0.0 to 1.0).
+        seed: Random seed for reproducible splitting.
+
+    Returns:
+        Tuple of (train_subjects, val_subjects, test_subjects).
+
+    Raises:
+        ValueError: If val_split + test_split >= 1.0
+    """
+    if val_split + test_split >= 1.0:
+        raise ValueError(
+            f"val_split ({val_split}) + test_split ({test_split}) must be < 1.0"
+        )
+
+    n_subjects = len(subjects)
+    n_test = max(1, int(n_subjects * test_split)) if test_split > 0 else 0
+    n_val = max(1, int(n_subjects * val_split))
+    n_train = n_subjects - n_val - n_test
+
+    if n_train < 1:
+        raise ValueError(
+            f"Not enough subjects for training. "
+            f"Total: {n_subjects}, val: {n_val}, test: {n_test}, train: {n_train}"
+        )
+
+    # Deterministic shuffle using seeded generator
+    generator = torch.Generator().manual_seed(seed)
+    indices = torch.randperm(n_subjects, generator=generator).tolist()
+
+    # Split indices: train | val | test
+    train_indices = indices[:n_train]
+    val_indices = indices[n_train:n_train + n_val]
+    test_indices = indices[n_train + n_val:]
+
+    # Sort indices for reproducibility (same subjects always in same split)
+    train_subjects = [subjects[i] for i in sorted(train_indices)]
+    val_subjects = [subjects[i] for i in sorted(val_indices)]
+    test_subjects = [subjects[i] for i in sorted(test_indices)]
+
+    logger.info(
+        f"Split: {len(train_subjects)} train, {len(val_subjects)} val, "
+        f"{len(test_subjects)} test subjects"
+    )
+
+    return train_subjects, val_subjects, test_subjects
+
+
 def get_dataloaders(
     cfg: DictConfig,
     run_dir: str,
@@ -195,6 +274,19 @@ def get_dataloaders(
     num_workers = cfg.data.num_workers
     cache_subdir = cfg.data.get("persistent_cache_subdir", "cache")
 
+    # Check if semantic feature extraction is enabled (for semi-supervised VAE)
+    extract_semantic = cfg.data.get("extract_semantic_features", False)
+    seg_labels = None
+    semantic_normalizer = None
+    require_normalizer = cfg.data.get("require_normalizer", False)
+
+    if extract_semantic:
+        # Get segmentation labels from logging config (shared with callbacks)
+        seg_labels = cfg.logging.get("seg_labels", None)
+        if seg_labels is not None:
+            seg_labels = dict(seg_labels)  # Convert DictConfig to dict
+        logger.info(f"Semantic feature extraction enabled with labels: {seg_labels}")
+
     # Setup cache directory
     cache_dir = Path(run_dir) / cache_subdir
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -203,9 +295,38 @@ def get_dataloaders(
     train_cache_dir.mkdir(exist_ok=True)
     val_cache_dir.mkdir(exist_ok=True)
 
-    # Get transforms
-    train_transforms = get_train_transforms(modalities, spacing, orientation, roi_size)
-    val_transforms = get_val_transforms(modalities, spacing, orientation, roi_size)
+    # Load semantic normalizer if semantic extraction is enabled
+    if extract_semantic:
+        normalizer_path = cache_dir / "semantic_normalizer.json"
+        if normalizer_path.exists():
+            semantic_normalizer = SemanticFeatureNormalizer.load(str(normalizer_path))
+            logger.info(f"Loaded semantic normalizer from {normalizer_path}")
+            logger.info(f"  Features: {len(semantic_normalizer.feature_names)} dimensions")
+        else:
+            msg = (
+                f"Semantic normalizer not found at {normalizer_path}. "
+                "Run scripts/precompute_semantic_normalizer.py first to compute "
+                "training set statistics for z-score normalization."
+            )
+            if require_normalizer:
+                raise FileNotFoundError(msg)
+            else:
+                logger.warning(msg)
+                logger.warning("Features will NOT be normalized - gradient imbalance may occur!")
+
+    # Get transforms (with optional semantic extraction and normalizer)
+    train_transforms = get_train_transforms(
+        modalities, spacing, orientation, roi_size,
+        extract_semantic=extract_semantic,
+        seg_labels=seg_labels,
+        semantic_normalizer=semantic_normalizer,
+    )
+    val_transforms = get_val_transforms(
+        modalities, spacing, orientation, roi_size,
+        extract_semantic=extract_semantic,
+        seg_labels=seg_labels,
+        semantic_normalizer=semantic_normalizer,
+    )
 
     # Create PersistentDatasets
     train_dataset = PersistentDataset(
@@ -281,3 +402,172 @@ def get_dataloaders(
     )
 
     return train_loader, val_loader
+
+
+def get_dataloaders_with_test(
+    cfg: DictConfig,
+    run_dir: str,
+    train_subjects: List[Dict[str, str]],
+    val_subjects: List[Dict[str, str]],
+    test_subjects: Optional[List[Dict[str, str]]] = None,
+) -> Tuple[DataLoader, DataLoader, Optional[DataLoader]]:
+    """Build train, validation, and test DataLoaders with PersistentDataset caching.
+
+    The test loader is created for final evaluation after training completes.
+    Test data uses validation transforms (no augmentation).
+
+    Args:
+        cfg: Configuration object with data parameters.
+        run_dir: Path to run directory for cache storage.
+        train_subjects: List of training subject data dicts.
+        val_subjects: List of validation subject data dicts.
+        test_subjects: Optional list of test subject data dicts.
+
+    Returns:
+        Tuple of (train_loader, val_loader, test_loader).
+        test_loader is None if test_subjects is None or empty.
+    """
+    # Extract config values
+    modalities = list(cfg.data.modalities)
+    spacing = tuple(cfg.data.spacing)
+    orientation = cfg.data.orientation
+    roi_size = tuple(cfg.data.roi_size)
+    batch_size = cfg.data.batch_size
+    num_workers = cfg.data.num_workers
+    cache_subdir = cfg.data.get("persistent_cache_subdir", "cache")
+
+    # Check if semantic feature extraction is enabled
+    extract_semantic = cfg.data.get("extract_semantic_features", False)
+    seg_labels = None
+    semantic_normalizer = None
+    require_normalizer = cfg.data.get("require_normalizer", False)
+
+    if extract_semantic:
+        seg_labels = cfg.logging.get("seg_labels", None)
+        if seg_labels is not None:
+            seg_labels = dict(seg_labels)
+        logger.info(f"Semantic feature extraction enabled with labels: {seg_labels}")
+
+    # Setup cache directories
+    cache_dir = Path(run_dir) / cache_subdir
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    train_cache_dir = cache_dir / "train"
+    val_cache_dir = cache_dir / "val"
+    test_cache_dir = cache_dir / "test"
+    train_cache_dir.mkdir(exist_ok=True)
+    val_cache_dir.mkdir(exist_ok=True)
+    test_cache_dir.mkdir(exist_ok=True)
+
+    # Load semantic normalizer if enabled
+    if extract_semantic:
+        normalizer_path = cache_dir / "semantic_normalizer.json"
+        if normalizer_path.exists():
+            semantic_normalizer = SemanticFeatureNormalizer.load(str(normalizer_path))
+            logger.info(f"Loaded semantic normalizer from {normalizer_path}")
+            logger.info(f"  Features: {len(semantic_normalizer.feature_names)} dimensions")
+        else:
+            msg = (
+                f"Semantic normalizer not found at {normalizer_path}. "
+                "Run vae.utils.precompute_semantic_normalizer first."
+            )
+            if require_normalizer:
+                raise FileNotFoundError(msg)
+            else:
+                logger.warning(msg)
+                logger.warning("Features will NOT be normalized!")
+
+    # Get transforms
+    train_transforms = get_train_transforms(
+        modalities, spacing, orientation, roi_size,
+        extract_semantic=extract_semantic,
+        seg_labels=seg_labels,
+        semantic_normalizer=semantic_normalizer,
+    )
+    val_transforms = get_val_transforms(
+        modalities, spacing, orientation, roi_size,
+        extract_semantic=extract_semantic,
+        seg_labels=seg_labels,
+        semantic_normalizer=semantic_normalizer,
+    )
+
+    # Create PersistentDatasets
+    train_dataset = PersistentDataset(
+        data=train_subjects,
+        transform=train_transforms,
+        cache_dir=str(train_cache_dir),
+    )
+    val_dataset = PersistentDataset(
+        data=val_subjects,
+        transform=val_transforms,
+        cache_dir=str(val_cache_dir),
+    )
+
+    # Test dataset uses val_transforms (no augmentation)
+    test_dataset = None
+    if test_subjects:
+        test_dataset = PersistentDataset(
+            data=test_subjects,
+            transform=val_transforms,  # Same as val - no augmentation
+            cache_dir=str(test_cache_dir),
+        )
+
+    logger.info(f"Created PersistentDataset with cache at {cache_dir}")
+
+    # DataLoader settings
+    use_cuda = torch.cuda.is_available()
+    persistent_workers = num_workers > 0
+    num_devices = cfg.train.get("devices", 1)
+    loss_cfg = cfg.get("loss", {})
+    use_ddp_gather = loss_cfg.get("use_ddp_gather", False) if loss_cfg else False
+
+    if use_ddp_gather and num_devices > 1:
+        logger.info(
+            f"DDP mode with use_ddp_gather=True (devices={num_devices}): "
+            f"enforcing drop_last=True for DDP gather safety."
+        )
+
+    # Create DataLoaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        persistent_workers=persistent_workers,
+        drop_last=True,
+        collate_fn=safe_collate,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        persistent_workers=persistent_workers,
+        drop_last=True,
+        collate_fn=safe_collate,
+    )
+
+    # Test loader: drop_last=False to evaluate ALL test samples
+    test_loader = None
+    if test_dataset is not None:
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=use_cuda,
+            persistent_workers=persistent_workers,
+            drop_last=False,  # Evaluate all test samples
+            collate_fn=safe_collate,
+        )
+
+    n_test = len(test_loader) if test_loader else 0
+    logger.info(
+        f"DataLoaders created: train={len(train_loader)} batches, "
+        f"val={len(val_loader)} batches, test={n_test} batches, "
+        f"batch_size={batch_size}"
+    )
+
+    return train_loader, val_loader, test_loader

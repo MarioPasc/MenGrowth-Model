@@ -15,6 +15,8 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 
+from .basic import maybe_spectral_norm
+
 
 class SpatialBroadcastDecoder(nn.Module):
     """Spatial Broadcast Decoder for 3D volumes.
@@ -35,6 +37,7 @@ class SpatialBroadcastDecoder(nn.Module):
         grid_size: Tuple[int, int, int] = (8, 8, 8),
         num_groups: int = 8,
         upsample_mode: str = "resize_conv",
+        use_spectral_norm: bool = False,
     ):
         """Initialize SpatialBroadcastDecoder.
 
@@ -47,6 +50,8 @@ class SpatialBroadcastDecoder(nn.Module):
             upsample_mode: Upsampling method. Options:
                 - "resize_conv": Upsample → Conv3d (fixes checkerboard artifacts)
                 - "deconv": ConvTranspose3d (legacy mode)
+            use_spectral_norm: If True, apply spectral normalization to conv layers
+                               for Lipschitz continuity (required for Neural ODE).
         """
         super().__init__()
 
@@ -56,6 +61,7 @@ class SpatialBroadcastDecoder(nn.Module):
         self.grid_size = grid_size
         self.num_groups = num_groups
         self.upsample_mode = upsample_mode
+        self.use_spectral_norm = use_spectral_norm
 
         # Register coordinate grids as buffer (not trainable)
         coords = self._create_coordinate_grid(grid_size)
@@ -68,7 +74,10 @@ class SpatialBroadcastDecoder(nn.Module):
         # 131 -> base_filters * 8 = 256 (for base_filters=32)
         initial_channels = base_filters * 8
         self.initial_conv = nn.Sequential(
-            nn.Conv3d(input_channels, initial_channels, kernel_size=1, bias=False),
+            maybe_spectral_norm(
+                nn.Conv3d(input_channels, initial_channels, kernel_size=1, bias=False),
+                use_spectral_norm=use_spectral_norm,
+            ),
             nn.GroupNorm(num_groups, initial_channels),
             nn.ReLU(inplace=True),
         )
@@ -90,8 +99,9 @@ class SpatialBroadcastDecoder(nn.Module):
 
         # Final convolution to output channels
         final_in_channels = max(base_filters // 2, 8)
-        self.final_conv = nn.Conv3d(
-            final_in_channels, output_channels, kernel_size=3, padding=1
+        self.final_conv = maybe_spectral_norm(
+            nn.Conv3d(final_in_channels, output_channels, kernel_size=3, padding=1),
+            use_spectral_norm=use_spectral_norm,
         )
         # Final activation to bound output to [-1, 1], matching Decoder3D behavior
         self.final_act = nn.Tanh()
@@ -162,9 +172,12 @@ class SpatialBroadcastDecoder(nn.Module):
             # Resize-conv: fixes checkerboard artifacts
             return nn.Sequential(
                 nn.Upsample(scale_factor=2, mode="trilinear", align_corners=False),
-                nn.Conv3d(
-                    in_channels, out_channels, kernel_size=3,
-                    padding=1, bias=False
+                maybe_spectral_norm(
+                    nn.Conv3d(
+                        in_channels, out_channels, kernel_size=3,
+                        padding=1, bias=False
+                    ),
+                    use_spectral_norm=self.use_spectral_norm,
                 ),
                 nn.GroupNorm(num_groups, out_channels),
                 nn.ReLU(inplace=True),
@@ -172,9 +185,12 @@ class SpatialBroadcastDecoder(nn.Module):
         elif self.upsample_mode == "deconv":
             # Legacy ConvTranspose3d
             return nn.Sequential(
-                nn.ConvTranspose3d(
-                    in_channels, out_channels, kernel_size=4,
-                    stride=2, padding=1, bias=False
+                maybe_spectral_norm(
+                    nn.ConvTranspose3d(
+                        in_channels, out_channels, kernel_size=4,
+                        stride=2, padding=1, bias=False
+                    ),
+                    use_spectral_norm=self.use_spectral_norm,
                 ),
                 nn.GroupNorm(num_groups, out_channels),
                 nn.ReLU(inplace=True),

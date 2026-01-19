@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from typing import Tuple, List, Sequence
 
-from .basic import BasicBlock3d, get_activation, get_norm
+from .basic import BasicBlock3d, get_activation, get_norm, maybe_spectral_norm
 
 class Encoder3D(nn.Module):
     """3D ResNet encoder for VAE.
@@ -35,6 +35,7 @@ class Encoder3D(nn.Module):
         activation: str = "relu",
         norm_type: str = "group",
         pre_activation: bool = False,
+        use_spectral_norm: bool = False,
     ):
         """Initialize Encoder3D.
 
@@ -51,6 +52,11 @@ class Encoder3D(nn.Module):
             activation: Activation function name.
             norm_type: Normalization type name.
             pre_activation: If True, use pre-activation layout in residual blocks.
+            use_spectral_norm: If True, apply spectral normalization to conv layers
+                               for Lipschitz continuity (required for Neural ODE).
+                               NOTE: NOT applied to fc_mu/fc_logvar to avoid constraining
+                               the posterior variance (logvar needs to reach large negative
+                               values like -6.0 for high certainty).
         """
         super().__init__()
 
@@ -64,16 +70,21 @@ class Encoder3D(nn.Module):
         self.activation_name = activation
         self.norm_type = norm_type
         self.pre_activation = pre_activation
+        self.use_spectral_norm = use_spectral_norm
 
         # Initial convolution: reduce spatial by 2
-        self.conv1 = nn.Conv3d(
-            input_channels, base_filters, kernel_size=3,
-            stride=2, padding=1, bias=False
+        # Apply spectral norm for Lipschitz continuity
+        self.conv1 = maybe_spectral_norm(
+            nn.Conv3d(
+                input_channels, base_filters, kernel_size=3,
+                stride=2, padding=1, bias=False
+            ),
+            use_spectral_norm=use_spectral_norm,
         )
         self.gn1 = get_norm(norm_type, base_filters, num_groups)
         self.activation = get_activation(activation)
 
-        # ResNet stages
+        # ResNet stages (spectral norm applied in BasicBlock3d)
         self.layer1 = self._make_layer(base_filters, blocks_per_layer[0], stride=1)      # 64^3
         self.layer2 = self._make_layer(base_filters * 2, blocks_per_layer[1], stride=2)  # 32^3
         self.layer3 = self._make_layer(base_filters * 4, blocks_per_layer[2], stride=2)  # 16^3
@@ -83,9 +94,13 @@ class Encoder3D(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool3d(1)
 
         final_channels = base_filters * 8
-        
+
         self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
-        
+
+        # NOTE: DO NOT apply spectral norm to fc_mu and fc_logvar
+        # Spectral norm constrains the Lipschitz constant (slope), but logvar
+        # represents uncertainty and needs to output large negative values
+        # (e.g., -6.0) when the model is certain. SN would prevent this.
         self.fc_mu = nn.Linear(final_channels, z_dim)
         self.fc_logvar = nn.Linear(final_channels, z_dim)
 
@@ -102,9 +117,13 @@ class Encoder3D(nn.Module):
         downsample = None
         if stride != 1 or self.in_channels != out_channels:
             # For the shortcut connection, we use a 1x1 conv to match dimensions
+            # Apply spectral norm to downsample conv for Lipschitz continuity
             downsample = nn.Sequential(
-                nn.Conv3d(self.in_channels, out_channels, kernel_size=1,
-                          stride=stride, bias=False),
+                maybe_spectral_norm(
+                    nn.Conv3d(self.in_channels, out_channels, kernel_size=1,
+                              stride=stride, bias=False),
+                    use_spectral_norm=self.use_spectral_norm,
+                ),
                 get_norm(self.norm_type, out_channels, self.num_groups),
             )
 
@@ -116,6 +135,7 @@ class Encoder3D(nn.Module):
             activation=self.activation_name,
             norm_type=self.norm_type,
             pre_activation=self.pre_activation,
+            use_spectral_norm=self.use_spectral_norm,
         ))
         self.in_channels = out_channels
 
@@ -127,6 +147,7 @@ class Encoder3D(nn.Module):
                 activation=self.activation_name,
                 norm_type=self.norm_type,
                 pre_activation=self.pre_activation,
+                use_spectral_norm=self.use_spectral_norm,
             ))
 
         return nn.Sequential(*layers)

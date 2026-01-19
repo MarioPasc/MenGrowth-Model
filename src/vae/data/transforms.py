@@ -5,10 +5,13 @@ All transforms are dict-based and operate on keys: t1c, t1n, t2f, t2w, seg.
 After transforms, the batch contains:
     - batch["image"]: shape [C=4, D=128, H=128, W=128]
     - batch["seg"]: shape [1, D=128, H=128, W=128]
+    - batch["semantic_features"]: dict of feature tensors (if extract_semantic=True)
 """
 
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
+import numpy as np
+import torch
 from monai.transforms.compose import Compose
 from monai.transforms.io.dictionary import LoadImaged
 from monai.transforms.utility.dictionary import (
@@ -25,9 +28,109 @@ from monai.transforms.croppad.dictionary import (
     RandSpatialCropd,
 )
 from monai.transforms.intensity.dictionary import NormalizeIntensityd
+from monai.transforms import MapTransform
+
+from .semantic_features import (
+    extract_semantic_features,
+    get_feature_groups,
+    features_to_tensor,
+    SemanticFeatureNormalizer,
+)
 
 
 SEG_KEY = "seg"
+
+
+class ExtractSemanticFeaturesd(MapTransform):
+    """Extract semantic features from segmentation mask.
+
+    This transform extracts volume, location, and shape features from
+    the segmentation mask for semi-supervised VAE training.
+
+    The features are stored in a nested dictionary under "semantic_features"
+    with keys matching the latent partition names (z_vol, z_loc, z_shape).
+    """
+
+    def __init__(
+        self,
+        seg_key: str = "seg",
+        spacing: Tuple[float, float, float] = (1.875, 1.875, 1.875),
+        roi_size: Tuple[int, int, int] = (128, 128, 128),
+        seg_labels: Optional[Dict[str, int]] = None,
+        compute_shape: bool = True,
+        normalizer: Optional[SemanticFeatureNormalizer] = None,
+    ):
+        """Initialize the transform.
+
+        Args:
+            seg_key: Key for segmentation in data dict
+            spacing: Voxel spacing in mm
+            roi_size: ROI dimensions for coordinate normalization
+            seg_labels: Segmentation label mapping
+            compute_shape: Whether to compute shape descriptors
+            normalizer: Optional normalizer for z-score standardization
+        """
+        super().__init__(keys=[seg_key])
+        self.seg_key = seg_key
+        self.spacing = spacing
+        self.roi_size = roi_size
+        self.seg_labels = seg_labels
+        self.compute_shape = compute_shape
+        self.normalizer = normalizer
+
+        # Get feature groups for partitioning
+        self.feature_groups = get_feature_groups()
+
+    def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract semantic features from segmentation.
+
+        Args:
+            data: Data dictionary with segmentation
+
+        Returns:
+            Data dictionary with added "semantic_features" key
+        """
+        d = dict(data)
+
+        seg = d[self.seg_key]
+
+        # Handle tensor or numpy array
+        if isinstance(seg, torch.Tensor):
+            seg_np = seg.cpu().numpy()
+        else:
+            seg_np = np.asarray(seg)
+
+        # Extract features
+        features = extract_semantic_features(
+            seg=seg_np,
+            spacing=self.spacing,
+            roi_size=self.roi_size,
+            seg_labels=self.seg_labels,
+            compute_shape=self.compute_shape,
+        )
+
+        # Apply normalization if available
+        if self.normalizer is not None:
+            features = self.normalizer.transform(features)
+
+        # Organize features by partition
+        semantic_features = {}
+
+        # Volume features -> z_vol
+        vol_features = [features.get(k, 0.0) for k in self.feature_groups["volume"]]
+        semantic_features["z_vol"] = torch.tensor(vol_features, dtype=torch.float32)
+
+        # Location features -> z_loc
+        loc_features = [features.get(k, 0.0) for k in self.feature_groups["location"]]
+        semantic_features["z_loc"] = torch.tensor(loc_features, dtype=torch.float32)
+
+        # Shape features -> z_shape
+        shape_features = [features.get(k, 0.0) for k in self.feature_groups["shape"]]
+        semantic_features["z_shape"] = torch.tensor(shape_features, dtype=torch.float32)
+
+        d["semantic_features"] = semantic_features
+
+        return d
 
 
 def get_common_transforms(
@@ -88,6 +191,9 @@ def get_train_transforms(
     spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
     orientation: str = "RAS",
     roi_size: Tuple[int, int, int] = (128, 128, 128),
+    extract_semantic: bool = False,
+    seg_labels: Optional[Dict[str, int]] = None,
+    semantic_normalizer: Optional[SemanticFeatureNormalizer] = None,
 ) -> Compose:
     """Get training transforms.
 
@@ -103,11 +209,27 @@ def get_train_transforms(
         spacing: Target voxel spacing in mm.
         orientation: Target orientation code.
         roi_size: Target spatial size.
+        extract_semantic: Whether to extract semantic features for semi-supervised VAE.
+        seg_labels: Segmentation label mapping for semantic extraction.
+        semantic_normalizer: Optional normalizer for semantic features.
 
     Returns:
         MONAI Compose transform pipeline.
     """
     transforms = get_common_transforms(modality_keys, spacing, orientation, roi_size)
+
+    # Add semantic feature extraction before tensor conversion (if enabled)
+    if extract_semantic:
+        transforms.append(
+            ExtractSemanticFeaturesd(
+                seg_key=SEG_KEY,
+                spacing=spacing,
+                roi_size=roi_size,
+                seg_labels=seg_labels,
+                compute_shape=True,
+                normalizer=semantic_normalizer,
+            )
+        )
 
     transforms.append(ToTensord(keys=["image", SEG_KEY]))
     return Compose(transforms)
@@ -118,6 +240,9 @@ def get_val_transforms(
     spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
     orientation: str = "RAS",
     roi_size: Tuple[int, int, int] = (128, 128, 128),
+    extract_semantic: bool = False,
+    seg_labels: Optional[Dict[str, int]] = None,
+    semantic_normalizer: Optional[SemanticFeatureNormalizer] = None,
 ) -> Compose:
     """Get validation transforms (deterministic only).
 
@@ -126,10 +251,27 @@ def get_val_transforms(
         spacing: Target voxel spacing in mm.
         orientation: Target orientation code.
         roi_size: Target spatial size.
+        extract_semantic: Whether to extract semantic features for semi-supervised VAE.
+        seg_labels: Segmentation label mapping for semantic extraction.
+        semantic_normalizer: Optional normalizer for semantic features.
 
     Returns:
         MONAI Compose transform pipeline.
     """
     transforms = get_common_transforms(modality_keys, spacing, orientation, roi_size)
+
+    # Add semantic feature extraction before tensor conversion (if enabled)
+    if extract_semantic:
+        transforms.append(
+            ExtractSemanticFeaturesd(
+                seg_key=SEG_KEY,
+                spacing=spacing,
+                roi_size=roi_size,
+                seg_labels=seg_labels,
+                compute_shape=True,
+                normalizer=semantic_normalizer,
+            )
+        )
+
     transforms.append(ToTensord(keys=["image", SEG_KEY]))
     return Compose(transforms)

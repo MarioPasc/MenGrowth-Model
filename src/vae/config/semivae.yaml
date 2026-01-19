@@ -1,0 +1,285 @@
+# =============================================================================
+# Semi-Supervised VAE Configuration (Exp3)
+# =============================================================================
+# Goal: Learn disentangled latent representations with supervised semantic
+# dimensions for downstream Neural ODE tumor growth prediction.
+#
+# Key innovation: Partition latent space into supervised (volume, location,
+# shape) and unsupervised (residual) components.
+#
+# Hardware target: 2x GPU (A100 or similar with 40GB+ VRAM)
+# =============================================================================
+
+data:
+  root_dir: "/media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train"
+  modalities: ["t1c", "t1n", "t2f", "t2w"]
+  roi_size: [128, 128, 128]
+  spacing: [1.875, 1.875, 1.875]
+  orientation: "RAS"
+
+  # Batch configuration for 2 GPUs
+  # Per-GPU batch: 4, Effective batch: 8 (adequate for TC estimation)
+  # Larger batches improve semantic regression stability
+  batch_size: 4
+  num_workers: 8
+  cache_rate: 1.0
+  val_split: 0.1
+  test_split: 0.1  # Held-out test set for final evaluation (0 to disable)
+  persistent_cache_subdir: "cache_semivae"
+
+  # Semantic feature extraction (computed during data loading)
+  extract_semantic_features: true
+  semantic_feature_normalization: "z_score"
+
+model:
+  variant: "semivae"
+  z_dim: 128
+  input_channels: 4
+  base_filters: 32
+  num_groups: 8
+  norm: "GROUP"
+
+  # Spatial Broadcast Decoder - CRITICAL for position-content disentanglement
+  # SBD provides explicit coordinate information, freeing z from encoding position
+  use_sbd: true
+  sbd_grid_size: [8, 8, 8]
+  sbd_upsample_mode: "resize_conv"
+
+  # Architecture
+  architecture:
+    pre_activation: false
+    blocks_per_layer: [2, 2, 2, 2]
+    upsample_mode: "resize_conv"
+
+  # Spectral normalization for Lipschitz continuity (required for Neural ODE)
+  # Applied to encoder conv layers and decoder - NOT to fc_mu/fc_logvar
+  # This ensures smooth latent manifold for ODE integration
+  use_spectral_norm: true
+
+  # ==========================================================================
+  # LATENT PARTITIONING - Core of semi-supervised approach
+  # ==========================================================================
+  # z = [z_vol(16) | z_loc(12) | z_shape(24) | z_residual(76)]
+  #     dims 0-15     16-27       28-51          52-127
+  #
+  # Design rationale:
+  # - Volume (16 dims): Most critical for Gompertz growth modeling
+  # - Location (12 dims): Tumor position affects growth rate α
+  # - Shape (24 dims): Morphology evolution during growth
+  # - Residual (76 dims): Background/style factors, ignored by ODE
+  # ==========================================================================
+  latent_partitioning:
+    enabled: true
+
+    # Volume encoding (4 features × 4 redundant dims = 16)
+    # Log-scaled volumes prevent gradient imbalance
+    z_vol:
+      start_idx: 0
+      dim: 16
+      supervision: "regression"
+      target_features: ["vol_total", "vol_ncr", "vol_ed", "vol_et"]
+
+    # Location encoding (3 features × 4 redundant dims = 12)
+    # Centroid normalized to [0, 1] in ROI coordinates
+    z_loc:
+      start_idx: 16
+      dim: 12
+      supervision: "regression"
+      target_features: ["loc_x", "loc_y", "loc_z"]
+
+    # Shape encoding (12 features × 2 redundant dims = 24)
+    # Sphericity, surface area, aspect ratios capture morphology
+    z_shape:
+      start_idx: 28
+      dim: 24
+      supervision: "regression"
+      target_features:
+        - "sphericity_total"
+        - "sphericity_ncr"
+        - "sphericity_et"
+        - "surface_area_total"
+        - "surface_area_ncr"
+        - "surface_area_et"
+        - "aspect_xy_total"
+        - "aspect_xz_total"
+        - "aspect_xy_ncr"
+        - "aspect_xz_ncr"
+        - "solidity_total"
+        - "solidity_et"
+
+    # Residual encoding (unsupervised VAE dimensions)
+    # Standard VAE prior with TC regularization
+    z_residual:
+      start_idx: 52
+      dim: 76
+      supervision: "none"
+
+loss:
+  reduction: "mean"
+
+  # ==========================================================================
+  # SEMANTIC SUPERVISION LOSSES
+  # ==========================================================================
+  # After z-score normalization, all features have similar scale (~0-1 std)
+  # Weight ratios reflect importance for tumor growth modeling
+
+  # Semantic regression weights (MSE on supervised dimensions)
+  lambda_vol: 10.0          # Volume is most critical for Gompertz
+  lambda_loc: 5.0           # Location affects growth rate
+  lambda_shape: 5.0         # Shape evolution secondary
+
+  # Semantic supervision schedule (delayed start for stable encoder)
+  # Phase 1 (0-9): Pure VAE warmup
+  # Phase 2 (10-29): Linear warmup of semantic losses
+  # Phase 3 (30+): Full semantic supervision
+  semantic_start_epoch: 10
+  semantic_annealing_epochs: 20
+
+  # ==========================================================================
+  # CROSS-PARTITION INDEPENDENCE LOSS
+  # ==========================================================================
+  # Penalizes correlations between z_vol, z_loc, z_shape
+  # Ensures volume, location, shape are statistically independent
+  # Critical: larger tumors tend to be more central - this decorrelates them
+  lambda_cross_partition: 5.0
+  cross_partition_start_epoch: 10
+
+  # ==========================================================================
+  # MANIFOLD DENSITY REGULARIZATION
+  # ==========================================================================
+  # Keeps residual latents near N(0, I) prior
+  # Loss = E[(||z_residual||^2 / d - 1)^2]
+  # Prevents ODE predictions from drifting off manifold during integration
+  lambda_manifold: 1.0
+  manifold_start_epoch: 10
+
+  # ==========================================================================
+  # RESIDUAL REGULARIZATION (only on z_residual)
+  # ==========================================================================
+
+  # Total Correlation penalty (β-TCVAE style)
+  # Encourages factorial posterior: q(z_res) ≈ ∏ q(z_i)
+  use_tc_residual: true
+  lambda_tc: 2.0
+  tc_estimator: "minibatch_weighted"
+
+  # Multi-GPU gradient-preserving gather for TC and cross-partition
+  use_ddp_gather: true
+  compute_in_fp32: true
+
+train:
+  seed: 42
+  max_epochs: 300                  # Sufficient for convergence
+  lr: 1e-4
+  weight_decay: 0.01
+  precision: "16-mixed"
+  gradient_checkpointing: true
+  accelerator: "gpu"
+
+  # ==========================================================================
+  # GPU CONFIGURATION
+  # ==========================================================================
+  # Default: 2 GPUs with DDP
+  # For single GPU: set devices=1 and strategy="auto"
+  devices: 2
+  strategy: "ddp"
+  sync_batchnorm: true
+  deterministic: false
+
+  # Numerical stability
+  loss_reduction: "mean"
+  gradient_clip_val: 5.0
+  gradient_clip_algorithm: "norm"
+  posterior_logvar_min: -6.0
+
+  # ==========================================================================
+  # KL REGULARIZATION (only on z_residual)
+  # ==========================================================================
+  kl_beta: 1.0
+  kl_annealing_epochs: 150
+  kl_annealing_type: "cyclical"
+  kl_annealing_cycles: 3
+  kl_annealing_ratio: 0.5
+
+  # Free bits per dimension (prevents collapse)
+  kl_free_bits: 0.2
+  kl_free_bits_mode: "batch_mean"
+
+  log_collapse_diagnostics: true
+  warmup_epochs: 10
+
+logging:
+  save_dir: "experiments/runs"
+  run_tag: null
+  log_every_n_steps: 50
+
+  logger:
+    type: "wandb"
+    wandb:
+      project: "mengrowth-semivae"
+      entity: "mario-pg02-icai"
+      name: null
+      tags: ["semivae", "meningioma", "semi-supervised", "exp3"]
+      notes: "Semi-supervised VAE with partitioned latent space for Neural ODE downstream"
+      offline: true
+      save_code: true
+      log_model: false
+
+  checkpointing:
+    save_top_k: 3
+    monitor: "val_epoch/loss"
+    mode: "min"
+    save_last: true
+    every_n_epochs: 1
+    filename: "semivae-{epoch:04d}"
+
+  visual:
+    log_reconstructions: true
+    recon_every_n_epochs: 5
+    num_recon_samples: 2
+    log_dashboard: true
+    dashboard_every_n_epochs: 10
+    log_latent_viz: true
+    latent_viz_every_n_epochs: 20
+    latent_viz_n_samples: 256
+
+  min_logs_per_epoch: 3
+
+  # Latent diagnostics
+  latent_diag_every_n_epochs: 10
+  latent_diag_num_samples: 128
+  latent_diag_shift_vox: 5
+  latent_diag_ids_name: "diagnostics/latent_probes/ids.txt"
+
+  # Active Units (on residual dimensions only)
+  au_dense_until: 30
+  au_sparse_interval: 5
+  au_subset_fraction: 0.5
+  au_batch_size: 32
+  eps_au: 0.01
+  au_subset_seed: 42
+  au_residual_only: true
+
+  # Segmentation labels
+  seg_labels:
+    ncr: 1
+    ed: 2
+    et: 3
+
+  log_grad_norm: true
+
+  # SemiVAE diagnostics
+  semivae_diag_every_n_epochs: 10
+  semivae_diag_num_samples: 100
+  semivae_visualize_latent: true
+  semivae_viz_every_n_epochs: 25
+
+  log_semantic_metrics: true
+  semantic_metrics:
+    - "sem/vol_mse"
+    - "sem/vol_r2"
+    - "sem/loc_mse"
+    - "sem/loc_r2"
+    - "sem/shape_mse"
+    - "sem/shape_r2"
+    - "sem/total_supervised_loss"

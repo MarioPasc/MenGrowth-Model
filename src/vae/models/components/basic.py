@@ -6,7 +6,34 @@ pre-activation variant for improved gradient flow.
 
 import torch
 import torch.nn as nn
-from typing import Optional
+from torch.nn.utils import spectral_norm
+from typing import Optional, Union
+
+
+def maybe_spectral_norm(
+    layer: nn.Module,
+    use_spectral_norm: bool = False,
+) -> nn.Module:
+    """Optionally wrap a layer with spectral normalization.
+
+    Spectral normalization enforces Lipschitz continuity by constraining
+    the spectral norm (largest singular value) of the weight matrix.
+    This is critical for stable Neural ODE training, as it ensures
+    the latent manifold is smooth.
+
+    Args:
+        layer: Conv3d, ConvTranspose3d, or Linear layer to wrap
+        use_spectral_norm: If True, apply spectral_norm wrapper
+
+    Returns:
+        Original layer or spectrally-normalized layer
+
+    Reference:
+        Miyato et al., "Spectral Normalization for GANs" (ICLR 2018)
+    """
+    if use_spectral_norm and isinstance(layer, (nn.Conv3d, nn.ConvTranspose3d, nn.Linear)):
+        return spectral_norm(layer)
+    return layer
 
 def get_activation(name: str) -> nn.Module:
     """Get activation function by name."""
@@ -66,6 +93,7 @@ class BasicBlock3d(nn.Module):
         activation: str = "relu",
         norm_type: str = "group",
         pre_activation: bool = False,
+        use_spectral_norm: bool = False,
     ):
         """Initialize BasicBlock3d.
 
@@ -80,6 +108,8 @@ class BasicBlock3d(nn.Module):
             norm_type: Normalization type name.
             pre_activation: If True, use pre-activation layout (NORM->ACT->CONV).
                             Default: False.
+            use_spectral_norm: If True, apply spectral normalization to conv layers
+                               for Lipschitz continuity (required for Neural ODE).
         """
         super().__init__()
         self.use_residual = use_residual
@@ -89,27 +119,39 @@ class BasicBlock3d(nn.Module):
             # Pre-activation: NORM -> ACT -> CONV
             self.norm1 = get_norm(norm_type, in_channels, num_groups)
             self.act1 = get_activation(activation)
-            self.conv1 = nn.Conv3d(
-                in_channels, out_channels, kernel_size=3,
-                stride=stride, padding=1, bias=False
+            self.conv1 = maybe_spectral_norm(
+                nn.Conv3d(
+                    in_channels, out_channels, kernel_size=3,
+                    stride=stride, padding=1, bias=False
+                ),
+                use_spectral_norm=use_spectral_norm,
             )
             self.norm2 = get_norm(norm_type, out_channels, num_groups)
             self.act2 = get_activation(activation)
-            self.conv2 = nn.Conv3d(
-                out_channels, out_channels, kernel_size=3,
-                stride=1, padding=1, bias=False
+            self.conv2 = maybe_spectral_norm(
+                nn.Conv3d(
+                    out_channels, out_channels, kernel_size=3,
+                    stride=1, padding=1, bias=False
+                ),
+                use_spectral_norm=use_spectral_norm,
             )
         else:
             # Post-activation: CONV -> NORM -> ACT
-            self.conv1 = nn.Conv3d(
-                in_channels, out_channels, kernel_size=3,
-                stride=stride, padding=1, bias=False
+            self.conv1 = maybe_spectral_norm(
+                nn.Conv3d(
+                    in_channels, out_channels, kernel_size=3,
+                    stride=stride, padding=1, bias=False
+                ),
+                use_spectral_norm=use_spectral_norm,
             )
             self.norm1 = get_norm(norm_type, out_channels, num_groups)
             self.act1 = get_activation(activation)
-            self.conv2 = nn.Conv3d(
-                out_channels, out_channels, kernel_size=3,
-                stride=1, padding=1, bias=False
+            self.conv2 = maybe_spectral_norm(
+                nn.Conv3d(
+                    out_channels, out_channels, kernel_size=3,
+                    stride=1, padding=1, bias=False
+                ),
+                use_spectral_norm=use_spectral_norm,
             )
             self.norm2 = get_norm(norm_type, out_channels, num_groups)
             self.final_act = get_activation(activation)

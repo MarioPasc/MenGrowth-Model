@@ -5,10 +5,11 @@ making it easy to switch between different model variants (e.g., with/without SB
 """
 
 from typing import Tuple
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import torch.nn as nn
 
 from vae.models import BaselineVAE, VAESBD
+from vae.models.vae import SemiVAE
 
 
 def create_vae_model(cfg: DictConfig) -> nn.Module:
@@ -94,6 +95,68 @@ def create_vae_model(cfg: DictConfig) -> nn.Module:
     return model
 
 
+def create_semivae_model(cfg: DictConfig) -> nn.Module:
+    """Create Semi-supervised VAE model from configuration.
+
+    This factory handles SemiVAE instantiation with latent partitioning
+    for supervised disentanglement.
+
+    Args:
+        cfg: OmegaConf configuration object with model parameters.
+
+    Returns:
+        Initialized SemiVAE model.
+    """
+    # Common parameters
+    input_channels = cfg.model.input_channels
+    z_dim = cfg.model.z_dim
+    base_filters = cfg.model.base_filters
+    num_groups = cfg.model.get("num_groups", 8)
+
+    # Get architectural parameters
+    arch_cfg = cfg.model.get("architecture", {})
+    blocks_per_layer = arch_cfg.get("blocks_per_layer", [2, 2, 2, 2])
+    upsample_mode = arch_cfg.get("upsample_mode", "resize_conv")
+
+    # Get training parameters
+    posterior_logvar_min = cfg.train.get("posterior_logvar_min", -6.0)
+    gradient_checkpointing = cfg.train.get("gradient_checkpointing", False)
+
+    # SBD parameters
+    use_sbd = cfg.model.get("use_sbd", True)
+    sbd_grid_size = tuple(cfg.model.get("sbd_grid_size", [8, 8, 8]))
+    sbd_upsample_mode = cfg.model.get("sbd_upsample_mode", "resize_conv")
+
+    # Spectral normalization for Lipschitz continuity (Neural ODE compatibility)
+    use_spectral_norm = cfg.model.get("use_spectral_norm", False)
+
+    # Latent partitioning configuration
+    latent_partitioning = None
+    if "latent_partitioning" in cfg.model:
+        # Convert OmegaConf to regular dict for processing
+        latent_partitioning = OmegaConf.to_container(
+            cfg.model.latent_partitioning, resolve=True
+        )
+
+    model = SemiVAE(
+        input_channels=input_channels,
+        z_dim=z_dim,
+        base_filters=base_filters,
+        num_groups=num_groups,
+        blocks_per_layer=tuple(blocks_per_layer),
+        upsample_mode=upsample_mode,
+        use_sbd=use_sbd,
+        sbd_grid_size=sbd_grid_size,
+        sbd_upsample_mode=sbd_upsample_mode,
+        latent_partitioning=latent_partitioning,
+        posterior_logvar_min=posterior_logvar_min,
+        gradient_checkpointing=gradient_checkpointing,
+        use_spectral_norm=use_spectral_norm,
+    )
+
+    return model
+
+
 def get_model_signature(model: nn.Module) -> str:
     """Get forward signature of model for validation.
 
@@ -104,8 +167,11 @@ def get_model_signature(model: nn.Module) -> str:
         Signature string: "(x_hat, mu, logvar, z)" for all VAE models.
 
     Note: Both BaselineVAE and VAESBD now return 4 values for consistency.
+          SemiVAE returns 5 values: (x_hat, mu, logvar, z, semantic_preds).
     """
-    if isinstance(model, (BaselineVAE, VAESBD)):
+    if isinstance(model, SemiVAE):
+        return "(x_hat, mu, logvar, z, semantic_preds)"
+    elif isinstance(model, (BaselineVAE, VAESBD)):
         return "(x_hat, mu, logvar, z)"
     else:
         return "unknown"

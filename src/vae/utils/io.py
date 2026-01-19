@@ -194,8 +194,9 @@ def save_split_csvs(
     train_subjects: List[Dict[str, str]],
     val_subjects: List[Dict[str, str]],
     run_dir: Union[str, Path],
+    test_subjects: Optional[List[Dict[str, str]]] = None,
 ) -> tuple:
-    """Save train/val split information to CSV files.
+    """Save train/val/test split information to CSV files.
 
     Each CSV contains columns: id, t1c, t1n, t2f, t2w, seg
 
@@ -203,21 +204,26 @@ def save_split_csvs(
         train_subjects: List of training subject dicts.
         val_subjects: List of validation subject dicts.
         run_dir: Path to run directory.
+        test_subjects: Optional list of test subject dicts.
 
     Returns:
-        Tuple of (train_csv_path, val_csv_path).
+        Tuple of (train_csv_path, val_csv_path) or
+        (train_csv_path, val_csv_path, test_csv_path) if test_subjects provided.
     """
     splits_dir = Path(run_dir) / "data" / "splits"
     splits_dir.mkdir(parents=True, exist_ok=True)
 
     train_csv = splits_dir / "train_subjects.csv"
     val_csv = splits_dir / "val_subjects.csv"
+    test_csv = splits_dir / "test_subjects.csv"
 
     # Determine columns from first subject
     if train_subjects:
         columns = list(train_subjects[0].keys())
     elif val_subjects:
         columns = list(val_subjects[0].keys())
+    elif test_subjects:
+        columns = list(test_subjects[0].keys())
     else:
         columns = ["id"]
 
@@ -241,6 +247,15 @@ def save_split_csvs(
     logger.info(f"Saved train split ({len(train_subjects)} subjects) to {train_csv}")
     logger.info(f"Saved val split ({len(val_subjects)} subjects) to {val_csv}")
 
+    # Write test CSV if provided
+    if test_subjects is not None:
+        with open(test_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(test_subjects)
+        logger.info(f"Saved test split ({len(test_subjects)} subjects) to {test_csv}")
+        return train_csv, val_csv, test_csv
+
     return train_csv, val_csv
 
 
@@ -253,6 +268,7 @@ def update_runs_index(
     best_epoch: Optional[int] = None,
     final_au_count: Optional[int] = None,
     final_au_frac: Optional[float] = None,
+    test_loss: Optional[float] = None,
 ) -> Path:
     """Update the runs index CSV for experiment tracking.
 
@@ -267,6 +283,7 @@ def update_runs_index(
         best_epoch: Epoch with best validation loss (optional).
         final_au_count: Final active units count (optional).
         final_au_frac: Final active units fraction (optional).
+        test_loss: Test set loss (optional, for runs with test evaluation).
 
     Returns:
         Path to runs index CSV.
@@ -295,6 +312,7 @@ def update_runs_index(
         "lambda_d": cfg.loss.get("lambda_d", None) if "loss" in cfg else None,
         "best_val_loss": best_val_loss,
         "best_epoch": best_epoch,
+        "test_loss": test_loss,
         "final_au_count": final_au_count,
         "final_au_frac": final_au_frac,
         "status": status,

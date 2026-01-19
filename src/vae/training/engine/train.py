@@ -4,6 +4,7 @@
 This script orchestrates the training process for:
 - Exp1: Baseline 3D VAE with ELBO loss
 - Exp2: DIP-VAE with configurable decoder (standard or SBD)
+- Exp3: Semi-supervised VAE with partitioned latent space (multi-GPU DDP)
 
 Workflow:
 1. Load configuration from YAML
@@ -12,18 +13,21 @@ Workflow:
 4. Build dataset index and create train/val splits
 5. Build data loaders with persistent caching
 6. Instantiate model and Lightning module (based on config variant)
-7. Configure trainer with callbacks and logging
+7. Configure trainer with callbacks and logging (including DDP for multi-GPU)
 8. Run training
 
 Usage:
     # Exp1
-    python scripts/train.py --config src/vae/config/vae.yaml
+    python -m vae.training.engine.train --config src/vae/config/vae.yaml
 
     # Exp2
-    python scripts/train.py --config src/vae/config/dipvae.yaml
+    python -m vae.training.engine.train --config src/vae/config/dipvae.yaml
+
+    # Exp3 (Semi-supervised VAE with multi-GPU)
+    python -m vae.training.engine.train --config src/vae/config/semivae.yaml
 
     # Resume from checkpoint
-    python scripts/train.py --config path/to/config.yaml --resume path/to/checkpoint.ckpt
+    python -m vae.training.engine.train --config path/to/config.yaml --resume path/to/checkpoint.ckpt
 """
 
 import argparse
@@ -47,10 +51,17 @@ except ImportError:
 # Add src to path for imports
 # sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from vae.data import build_subject_index, create_train_val_split, get_dataloaders
+from vae.data import (
+    build_subject_index,
+    create_train_val_split,
+    create_train_val_test_split,
+    get_dataloaders,
+    get_dataloaders_with_test,
+)
 from vae.training import (
     VAELitModule,
     DIPVAELitModule,
+    SemiVAELitModule,
 )
 from vae.training.callbacks import (
     ReconstructionCallback,
@@ -60,6 +71,9 @@ from vae.training.callbacks import (
     UnifiedCSVCallback,
     RunMetadataCallback,
     GradientStatsCallback,
+    SemiVAEDiagnosticsCallback,
+    SemiVAELatentVisualizationCallback,
+    SemiVAESemanticTrackingCallback,
 )
 from vae.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs, update_runs_index
 
@@ -95,13 +109,15 @@ def get_experiment_info(cfg: OmegaConf) -> tuple:
 
     Returns:
         Tuple of (experiment_name, variant_type).
-        variant_type: "baseline" or "dipvae"
+        variant_type: "baseline", "dipvae", or "semivae"
     """
     # Check for model variant
     variant = cfg.model.get("variant", None)
 
     if variant == "dipvae":
         return "exp2_dipvae", "dipvae"
+    elif variant == "semivae":
+        return "exp3_semivae", "semivae"
     else:
         # Default to Exp1 baseline
         return "exp1_baseline_vae", "baseline"
@@ -198,21 +214,42 @@ def main():
     logger.info(f"Building subject index from {cfg.data.root_dir}")
     subjects = build_subject_index(cfg.data.root_dir, cfg.data.modalities)
 
-    # Create train/val split
-    train_subjects, val_subjects = create_train_val_split(
-        subjects,
-        val_split=cfg.data.val_split,
-        seed=cfg.train.seed,
-    )
+    # Create train/val/test split
+    test_split = cfg.data.get("test_split", 0.0)
+    test_subjects = None
+    test_loader = None
+
+    if test_split > 0:
+        # 3-way split: train/val/test
+        train_subjects, val_subjects, test_subjects = create_train_val_test_split(
+            subjects,
+            val_split=cfg.data.val_split,
+            test_split=test_split,
+            seed=cfg.train.seed,
+        )
+        logger.info(f"Created 3-way split: {len(train_subjects)} train, "
+                   f"{len(val_subjects)} val, {len(test_subjects)} test")
+    else:
+        # 2-way split: train/val only (backward compatible)
+        train_subjects, val_subjects = create_train_val_split(
+            subjects,
+            val_split=cfg.data.val_split,
+            seed=cfg.train.seed,
+        )
 
     # Save split CSVs
-    save_split_csvs(train_subjects, val_subjects, run_dir_str)
+    save_split_csvs(train_subjects, val_subjects, run_dir_str, test_subjects)
 
     # Build data loaders
     logger.info("Building data loaders with persistent caching...")
-    train_loader, val_loader = get_dataloaders(
-        cfg, run_dir_str, train_subjects, val_subjects
-    )
+    if test_subjects:
+        train_loader, val_loader, test_loader = get_dataloaders_with_test(
+            cfg, run_dir_str, train_subjects, val_subjects, test_subjects
+        )
+    else:
+        train_loader, val_loader = get_dataloaders(
+            cfg, run_dir_str, train_subjects, val_subjects
+        )
 
     # Create model and Lightning module based on experiment type
     logger.info("Creating model...")
@@ -258,6 +295,38 @@ def main():
             logger.info(f"  Grid size:       {cfg.model.sbd_grid_size}")
             logger.info(f"  Upsample mode:   {cfg.model.get('sbd_upsample_mode', 'resize_conv')}")
 
+        logger.info("=" * 60)
+    elif variant_type == "semivae":
+        # Exp3: Semi-supervised VAE
+        lit_module = SemiVAELitModule.from_config(cfg)
+
+        # Log SemiVAE configuration
+        from vae.models.components.sbd import SpatialBroadcastDecoder
+
+        model = lit_module.model
+        has_sbd = isinstance(model.decoder, SpatialBroadcastDecoder)
+        decoder_type = "SpatialBroadcastDecoder (SBD)" if has_sbd else "Standard Transposed-Conv"
+
+        logger.info("=" * 60)
+        logger.info("Semi-Supervised VAE Model Configuration")
+        logger.info("=" * 60)
+        logger.info(f"Decoder type:         {decoder_type}")
+        logger.info(f"Latent dim (z_dim):   {cfg.model.z_dim}")
+        logger.info(f"Gradient checkpoint:  {cfg.train.get('gradient_checkpointing', False)}")
+        logger.info(f"Posterior logvar_min: {cfg.train.get('posterior_logvar_min', -6.0)}")
+        logger.info("")
+        logger.info("Latent Partitioning:")
+        for name, config in model.get_partition_info().items():
+            logger.info(f"  {name}: dims [{config['start_idx']}:{config['end_idx']}] "
+                       f"({config['dim']} dims, {config['supervision']})")
+        logger.info("")
+        logger.info("Semantic Loss Weights:")
+        logger.info(f"  λ_vol:   {cfg.loss.get('lambda_vol', 10.0)}")
+        logger.info(f"  λ_loc:   {cfg.loss.get('lambda_loc', 5.0)}")
+        logger.info(f"  λ_shape: {cfg.loss.get('lambda_shape', 5.0)}")
+        logger.info(f"  λ_tc:    {cfg.loss.get('lambda_tc', 2.0)}")
+        logger.info(f"  Semantic start epoch: {cfg.loss.get('semantic_start_epoch', 10)}")
+        logger.info(f"  Semantic warmup:      {cfg.loss.get('semantic_annealing_epochs', 20)} epochs")
         logger.info("=" * 60)
     else:
         # Exp1: Baseline VAE
@@ -379,6 +448,39 @@ def main():
     callbacks.append(grad_stats_callback)
     logger.info("Configured gradient stats logging (diagnostics/gradients/grad_stats.csv)")
 
+    # === SemiVAE-specific callbacks ===
+    if variant_type == "semivae":
+        # Get diagnostic frequency from config
+        semivae_diag_every = cfg.logging.get("semivae_diag_every_n_epochs", 10)
+        semivae_num_samples = cfg.logging.get("semivae_diag_num_samples", 100)
+
+        # SemiVAE diagnostics (partition stats, semantic quality, cross-correlations)
+        semivae_diag_callback = SemiVAEDiagnosticsCallback(
+            run_dir=run_dir,
+            every_n_epochs=semivae_diag_every,
+            num_samples=semivae_num_samples,
+        )
+        callbacks.append(semivae_diag_callback)
+        logger.info(f"Configured SemiVAE diagnostics every {semivae_diag_every} epochs")
+
+        # Semantic tracking (lightweight per-epoch R² and correlation tracking)
+        semantic_tracking_callback = SemiVAESemanticTrackingCallback(run_dir=run_dir)
+        callbacks.append(semantic_tracking_callback)
+        logger.info("Configured SemiVAE semantic tracking (diagnostics/semivae/semantic_tracking.csv)")
+
+        # Latent visualization (PCA, partition activity heatmaps)
+        if cfg.logging.get("semivae_visualize_latent", True):
+            viz_every = cfg.logging.get("semivae_viz_every_n_epochs", 25)
+            semivae_viz_callback = SemiVAELatentVisualizationCallback(
+                run_dir=run_dir,
+                every_n_epochs=viz_every,
+                num_samples=semivae_num_samples,
+            )
+            callbacks.append(semivae_viz_callback)
+            logger.info(f"Configured SemiVAE latent visualization every {viz_every} epochs")
+
+    # === END SemiVAE callbacks ===
+
     # Setup logger (wandb or csv based on config)
     pl_logger = create_logger(cfg, run_dir, experiment_name)
 
@@ -397,20 +499,39 @@ def main():
     gradient_clip_val = cfg.train.get("gradient_clip_val", None)
     gradient_clip_algorithm = cfg.train.get("gradient_clip_algorithm", "norm")
 
+    # Configure multi-GPU strategy
+    devices = cfg.train.get("devices", 1)
+    strategy = cfg.train.get("strategy", "auto")
+
+    # Auto-configure DDP strategy for multi-GPU
+    if devices != 1 and strategy == "auto":
+        # Use DDP for multi-GPU training
+        strategy = "ddp"
+        logger.info(f"Auto-configured DDP strategy for {devices} devices")
+
+    # For SemiVAE, ensure DDP-aware TC computation is enabled when using multi-GPU
+    if variant_type == "semivae" and devices != 1:
+        # Ensure the LitModule knows to use DDP gathering
+        if hasattr(lit_module, 'use_ddp_gather'):
+            lit_module.use_ddp_gather = True
+            logger.info("Enabled DDP-aware TC computation for SemiVAE")
+
     # Create trainer (disable progress bar since we use custom logging)
     # PyTorch Lightning handles gradient clipping natively via these parameters
     trainer = pl.Trainer(
         max_epochs=cfg.train.max_epochs,
         accelerator=cfg.train.get("accelerator", "auto"),
-        devices=cfg.train.get("devices", 1),
+        devices=devices,
+        strategy=strategy,
         precision=cfg.train.precision,
         callbacks=callbacks,
         logger=pl_logger,
         log_every_n_steps=log_every_n_steps,
         enable_progress_bar=False,  # Disabled in favor of custom logging
-        deterministic=True,
+        deterministic=cfg.train.get("deterministic", True),
         gradient_clip_val=gradient_clip_val,  # Gradient clipping for numerical stability
         gradient_clip_algorithm=gradient_clip_algorithm,  # "norm" or "value"
+        sync_batchnorm=cfg.train.get("sync_batchnorm", False),  # Sync BN across GPUs
     )
 
     # Log trainer info
@@ -418,6 +539,16 @@ def main():
     logger.info(f"  Max epochs: {cfg.train.max_epochs}")
     logger.info(f"  Precision: {cfg.train.precision}")
     logger.info(f"  Accelerator: {trainer.accelerator}")
+    logger.info(f"  Devices: {devices}")
+    logger.info(f"  Strategy: {strategy}")
+
+    # Log multi-GPU specific info
+    if devices != 1:
+        logger.info(f"  Multi-GPU training enabled:")
+        logger.info(f"    - Strategy: {strategy}")
+        logger.info(f"    - Sync BatchNorm: {cfg.train.get('sync_batchnorm', False)}")
+        if variant_type == "semivae":
+            logger.info(f"    - DDP-aware TC: enabled")
 
     # Log gradient clipping info
     if gradient_clip_val is not None and gradient_clip_val > 0:
@@ -438,6 +569,47 @@ def main():
     logger.info(f"Best checkpoint: {checkpoint_callback.best_model_path}")
     logger.info(f"Best val/loss: {checkpoint_callback.best_model_score:.4f}")
 
+    # Run test evaluation if test set is available
+    test_results = None
+    if test_loader is not None:
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("RUNNING FINAL TEST EVALUATION")
+        logger.info("=" * 60)
+        logger.info(f"Test set: {len(test_loader.dataset)} samples")
+
+        # Load best checkpoint for test evaluation
+        best_ckpt = checkpoint_callback.best_model_path
+        if best_ckpt:
+            logger.info(f"Loading best checkpoint: {best_ckpt}")
+
+        # Run test
+        test_results = trainer.test(
+            lit_module,
+            dataloaders=test_loader,
+            ckpt_path=best_ckpt,  # Use best checkpoint
+        )
+
+        # Log test results
+        if test_results:
+            logger.info("")
+            logger.info("Test Results:")
+            for key, value in test_results[0].items():
+                logger.info(f"  {key}: {value:.4f}")
+
+            # Save test results to CSV
+            test_metrics_path = run_dir / "logs" / "test_metrics.csv"
+            test_metrics_path.parent.mkdir(parents=True, exist_ok=True)
+            import csv
+            with open(test_metrics_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["metric", "value"])
+                for key, value in test_results[0].items():
+                    writer.writerow([key, value])
+            logger.info(f"Test metrics saved to: {test_metrics_path}")
+
+        logger.info("=" * 60)
+
     # Get final AU metrics from callback if available
     final_au_count = None
     final_au_frac = None
@@ -456,6 +628,11 @@ def main():
         if match:
             best_epoch = int(match.group(1))
 
+    # Extract test loss if available
+    test_loss = None
+    if test_results:
+        test_loss = test_results[0].get("test_epoch/loss")
+
     update_runs_index(
         run_dir=run_dir,
         cfg=cfg,
@@ -465,6 +642,7 @@ def main():
         best_epoch=best_epoch,
         final_au_count=final_au_count,
         final_au_frac=final_au_frac,
+        test_loss=float(test_loss) if test_loss is not None else None,
     )
 
 
