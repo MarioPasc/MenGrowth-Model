@@ -92,6 +92,8 @@ class SemiVAELitModule(pl.LightningModule):
         use_tc_residual: bool = True,
         lambda_tc: float = 2.0,
         tc_estimator: str = "minibatch_weighted",
+        tc_start_epoch: int = 10,
+        tc_annealing_epochs: int = 20,
         # Cross-partition independence
         lambda_cross_partition: float = 5.0,
         cross_partition_start_epoch: int = 10,
@@ -128,6 +130,8 @@ class SemiVAELitModule(pl.LightningModule):
             use_tc_residual: Whether to apply TC penalty on residual
             lambda_tc: Weight for TC penalty
             tc_estimator: TC estimator type ("minibatch_weighted" or "stratified")
+            tc_start_epoch: Epoch to start TC penalty (delayed for stability)
+            tc_annealing_epochs: Epochs for TC penalty warmup
             kl_beta: Target beta value after annealing
             kl_annealing_epochs: Total epochs for KL annealing
             kl_annealing_type: "linear" or "cyclical"
@@ -160,6 +164,8 @@ class SemiVAELitModule(pl.LightningModule):
         self.use_tc_residual = use_tc_residual
         self.lambda_tc = lambda_tc
         self.tc_estimator = tc_estimator
+        self.tc_start_epoch = tc_start_epoch
+        self.tc_annealing_epochs = tc_annealing_epochs
 
         # Cross-partition independence settings
         self.lambda_cross_partition = lambda_cross_partition
@@ -191,6 +197,7 @@ class SemiVAELitModule(pl.LightningModule):
         self.current_lambda_vol = 0.0
         self.current_lambda_loc = 0.0
         self.current_lambda_shape = 0.0
+        self.current_lambda_tc = 0.0
         self.current_lambda_cross_partition = 0.0
         self.current_lambda_manifold = 0.0
 
@@ -229,6 +236,8 @@ class SemiVAELitModule(pl.LightningModule):
             use_tc_residual=cfg.loss.get("use_tc_residual", True),
             lambda_tc=cfg.loss.get("lambda_tc", 2.0),
             tc_estimator=cfg.loss.get("tc_estimator", "minibatch_weighted"),
+            tc_start_epoch=cfg.loss.get("tc_start_epoch", 10),
+            tc_annealing_epochs=cfg.loss.get("tc_annealing_epochs", 20),
             lambda_cross_partition=cfg.loss.get("lambda_cross_partition", 5.0),
             cross_partition_start_epoch=cfg.loss.get("cross_partition_start_epoch", 10),
             lambda_manifold=cfg.loss.get("lambda_manifold", 1.0),
@@ -275,6 +284,12 @@ class SemiVAELitModule(pl.LightningModule):
         self.current_lambda_shape = get_semantic_schedule(
             epoch, self.lambda_shape,
             self.semantic_start_epoch, self.semantic_annealing_epochs
+        )
+
+        # TC schedule (delayed start for numerical stability)
+        self.current_lambda_tc = get_semantic_schedule(
+            epoch, self.lambda_tc,
+            self.tc_start_epoch, self.tc_annealing_epochs
         )
 
         # Cross-partition independence schedule (uses same annealing as semantic)
@@ -603,7 +618,7 @@ class SemiVAELitModule(pl.LightningModule):
         kl_loss = self.current_beta * kl_dict["kl_constrained"]
 
         # TC on residual
-        tc_loss = self.lambda_tc * self._compute_tc_residual(z, mu, logvar)
+        tc_loss = self.current_lambda_tc * self._compute_tc_residual(z, mu, logvar)
 
         # Semantic losses
         semantic_losses = {}
@@ -662,6 +677,7 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("sched/lambda_vol", self.current_lambda_vol, on_step=False, on_epoch=True)
         self.log("sched/lambda_loc", self.current_lambda_loc, on_step=False, on_epoch=True)
         self.log("sched/lambda_shape", self.current_lambda_shape, on_step=False, on_epoch=True)
+        self.log("sched/lambda_tc", self.current_lambda_tc, on_step=False, on_epoch=True)
         self.log("sched/lambda_cross_partition", self.current_lambda_cross_partition, on_step=False, on_epoch=True)
         self.log("sched/lambda_manifold", self.current_lambda_manifold, on_step=False, on_epoch=True)
         self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
@@ -707,7 +723,7 @@ class SemiVAELitModule(pl.LightningModule):
         kl_loss = self.current_beta * kl_dict["kl_constrained"]
 
         # TC on residual
-        tc_loss = self.lambda_tc * self._compute_tc_residual(z, mu, logvar)
+        tc_loss = self.current_lambda_tc * self._compute_tc_residual(z, mu, logvar)
 
         # Semantic losses
         semantic_losses = {}
@@ -881,7 +897,7 @@ class SemiVAELitModule(pl.LightningModule):
         kl_loss = self.current_beta * kl_dict["kl_constrained"]
 
         # TC on residual
-        tc_loss = self.lambda_tc * self._compute_tc_residual(z, mu, logvar)
+        tc_loss = self.current_lambda_tc * self._compute_tc_residual(z, mu, logvar)
 
         # Semantic losses
         semantic_losses = {}

@@ -57,6 +57,7 @@ def _compute_tc_mws(
     mu: torch.Tensor,
     logvar: torch.Tensor,
     dataset_size: int,
+    min_var: float = 1e-6,
 ) -> torch.Tensor:
     """Minibatch-weighted sampling estimator for TC.
 
@@ -74,12 +75,22 @@ def _compute_tc_mws(
         mu: Posterior means [B, D]
         logvar: Posterior log-variances [B, D]
         dataset_size: N in the formula
+        min_var: Minimum variance for numerical stability
 
     Returns:
         TC estimate (scalar)
     """
     batch_size, z_dim = z.shape
     device = z.device
+    original_dtype = z.dtype
+
+    # Compute in FP32 for numerical stability
+    z = z.float()
+    mu = mu.float()
+    logvar = logvar.float()
+
+    # Clamp logvar to prevent extreme values
+    logvar = torch.clamp(logvar, min=-10.0, max=10.0)
 
     # Compute log q(z_i | x_j) for all pairs (i, j) in batch
     # z: [B, D], mu: [B, D], logvar: [B, D]
@@ -94,6 +105,7 @@ def _compute_tc_mws(
     # log q(z_i | x_j) = -0.5 * [D*log(2π) + sum(logvar) + sum((z-mu)²/var)]
     # Compute per-dimension log probability
     var = torch.exp(logvar_expand)  # [1, B, D]
+    var = torch.clamp(var, min=min_var)  # Prevent division by zero
     log_qz_given_x = -0.5 * (
         logvar_expand + (z_expand - mu_expand) ** 2 / var
     )  # [B, B, D]
@@ -118,13 +130,18 @@ def _compute_tc_mws(
     # TC = E[log q(z) - log prod q(z_j)]
     tc = (log_qz - log_qz_product).mean()
 
-    return tc
+    # Safety check: return 0 if NaN/Inf (can happen early in training)
+    if not torch.isfinite(tc):
+        return torch.tensor(0.0, device=device, dtype=original_dtype)
+
+    return tc.to(original_dtype)
 
 
 def _compute_tc_stratified(
     z: torch.Tensor,
     mu: torch.Tensor,
     logvar: torch.Tensor,
+    min_var: float = 1e-6,
 ) -> torch.Tensor:
     """Stratified sampling estimator for TC.
 
@@ -134,11 +151,19 @@ def _compute_tc_stratified(
         z: Sampled latents [B, D]
         mu: Posterior means [B, D]
         logvar: Posterior log-variances [B, D]
+        min_var: Minimum variance for numerical stability
 
     Returns:
         TC estimate (scalar)
     """
     batch_size, z_dim = z.shape
+    device = z.device
+    original_dtype = z.dtype
+
+    # Compute in FP32 for numerical stability
+    z = z.float()
+    mu = mu.float()
+    logvar = torch.clamp(logvar.float(), min=-10.0, max=10.0)
 
     # Create permuted z by shuffling each dimension independently
     z_perm = torch.zeros_like(z)
@@ -147,21 +172,26 @@ def _compute_tc_stratified(
         z_perm[:, d] = z[perm, d]
 
     # log q(z) using kernel density estimation with batch samples
-    log_qz = _log_density(z, mu, logvar)
+    log_qz = _log_density(z, mu, logvar, min_var)
 
     # log prod q(z_j) using permuted samples
-    log_qz_product = _log_density(z_perm, mu, logvar)
+    log_qz_product = _log_density(z_perm, mu, logvar, min_var)
 
     # TC estimate
     tc = (log_qz - log_qz_product).mean()
 
-    return tc
+    # Safety check: return 0 if NaN/Inf
+    if not torch.isfinite(tc):
+        return torch.tensor(0.0, device=device, dtype=original_dtype)
+
+    return tc.to(original_dtype)
 
 
 def _log_density(
     z: torch.Tensor,
     mu: torch.Tensor,
     logvar: torch.Tensor,
+    min_var: float = 1e-6,
 ) -> torch.Tensor:
     """Estimate log q(z) using minibatch kernel density.
 
@@ -169,6 +199,7 @@ def _log_density(
         z: Points to evaluate [B, D]
         mu: Gaussian centers [B, D]
         logvar: Log-variances [B, D]
+        min_var: Minimum variance for numerical stability
 
     Returns:
         Log density estimates [B]
@@ -181,6 +212,7 @@ def _log_density(
     logvar_expand = logvar.unsqueeze(0)
 
     var = torch.exp(logvar_expand)
+    var = torch.clamp(var, min=min_var)  # Prevent division by zero
     log_qz_given_x = -0.5 * (
         logvar_expand + (z_expand - mu_expand) ** 2 / var
     ).sum(dim=2)  # [B, B]

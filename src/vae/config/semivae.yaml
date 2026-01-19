@@ -159,9 +159,12 @@ loss:
 
   # Total Correlation penalty (β-TCVAE style)
   # Encourages factorial posterior: q(z_res) ≈ ∏ q(z_i)
+  # IMPORTANT: TC is delayed until encoder stabilizes (like semantic losses)
   use_tc_residual: true
   lambda_tc: 2.0
   tc_estimator: "minibatch_weighted"
+  tc_start_epoch: 10        # Delay TC for numerical stability
+  tc_annealing_epochs: 20   # Linear warmup of TC penalty
 
   # Multi-GPU gradient-preserving gather for TC and cross-partition
   use_ddp_gather: true
@@ -172,7 +175,12 @@ train:
   max_epochs: 300                  # Sufficient for convergence
   lr: 1e-4
   weight_decay: 0.01
-  precision: "16-mixed"
+  # Precision options:
+  # - "bf16-mixed": Recommended for A100/H100 (better numerical stability)
+  # - "16-mixed": FP16, faster but can cause NaN with spectral norm + TC
+  # - "32": Full precision, most stable but slower
+  # If training diverges with NaN gradients, switch to "bf16-mixed" or "32"
+  precision: "bf16-mixed"
   gradient_checkpointing: true
   accelerator: "gpu"
 
@@ -188,7 +196,7 @@ train:
 
   # Numerical stability
   loss_reduction: "mean"
-  gradient_clip_val: 5.0
+  gradient_clip_val: 1.0           # Conservative clipping (was 5.0, reduced for stability)
   gradient_clip_algorithm: "norm"
   posterior_logvar_min: -6.0
 
