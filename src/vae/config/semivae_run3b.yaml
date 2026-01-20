@@ -78,16 +78,22 @@ model:
       supervision: "regression"
       target_features: ["loc_x", "loc_y", "loc_z"]
 
-    # Shape encoding - REDUCED (same as Run 3A)
+    # Shape encoding - REDUCED dims (12 features → 12 dims, same as Run 3A)
     z_shape:
       start_idx: 28
       dim: 12
       supervision: "regression"
       target_features:
         - "sphericity_total"
+        - "sphericity_ncr"
+        - "sphericity_et"
         - "surface_area_total"
+        - "surface_area_ncr"
+        - "surface_area_et"
         - "aspect_xy_total"
         - "aspect_xz_total"
+        - "aspect_xy_ncr"
+        - "aspect_xz_ncr"
         - "solidity_total"
         - "solidity_et"
 

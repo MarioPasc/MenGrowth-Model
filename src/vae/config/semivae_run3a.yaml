@@ -82,21 +82,24 @@ model:
       supervision: "regression"
       target_features: ["loc_x", "loc_y", "loc_z"]
 
-    # Shape encoding - REDUCED (6 features × 2 redundant dims = 12)
-    # Selected 6 most robust features:
-    # - sphericity_total: Overall shape compactness
-    # - surface_area_total: Size-related, but scale-normalized
-    # - aspect_xy_total, aspect_xz_total: 3D elongation
-    # - solidity_total, solidity_et: Convexity measures
+    # Shape encoding - REDUCED dims (12 features → 12 dims, 1:1 mapping)
+    # Same 12 features as original, but with fewer redundant dims
+    # This forces a more compact representation
     z_shape:
       start_idx: 28
-      dim: 12  # REDUCED from 24
+      dim: 12  # REDUCED from 24 (was 12 features × 2 redundancy)
       supervision: "regression"
       target_features:
         - "sphericity_total"
+        - "sphericity_ncr"
+        - "sphericity_et"
         - "surface_area_total"
+        - "surface_area_ncr"
+        - "surface_area_et"
         - "aspect_xy_total"
         - "aspect_xz_total"
+        - "aspect_xy_ncr"
+        - "aspect_xz_ncr"
         - "solidity_total"
         - "solidity_et"
 
