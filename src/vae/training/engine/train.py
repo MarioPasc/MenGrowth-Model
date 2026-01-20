@@ -593,6 +593,7 @@ def main():
             lit_module,
             dataloaders=test_loader,
             ckpt_path=best_ckpt,  # Use best checkpoint
+            weights_only=False
         )
 
         # Log test results
