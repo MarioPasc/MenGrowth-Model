@@ -108,6 +108,10 @@ class SemiVAELitModule(pl.LightningModule):
         kl_annealing_ratio: float = 0.5,
         kl_free_bits: float = 0.2,
         kl_free_bits_mode: str = "batch_mean",
+        # KL regularization on supervised partitions (prevents posterior collapse)
+        # A small KL weight on supervised dims prevents logvar from collapsing to min
+        kl_beta_supervised: float = 0.1,
+        kl_supervised_free_bits: float = 0.05,
         # General settings
         loss_reduction: str = "mean",
         use_ddp_gather: bool = True,
@@ -139,6 +143,9 @@ class SemiVAELitModule(pl.LightningModule):
             kl_annealing_ratio: Fraction of cycle for annealing phase
             kl_free_bits: Per-dim KL floor (nats)
             kl_free_bits_mode: "per_sample" or "batch_mean"
+            kl_beta_supervised: Beta weight for KL on supervised partitions (prevents
+                               posterior variance collapse). Set to 0 to disable.
+            kl_supervised_free_bits: Per-dim KL floor for supervised partitions
             loss_reduction: "mean" or "sum"
             use_ddp_gather: Use all-gather for TC in DDP
             log_collapse_diagnostics: Log collapse detection metrics
@@ -184,6 +191,10 @@ class SemiVAELitModule(pl.LightningModule):
         self.kl_free_bits = kl_free_bits
         self.kl_free_bits_mode = kl_free_bits_mode
 
+        # KL on supervised partitions (prevents posterior collapse)
+        self.kl_beta_supervised = kl_beta_supervised
+        self.kl_supervised_free_bits = kl_supervised_free_bits
+
         # General settings
         self.loss_reduction = loss_reduction
         self.use_ddp_gather = use_ddp_gather
@@ -207,9 +218,11 @@ class SemiVAELitModule(pl.LightningModule):
 
         # Get partition indices for cross-partition loss (supervised partitions only)
         self.partition_indices = {}
+        self.supervised_dim = 0
         for name, config in model.get_partition_info().items():
             if config["supervision"] == "regression":
                 self.partition_indices[name] = (config["start_idx"], config["end_idx"])
+                self.supervised_dim += config["end_idx"] - config["start_idx"]
 
     @classmethod
     def from_config(cls, cfg: DictConfig) -> "SemiVAELitModule":
@@ -249,6 +262,8 @@ class SemiVAELitModule(pl.LightningModule):
             kl_annealing_ratio=cfg.train.get("kl_annealing_ratio", 0.5),
             kl_free_bits=cfg.train.get("kl_free_bits", 0.2),
             kl_free_bits_mode=cfg.train.get("kl_free_bits_mode", "batch_mean"),
+            kl_beta_supervised=cfg.train.get("kl_beta_supervised", 0.1),
+            kl_supervised_free_bits=cfg.train.get("kl_supervised_free_bits", 0.05),
             loss_reduction=cfg.train.get("loss_reduction", "mean"),
             use_ddp_gather=cfg.loss.get("use_ddp_gather", True),
             log_collapse_diagnostics=cfg.train.get("log_collapse_diagnostics", True),
@@ -364,6 +379,56 @@ class SemiVAELitModule(pl.LightningModule):
         return {
             "kl_raw": kl_raw,
             "kl_constrained": kl_constrained,
+        }
+
+    def _compute_kl_supervised(
+        self,
+        mu: torch.Tensor,
+        logvar: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Compute KL divergence on supervised dimensions.
+
+        This adds light KL regularization to supervised partitions to prevent
+        posterior variance collapse. Without this, the semantic regression losses
+        can push logvar to the minimum allowed value.
+
+        Args:
+            mu: Full posterior mean [B, z_dim]
+            logvar: Full posterior logvar [B, z_dim]
+
+        Returns:
+            Dictionary with kl_supervised_raw and kl_supervised
+        """
+        if self.kl_beta_supervised <= 0:
+            return {
+                "kl_supervised_raw": torch.tensor(0.0, device=mu.device),
+                "kl_supervised": torch.tensor(0.0, device=mu.device),
+            }
+
+        # Collect KL across all supervised partitions
+        kl_total = torch.tensor(0.0, device=mu.device)
+        kl_raw_total = torch.tensor(0.0, device=mu.device)
+
+        for name, (start_idx, end_idx) in self.partition_indices.items():
+            mu_part = mu[:, start_idx:end_idx]
+            logvar_part = logvar[:, start_idx:end_idx]
+
+            # KL per dimension: 0.5 * (exp(logvar) + mu² - 1 - logvar)
+            kl_per_dim = 0.5 * (torch.exp(logvar_part) + mu_part ** 2 - 1 - logvar_part)
+            kl_per_sample = kl_per_dim.sum(dim=1)
+            kl_raw_total = kl_raw_total + kl_per_sample.mean()
+
+            # Apply free bits (lighter than residual)
+            if self.kl_supervised_free_bits > 0:
+                kl_per_dim_mean = kl_per_dim.mean(dim=0)
+                kl_clamped = torch.clamp(kl_per_dim_mean, min=self.kl_supervised_free_bits)
+                kl_total = kl_total + kl_clamped.sum()
+            else:
+                kl_total = kl_total + kl_per_sample.mean()
+
+        return {
+            "kl_supervised_raw": kl_raw_total,
+            "kl_supervised": kl_total,
         }
 
     def _compute_tc_residual(
@@ -617,6 +682,10 @@ class SemiVAELitModule(pl.LightningModule):
         kl_dict = self._compute_kl_residual(mu, logvar)
         kl_loss = self.current_beta * kl_dict["kl_constrained"]
 
+        # KL on supervised partitions (prevents posterior collapse)
+        kl_sup_dict = self._compute_kl_supervised(mu, logvar)
+        kl_supervised_loss = self.kl_beta_supervised * kl_sup_dict["kl_supervised"]
+
         # TC on residual
         tc_loss = self.current_lambda_tc * self._compute_tc_residual(z, mu, logvar)
 
@@ -649,7 +718,7 @@ class SemiVAELitModule(pl.LightningModule):
         manifold_loss = self.current_lambda_manifold * manifold_loss_raw
 
         # Total loss
-        loss = recon_loss + kl_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
+        loss = recon_loss + kl_loss + kl_supervised_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
 
         # Logging
         self.log("train_step/loss", loss, prog_bar=True, sync_dist=True)
@@ -659,6 +728,7 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("train_epoch/recon", recon_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("train_epoch/kl_raw", kl_dict["kl_raw"], on_step=False, on_epoch=True, sync_dist=True)
         self.log("train_epoch/kl_constrained", kl_dict["kl_constrained"], on_step=False, on_epoch=True, sync_dist=True)
+        self.log("train_epoch/kl_supervised", kl_sup_dict["kl_supervised"], on_step=False, on_epoch=True, sync_dist=True)
         self.log("train_epoch/tc", tc_loss / max(self.lambda_tc, 1e-6), on_step=False, on_epoch=True, sync_dist=True)
         self.log("train_epoch/semantic_total", total_semantic_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("train_epoch/cross_partition", cross_part_result["loss"], on_step=False, on_epoch=True, sync_dist=True)
@@ -681,6 +751,7 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("sched/lambda_cross_partition", self.current_lambda_cross_partition, on_step=False, on_epoch=True)
         self.log("sched/lambda_manifold", self.current_lambda_manifold, on_step=False, on_epoch=True)
         self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
+        self.log("sched/kl_beta_supervised", self.kl_beta_supervised, on_step=False, on_epoch=True)
 
         # Latent statistics
         self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True, sync_dist=True)
@@ -722,6 +793,10 @@ class SemiVAELitModule(pl.LightningModule):
         kl_dict = self._compute_kl_residual(mu, logvar)
         kl_loss = self.current_beta * kl_dict["kl_constrained"]
 
+        # KL on supervised partitions (prevents posterior collapse)
+        kl_sup_dict = self._compute_kl_supervised(mu, logvar)
+        kl_supervised_loss = self.kl_beta_supervised * kl_sup_dict["kl_supervised"]
+
         # TC on residual
         tc_loss = self.current_lambda_tc * self._compute_tc_residual(z, mu, logvar)
 
@@ -753,12 +828,13 @@ class SemiVAELitModule(pl.LightningModule):
         manifold_loss = self.current_lambda_manifold * manifold_loss_raw
 
         # Total loss
-        loss = recon_loss + kl_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
+        loss = recon_loss + kl_loss + kl_supervised_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
 
         # Logging
         self.log("val_epoch/loss", loss, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
         self.log("val_epoch/recon", recon_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/kl_raw", kl_dict["kl_raw"], on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val_epoch/kl_supervised", kl_sup_dict["kl_supervised"], on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/tc", tc_loss / max(self.lambda_tc, 1e-6), on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/semantic_total", total_semantic_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/cross_partition", cross_part_result["loss"], on_step=False, on_epoch=True, sync_dist=True)
@@ -896,6 +972,10 @@ class SemiVAELitModule(pl.LightningModule):
         kl_dict = self._compute_kl_residual(mu, logvar)
         kl_loss = self.current_beta * kl_dict["kl_constrained"]
 
+        # KL on supervised partitions (prevents posterior collapse)
+        kl_sup_dict = self._compute_kl_supervised(mu, logvar)
+        kl_supervised_loss = self.kl_beta_supervised * kl_sup_dict["kl_supervised"]
+
         # TC on residual
         tc_loss = self.current_lambda_tc * self._compute_tc_residual(z, mu, logvar)
 
@@ -923,7 +1003,7 @@ class SemiVAELitModule(pl.LightningModule):
         manifold_loss = self.current_lambda_manifold * manifold_loss_raw
 
         # Total loss
-        loss = recon_loss + kl_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
+        loss = recon_loss + kl_loss + kl_supervised_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
 
         # Log test metrics with test_epoch/ prefix
         self.log("test_epoch/loss", loss, on_step=False, on_epoch=True, sync_dist=True)

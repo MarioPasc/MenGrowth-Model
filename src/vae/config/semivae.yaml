@@ -39,9 +39,11 @@ model:
   num_groups: 8
   norm: "GROUP"
 
-  # Spatial Broadcast Decoder - CRITICAL for position-content disentanglement
-  # SBD provides explicit coordinate information, freeing z from encoding position
-  use_sbd: true
+  # Spatial Broadcast Decoder - DISABLED after experiment analysis
+  # SBD was causing decoder to ignore z (relying on coordinates instead)
+  # This led to residual partition collapse (0 active units out of 76)
+  # Standard transposed-conv decoder forces decoder to use z for reconstruction
+  use_sbd: false
   sbd_grid_size: [8, 8, 8]
   sbd_upsample_mode: "resize_conv"
 
@@ -124,16 +126,18 @@ loss:
   # Weight ratios reflect importance for tumor growth modeling
 
   # Semantic regression weights (MSE on supervised dimensions)
-  lambda_vol: 10.0          # Volume is most critical for Gompertz
-  lambda_loc: 5.0           # Location affects growth rate
-  lambda_shape: 5.0         # Shape evolution secondary
+  # REDUCED from original (10, 5, 5) to prevent semantic loss dominance
+  # which was causing the model to ignore reconstruction quality
+  lambda_vol: 2.0           # Volume is most critical for Gompertz
+  lambda_loc: 1.0           # Location affects growth rate
+  lambda_shape: 1.0         # Shape evolution secondary
 
-  # Semantic supervision schedule (delayed start for stable encoder)
-  # Phase 1 (0-9): Pure VAE warmup
-  # Phase 2 (10-29): Linear warmup of semantic losses
-  # Phase 3 (30+): Full semantic supervision
-  semantic_start_epoch: 10
-  semantic_annealing_epochs: 20
+  # Semantic supervision schedule (EXTENDED for stable encoder development)
+  # Phase 1 (0-29): Pure VAE warmup - encoder must learn good representations first
+  # Phase 2 (30-69): Linear warmup of semantic losses
+  # Phase 3 (70+): Full semantic supervision
+  semantic_start_epoch: 30
+  semantic_annealing_epochs: 40
 
   # ==========================================================================
   # CROSS-PARTITION INDEPENDENCE LOSS
@@ -141,8 +145,8 @@ loss:
   # Penalizes correlations between z_vol, z_loc, z_shape
   # Ensures volume, location, shape are statistically independent
   # Critical: larger tumors tend to be more central - this decorrelates them
-  lambda_cross_partition: 5.0
-  cross_partition_start_epoch: 10
+  lambda_cross_partition: 2.0  # Reduced from 5.0
+  cross_partition_start_epoch: 30  # Delayed to match semantic start
 
   # ==========================================================================
   # MANIFOLD DENSITY REGULARIZATION
@@ -150,8 +154,8 @@ loss:
   # Keeps residual latents near N(0, I) prior
   # Loss = E[(||z_residual||^2 / d - 1)^2]
   # Prevents ODE predictions from drifting off manifold during integration
-  lambda_manifold: 1.0
-  manifold_start_epoch: 10
+  lambda_manifold: 0.5  # Reduced from 1.0
+  manifold_start_epoch: 30  # Delayed to match semantic start
 
   # ==========================================================================
   # RESIDUAL REGULARIZATION (only on z_residual)
@@ -161,10 +165,10 @@ loss:
   # Encourages factorial posterior: q(z_res) ≈ ∏ q(z_i)
   # IMPORTANT: TC is delayed until encoder stabilizes (like semantic losses)
   use_tc_residual: true
-  lambda_tc: 2.0
+  lambda_tc: 1.0            # Reduced from 2.0 for more stable training
   tc_estimator: "minibatch_weighted"
-  tc_start_epoch: 10        # Delay TC for numerical stability
-  tc_annealing_epochs: 20   # Linear warmup of TC penalty
+  tc_start_epoch: 30        # Delayed to match semantic start
+  tc_annealing_epochs: 40   # Longer warmup for stability
 
   # Multi-GPU gradient-preserving gather for TC and cross-partition
   use_ddp_gather: true
@@ -201,20 +205,29 @@ train:
   posterior_logvar_min: -6.0
 
   # ==========================================================================
-  # KL REGULARIZATION (only on z_residual)
+  # KL REGULARIZATION ON RESIDUAL DIMENSIONS
   # ==========================================================================
   kl_beta: 1.0
-  kl_annealing_epochs: 150
+  kl_annealing_epochs: 200
   kl_annealing_type: "cyclical"
-  kl_annealing_cycles: 3
+  kl_annealing_cycles: 4  # Increased from 3 for longer training
   kl_annealing_ratio: 0.5
 
   # Free bits per dimension (prevents collapse)
-  kl_free_bits: 0.2
+  # INCREASED from 0.2 to 0.5 nats/dim for stronger collapse prevention
+  kl_free_bits: 0.5
   kl_free_bits_mode: "batch_mean"
 
+  # ==========================================================================
+  # KL REGULARIZATION ON SUPERVISED PARTITIONS (NEW)
+  # ==========================================================================
+  # Prevents posterior variance collapse in supervised dimensions.
+  # Without this, semantic losses push logvar to minimum, collapsing the posterior.
+  kl_beta_supervised: 0.1    # Light KL penalty (0 to disable)
+  kl_supervised_free_bits: 0.05  # Lower floor for supervised dims
+
   log_collapse_diagnostics: true
-  warmup_epochs: 10
+  warmup_epochs: 30  # Extended from 10 to match delayed semantic start
 
 logging:
   save_dir: "experiments/runs"
