@@ -39,11 +39,13 @@ model:
   num_groups: 8
   norm: "GROUP"
 
-  # Spatial Broadcast Decoder - DISABLED after experiment analysis
-  # SBD was causing decoder to ignore z (relying on coordinates instead)
-  # This led to residual partition collapse (0 active units out of 76)
-  # Standard transposed-conv decoder forces decoder to use z for reconstruction
-  use_sbd: false
+  # Spatial Broadcast Decoder - KEEP ENABLED
+  # Removing SBD causes encoder-decoder deadlock:
+  # - Standard decoder needs z to reconstruct
+  # - But encoder collapses before decoder learns to use z
+  # - Result: complete posterior collapse (AU=0)
+  # SBD provides coordinates, allowing decoder to learn even with weak z
+  use_sbd: true
   sbd_grid_size: [8, 8, 8]
   sbd_upsample_mode: "resize_conv"
 
@@ -214,16 +216,19 @@ train:
   kl_annealing_ratio: 0.5
 
   # Free bits per dimension (prevents collapse)
-  # INCREASED from 0.2 to 0.5 nats/dim for stronger collapse prevention
-  kl_free_bits: 0.5
+  # Keep at 0.2 - higher values (e.g., 0.5) create excessive KL floor
+  # that dominates loss when encoder collapses
+  kl_free_bits: 0.2
   kl_free_bits_mode: "batch_mean"
 
   # ==========================================================================
-  # KL REGULARIZATION ON SUPERVISED PARTITIONS (NEW)
+  # KL REGULARIZATION ON SUPERVISED PARTITIONS
   # ==========================================================================
-  # Prevents posterior variance collapse in supervised dimensions.
-  # Without this, semantic losses push logvar to minimum, collapsing the posterior.
-  kl_beta_supervised: 0.1    # Light KL penalty (0 to disable)
+  # DISABLED for now (set to 0). In theory, this prevents posterior variance
+  # collapse in supervised dimensions. In practice, it adds complexity and
+  # the semantic losses already provide sufficient pressure on supervised dims.
+  # Re-enable with small value (0.05-0.1) if supervised logvar collapses to -6.
+  kl_beta_supervised: 0.0    # Disabled - re-enable if needed
   kl_supervised_free_bits: 0.05  # Lower floor for supervised dims
 
   log_collapse_diagnostics: true
