@@ -1,22 +1,20 @@
 # =============================================================================
-# Semi-Supervised VAE Configuration - Run 3B (Ablation)
+# Semi-Supervised VAE Configuration - Run 3A
 # =============================================================================
-# Goal: Same semantic improvements as Run 3A, but ALLOW z_residual collapse
+# Goal: Improve semantic supervision quality while preserving z_residual activity
 #
-# This is an ablation to test whether preserving z_residual is beneficial
-# for downstream Neural ODE training. If Neural ODE performs equally well
-# with collapsed z_residual, we can simplify the model.
+# Key changes from Run 1 (20260119):
+# - Increased semantic lambdas: vol=15, loc=10, shape=15
+# - Reduced z_shape dims: 24 → 12 (6 features × 2 redundancy)
+# - Reduced TC penalty: 2.0 → 0.5, delayed to epoch 50
+# - Disabled manifold penalty to allow z_residual to encode information
+# - Extended training to 400 epochs
 #
-# Key differences from Run 3A:
-# - Strong TC penalty (λ=2.0) starting at epoch 15
-# - Strong cross-partition (λ=5.0)
-# - Manifold penalty enabled (λ=1.0)
-# - Expected: z_residual will collapse to ~0 active units (like Run 1/2)
-#
-# Key similarities with Run 3A:
-# - Same increased semantic lambdas (vol=15, loc=10, shape=15)
-# - Same reduced z_shape dims (12 instead of 24)
-# - Same 400 epoch training
+# Expected outcomes:
+# - Vol R²: 0.72 → 0.85+
+# - Loc R²: 0.83 → 0.90+
+# - Shape R²: 0.22 → 0.40+
+# - z_residual AU: 0 → 10+ (if successful)
 #
 # Hardware target: 2x GPU (A100 or similar with 40GB+ VRAM)
 # =============================================================================
@@ -58,30 +56,41 @@ model:
   use_spectral_norm: true
 
   # ==========================================================================
-  # LATENT PARTITIONING - Same as Run 3A
+  # LATENT PARTITIONING - Run 3A Configuration
   # ==========================================================================
   # z = [z_vol(16) | z_loc(12) | z_shape(12) | z_residual(88)]
   #     dims 0-15     16-27       28-39          40-127
+  #
+  # Changes from Run 1:
+  # - z_shape reduced: 24 → 12 dims (6 features × 2 redundancy)
+  # - z_residual increased: 76 → 88 dims (uses freed shape dims)
   # ==========================================================================
   latent_partitioning:
     enabled: true
 
+    # Volume encoding (4 features × 4 redundant dims = 16)
     z_vol:
       start_idx: 0
       dim: 16
       supervision: "regression"
       target_features: ["vol_total", "vol_ncr", "vol_ed", "vol_et"]
 
+    # Location encoding (3 features × 4 redundant dims = 12)
     z_loc:
       start_idx: 16
       dim: 12
       supervision: "regression"
       target_features: ["loc_x", "loc_y", "loc_z"]
 
-    # Shape encoding - REDUCED (same as Run 3A)
+    # Shape encoding - REDUCED (6 features × 2 redundant dims = 12)
+    # Selected 6 most robust features:
+    # - sphericity_total: Overall shape compactness
+    # - surface_area_total: Size-related, but scale-normalized
+    # - aspect_xy_total, aspect_xz_total: 3D elongation
+    # - solidity_total, solidity_et: Convexity measures
     z_shape:
       start_idx: 28
-      dim: 12
+      dim: 12  # REDUCED from 24
       supervision: "regression"
       target_features:
         - "sphericity_total"
@@ -91,55 +100,71 @@ model:
         - "solidity_total"
         - "solidity_et"
 
+    # Residual encoding - INCREASED (to use freed shape dims)
     z_residual:
-      start_idx: 40
-      dim: 88
+      start_idx: 40  # Changed from 52
+      dim: 88        # INCREASED from 76
       supervision: "none"
 
 loss:
   reduction: "mean"
 
   # ==========================================================================
-  # SEMANTIC SUPERVISION LOSSES - SAME AS RUN 3A
+  # SEMANTIC SUPERVISION LOSSES - INCREASED
   # ==========================================================================
-  lambda_vol: 15.0
-  lambda_loc: 10.0
-  lambda_shape: 15.0
+  # Rationale: Higher lambdas in Run 1 produced better R² values
+  # Run 1: vol=10, loc=5, shape=5 → Vol R²=0.72, Loc R²=0.83, Shape R²=0.23
+  # Run 2: vol=2, loc=1, shape=1 → Vol R²=0.69, Loc R²=0.75, Shape R²=0.20
+  # Run 3A: vol=15, loc=10, shape=15 → Target: Vol R²>0.85, Loc R²>0.9, Shape R²>0.4
+  lambda_vol: 15.0           # Increased from 10.0 (+50%)
+  lambda_loc: 10.0           # Increased from 5.0 (+100%)
+  lambda_shape: 15.0         # Increased from 5.0 (+200%, compensates for fewer dims)
 
-  semantic_start_epoch: 15
-  semantic_annealing_epochs: 25
-
-  # ==========================================================================
-  # CROSS-PARTITION INDEPENDENCE LOSS - STRONG (unlike Run 3A)
-  # ==========================================================================
-  # Rationale: Test if strong partition independence helps or hurts
-  lambda_cross_partition: 5.0  # STRONG (vs 2.0 in Run 3A)
-  cross_partition_start_epoch: 15  # EARLIER (vs 30 in Run 3A)
-
-  # ==========================================================================
-  # MANIFOLD DENSITY REGULARIZATION - ENABLED (unlike Run 3A)
-  # ==========================================================================
-  # Rationale: This will push z_residual toward N(0,I), causing collapse
-  lambda_manifold: 1.0  # ENABLED (vs 0.0 in Run 3A)
-  manifold_start_epoch: 15  # EARLIER start
+  # Semantic supervision schedule - earlier start
+  # Phase 1 (0-14): Pure VAE warmup
+  # Phase 2 (15-39): Linear warmup of semantic losses
+  # Phase 3 (40+): Full semantic supervision
+  semantic_start_epoch: 15   # Earlier than Run 2 (was 30)
+  semantic_annealing_epochs: 25  # Shorter than Run 2 (was 40)
 
   # ==========================================================================
-  # RESIDUAL REGULARIZATION - STRONG (unlike Run 3A)
+  # CROSS-PARTITION INDEPENDENCE LOSS - REDUCED
   # ==========================================================================
-  # Rationale: Strong TC will enforce factorial posterior on z_residual,
-  # likely causing complete collapse as observed in Run 1 and Run 2
+  # Rationale: Strong cross-partition loss contributed to z_residual collapse
+  # by pushing all partitions toward independence before residual could learn
+  lambda_cross_partition: 2.0  # Same as Run 2
+  cross_partition_start_epoch: 30  # Delayed (same as Run 2)
+
+  # ==========================================================================
+  # MANIFOLD DENSITY REGULARIZATION - DISABLED
+  # ==========================================================================
+  # Rationale: Manifold loss explicitly pushes z_residual toward N(0,I),
+  # which combined with TC loss causes complete collapse (0 AU observed).
+  # Disabling allows z_residual to encode meaningful information.
+  lambda_manifold: 0.0  # DISABLED (was 0.5)
+  manifold_start_epoch: 30
+
+  # ==========================================================================
+  # RESIDUAL REGULARIZATION - REDUCED AND DELAYED
+  # ==========================================================================
+  # Rationale: Strong TC (λ=2.0) starting at epoch 10/30 pushed z_residual
+  # to factorial prior before it could learn anything useful.
+  #
+  # Changes:
+  # - λ_tc: 2.0 → 0.5 (75% reduction)
+  # - tc_start_epoch: 30 → 50 (much later start)
   use_tc_residual: true
-  lambda_tc: 2.0              # STRONG (vs 0.5 in Run 3A)
+  lambda_tc: 0.5              # REDUCED from 2.0
   tc_estimator: "minibatch_weighted"
-  tc_start_epoch: 15          # EARLY (vs 50 in Run 3A)
-  tc_annealing_epochs: 25
+  tc_start_epoch: 50          # DELAYED from 30 (after semantic is stable)
+  tc_annealing_epochs: 30
 
   use_ddp_gather: true
   compute_in_fp32: true
 
 train:
   seed: 42
-  max_epochs: 400
+  max_epochs: 400            # EXTENDED from 300 for better convergence
   lr: 1e-4
   weight_decay: 0.01
   precision: "bf16-mixed"
@@ -152,10 +177,11 @@ train:
   deterministic: false
 
   loss_reduction: "mean"
-  gradient_clip_val: 2.0
+  gradient_clip_val: 2.0     # RELAXED from 1.0 (allow larger gradients from stronger semantic loss)
   gradient_clip_algorithm: "norm"
   posterior_logvar_min: -6.0
 
+  # KL on residual dimensions
   kl_beta: 1.0
   kl_annealing_epochs: 200
   kl_annealing_type: "cyclical"
@@ -169,11 +195,11 @@ train:
   kl_supervised_free_bits: 0.05
 
   log_collapse_diagnostics: true
-  warmup_epochs: 15
+  warmup_epochs: 15  # Match semantic_start_epoch
 
 logging:
   save_dir: "experiments/runs"
-  run_tag: "run3b"
+  run_tag: "run3a"  # Tag for identification
   log_every_n_steps: 50
 
   logger:
@@ -182,8 +208,8 @@ logging:
       project: "mengrowth-semivae"
       entity: "mario-pg02-icai"
       name: null
-      tags: ["semivae", "meningioma", "semi-supervised", "exp3", "run3b", "ablation"]
-      notes: "Run 3B (Ablation): Same semantic lambdas as 3A, but STRONG TC/manifold to allow z_residual collapse"
+      tags: ["semivae", "meningioma", "semi-supervised", "exp3", "run3a"]
+      notes: "Run 3A: Increased semantic lambdas, reduced z_shape dims (12), delayed TC, disabled manifold"
       offline: true
       save_code: true
       log_model: false
