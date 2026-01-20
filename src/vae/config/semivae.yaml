@@ -1,11 +1,20 @@
 # =============================================================================
-# Semi-Supervised VAE Configuration (Exp3)
+# Semi-Supervised VAE Configuration - Run 3A
 # =============================================================================
-# Goal: Learn disentangled latent representations with supervised semantic
-# dimensions for downstream Neural ODE tumor growth prediction.
+# Goal: Improve semantic supervision quality while preserving z_residual activity
 #
-# Key innovation: Partition latent space into supervised (volume, location,
-# shape) and unsupervised (residual) components.
+# Key changes from Run 1 (20260119):
+# - Increased semantic lambdas: vol=15, loc=10, shape=15
+# - Reduced z_shape dims: 24 → 12 (6 features × 2 redundancy)
+# - Reduced TC penalty: 2.0 → 0.5, delayed to epoch 50
+# - Disabled manifold penalty to allow z_residual to encode information
+# - Extended training to 400 epochs
+#
+# Expected outcomes:
+# - Vol R²: 0.72 → 0.85+
+# - Loc R²: 0.83 → 0.90+
+# - Shape R²: 0.22 → 0.40+
+# - z_residual AU: 0 → 10+ (if successful)
 #
 # Hardware target: 2x GPU (A100 or similar with 40GB+ VRAM)
 # =============================================================================
@@ -17,17 +26,13 @@ data:
   spacing: [1.875, 1.875, 1.875]
   orientation: "RAS"
 
-  # Batch configuration for 2 GPUs
-  # Per-GPU batch: 4, Effective batch: 8 (adequate for TC estimation)
-  # Larger batches improve semantic regression stability
   batch_size: 4
   num_workers: 8
   cache_rate: 1.0
   val_split: 0.1
-  test_split: 0.1  # Held-out test set for final evaluation (0 to disable)
+  test_split: 0.1
   persistent_cache_subdir: "cache_semivae"
 
-  # Semantic feature extraction (computed during data loading)
   extract_semantic_features: true
   semantic_feature_normalization: "z_score"
 
@@ -39,44 +44,31 @@ model:
   num_groups: 8
   norm: "GROUP"
 
-  # Spatial Broadcast Decoder - KEEP ENABLED
-  # Removing SBD causes encoder-decoder deadlock:
-  # - Standard decoder needs z to reconstruct
-  # - But encoder collapses before decoder learns to use z
-  # - Result: complete posterior collapse (AU=0)
-  # SBD provides coordinates, allowing decoder to learn even with weak z
   use_sbd: true
   sbd_grid_size: [8, 8, 8]
   sbd_upsample_mode: "resize_conv"
 
-  # Architecture
   architecture:
     pre_activation: false
     blocks_per_layer: [2, 2, 2, 2]
     upsample_mode: "resize_conv"
 
-  # Spectral normalization for Lipschitz continuity (required for Neural ODE)
-  # Applied to encoder conv layers and decoder - NOT to fc_mu/fc_logvar
-  # This ensures smooth latent manifold for ODE integration
   use_spectral_norm: true
 
   # ==========================================================================
-  # LATENT PARTITIONING - Core of semi-supervised approach
+  # LATENT PARTITIONING - Run 3A Configuration
   # ==========================================================================
-  # z = [z_vol(16) | z_loc(12) | z_shape(24) | z_residual(76)]
-  #     dims 0-15     16-27       28-51          52-127
+  # z = [z_vol(16) | z_loc(12) | z_shape(12) | z_residual(88)]
+  #     dims 0-15     16-27       28-39          40-127
   #
-  # Design rationale:
-  # - Volume (16 dims): Most critical for Gompertz growth modeling
-  # - Location (12 dims): Tumor position affects growth rate α
-  # - Shape (24 dims): Morphology evolution during growth
-  # - Residual (76 dims): Background/style factors, ignored by ODE
+  # Changes from Run 1:
+  # - z_shape reduced: 24 → 12 dims (6 features × 2 redundancy)
+  # - z_residual increased: 76 → 88 dims (uses freed shape dims)
   # ==========================================================================
   latent_partitioning:
     enabled: true
 
     # Volume encoding (4 features × 4 redundant dims = 16)
-    # Log-scaled volumes prevent gradient imbalance
     z_vol:
       start_idx: 0
       dim: 16
@@ -84,159 +76,130 @@ model:
       target_features: ["vol_total", "vol_ncr", "vol_ed", "vol_et"]
 
     # Location encoding (3 features × 4 redundant dims = 12)
-    # Centroid normalized to [0, 1] in ROI coordinates
     z_loc:
       start_idx: 16
       dim: 12
       supervision: "regression"
       target_features: ["loc_x", "loc_y", "loc_z"]
 
-    # Shape encoding (12 features × 2 redundant dims = 24)
-    # Sphericity, surface area, aspect ratios capture morphology
+    # Shape encoding - REDUCED (6 features × 2 redundant dims = 12)
+    # Selected 6 most robust features:
+    # - sphericity_total: Overall shape compactness
+    # - surface_area_total: Size-related, but scale-normalized
+    # - aspect_xy_total, aspect_xz_total: 3D elongation
+    # - solidity_total, solidity_et: Convexity measures
     z_shape:
       start_idx: 28
-      dim: 24
+      dim: 12  # REDUCED from 24
       supervision: "regression"
       target_features:
         - "sphericity_total"
-        - "sphericity_ncr"
-        - "sphericity_et"
         - "surface_area_total"
-        - "surface_area_ncr"
-        - "surface_area_et"
         - "aspect_xy_total"
         - "aspect_xz_total"
-        - "aspect_xy_ncr"
-        - "aspect_xz_ncr"
         - "solidity_total"
         - "solidity_et"
 
-    # Residual encoding (unsupervised VAE dimensions)
-    # Standard VAE prior with TC regularization
+    # Residual encoding - INCREASED (to use freed shape dims)
     z_residual:
-      start_idx: 52
-      dim: 76
+      start_idx: 40  # Changed from 52
+      dim: 88        # INCREASED from 76
       supervision: "none"
 
 loss:
   reduction: "mean"
 
   # ==========================================================================
-  # SEMANTIC SUPERVISION LOSSES
+  # SEMANTIC SUPERVISION LOSSES - INCREASED
   # ==========================================================================
-  # After z-score normalization, all features have similar scale (~0-1 std)
-  # Weight ratios reflect importance for tumor growth modeling
+  # Rationale: Higher lambdas in Run 1 produced better R² values
+  # Run 1: vol=10, loc=5, shape=5 → Vol R²=0.72, Loc R²=0.83, Shape R²=0.23
+  # Run 2: vol=2, loc=1, shape=1 → Vol R²=0.69, Loc R²=0.75, Shape R²=0.20
+  # Run 3A: vol=15, loc=10, shape=15 → Target: Vol R²>0.85, Loc R²>0.9, Shape R²>0.4
+  lambda_vol: 15.0           # Increased from 10.0 (+50%)
+  lambda_loc: 10.0           # Increased from 5.0 (+100%)
+  lambda_shape: 15.0         # Increased from 5.0 (+200%, compensates for fewer dims)
 
-  # Semantic regression weights (MSE on supervised dimensions)
-  # REDUCED from original (10, 5, 5) to prevent semantic loss dominance
-  # which was causing the model to ignore reconstruction quality
-  lambda_vol: 2.0           # Volume is most critical for Gompertz
-  lambda_loc: 1.0           # Location affects growth rate
-  lambda_shape: 1.0         # Shape evolution secondary
-
-  # Semantic supervision schedule (EXTENDED for stable encoder development)
-  # Phase 1 (0-29): Pure VAE warmup - encoder must learn good representations first
-  # Phase 2 (30-69): Linear warmup of semantic losses
-  # Phase 3 (70+): Full semantic supervision
-  semantic_start_epoch: 30
-  semantic_annealing_epochs: 40
+  # Semantic supervision schedule - earlier start
+  # Phase 1 (0-14): Pure VAE warmup
+  # Phase 2 (15-39): Linear warmup of semantic losses
+  # Phase 3 (40+): Full semantic supervision
+  semantic_start_epoch: 15   # Earlier than Run 2 (was 30)
+  semantic_annealing_epochs: 25  # Shorter than Run 2 (was 40)
 
   # ==========================================================================
-  # CROSS-PARTITION INDEPENDENCE LOSS
+  # CROSS-PARTITION INDEPENDENCE LOSS - REDUCED
   # ==========================================================================
-  # Penalizes correlations between z_vol, z_loc, z_shape
-  # Ensures volume, location, shape are statistically independent
-  # Critical: larger tumors tend to be more central - this decorrelates them
-  lambda_cross_partition: 2.0  # Reduced from 5.0
-  cross_partition_start_epoch: 30  # Delayed to match semantic start
+  # Rationale: Strong cross-partition loss contributed to z_residual collapse
+  # by pushing all partitions toward independence before residual could learn
+  lambda_cross_partition: 2.0  # Same as Run 2
+  cross_partition_start_epoch: 30  # Delayed (same as Run 2)
 
   # ==========================================================================
-  # MANIFOLD DENSITY REGULARIZATION
+  # MANIFOLD DENSITY REGULARIZATION - DISABLED
   # ==========================================================================
-  # Keeps residual latents near N(0, I) prior
-  # Loss = E[(||z_residual||^2 / d - 1)^2]
-  # Prevents ODE predictions from drifting off manifold during integration
-  lambda_manifold: 0.5  # Reduced from 1.0
-  manifold_start_epoch: 30  # Delayed to match semantic start
+  # Rationale: Manifold loss explicitly pushes z_residual toward N(0,I),
+  # which combined with TC loss causes complete collapse (0 AU observed).
+  # Disabling allows z_residual to encode meaningful information.
+  lambda_manifold: 0.0  # DISABLED (was 0.5)
+  manifold_start_epoch: 30
 
   # ==========================================================================
-  # RESIDUAL REGULARIZATION (only on z_residual)
+  # RESIDUAL REGULARIZATION - REDUCED AND DELAYED
   # ==========================================================================
-
-  # Total Correlation penalty (β-TCVAE style)
-  # Encourages factorial posterior: q(z_res) ≈ ∏ q(z_i)
-  # IMPORTANT: TC is delayed until encoder stabilizes (like semantic losses)
+  # Rationale: Strong TC (λ=2.0) starting at epoch 10/30 pushed z_residual
+  # to factorial prior before it could learn anything useful.
+  #
+  # Changes:
+  # - λ_tc: 2.0 → 0.5 (75% reduction)
+  # - tc_start_epoch: 30 → 50 (much later start)
   use_tc_residual: true
-  lambda_tc: 1.0            # Reduced from 2.0 for more stable training
+  lambda_tc: 0.5              # REDUCED from 2.0
   tc_estimator: "minibatch_weighted"
-  tc_start_epoch: 30        # Delayed to match semantic start
-  tc_annealing_epochs: 40   # Longer warmup for stability
+  tc_start_epoch: 50          # DELAYED from 30 (after semantic is stable)
+  tc_annealing_epochs: 30
 
-  # Multi-GPU gradient-preserving gather for TC and cross-partition
   use_ddp_gather: true
   compute_in_fp32: true
 
 train:
   seed: 42
-  max_epochs: 300                  # Sufficient for convergence
+  max_epochs: 400            # EXTENDED from 300 for better convergence
   lr: 1e-4
   weight_decay: 0.01
-  # Precision options:
-  # - "bf16-mixed": Recommended for A100/H100 (better numerical stability)
-  # - "16-mixed": FP16, faster but can cause NaN with spectral norm + TC
-  # - "32": Full precision, most stable but slower
-  # If training diverges with NaN gradients, switch to "bf16-mixed" or "32"
   precision: "bf16-mixed"
   gradient_checkpointing: true
   accelerator: "gpu"
 
-  # ==========================================================================
-  # GPU CONFIGURATION
-  # ==========================================================================
-  # Default: 2 GPUs with DDP
-  # For single GPU: set devices=1 and strategy="auto"
   devices: 2
   strategy: "ddp"
   sync_batchnorm: true
   deterministic: false
 
-  # Numerical stability
   loss_reduction: "mean"
-  gradient_clip_val: 1.0           # Conservative clipping (was 5.0, reduced for stability)
+  gradient_clip_val: 2.0     # RELAXED from 1.0 (allow larger gradients from stronger semantic loss)
   gradient_clip_algorithm: "norm"
   posterior_logvar_min: -6.0
 
-  # ==========================================================================
-  # KL REGULARIZATION ON RESIDUAL DIMENSIONS
-  # ==========================================================================
+  # KL on residual dimensions
   kl_beta: 1.0
   kl_annealing_epochs: 200
   kl_annealing_type: "cyclical"
-  kl_annealing_cycles: 4  # Increased from 3 for longer training
+  kl_annealing_cycles: 4
   kl_annealing_ratio: 0.5
 
-  # Free bits per dimension (prevents collapse)
-  # Keep at 0.2 - higher values (e.g., 0.5) create excessive KL floor
-  # that dominates loss when encoder collapses
   kl_free_bits: 0.2
   kl_free_bits_mode: "batch_mean"
 
-  # ==========================================================================
-  # KL REGULARIZATION ON SUPERVISED PARTITIONS
-  # ==========================================================================
-  # DISABLED for now (set to 0). In theory, this prevents posterior variance
-  # collapse in supervised dimensions. In practice, it adds complexity and
-  # the semantic losses already provide sufficient pressure on supervised dims.
-  # Re-enable with small value (0.05-0.1) if supervised logvar collapses to -6.
-  kl_beta_supervised: 0.0    # Disabled - re-enable if needed
-  kl_supervised_free_bits: 0.05  # Lower floor for supervised dims
+  kl_beta_supervised: 0.0
+  kl_supervised_free_bits: 0.05
 
   log_collapse_diagnostics: true
-  warmup_epochs: 30  # Extended from 10 to match delayed semantic start
+  warmup_epochs: 15  # Match semantic_start_epoch
 
 logging:
   save_dir: "experiments/runs"
-  run_tag: null
+  run_tag: "run3a"  # Tag for identification
   log_every_n_steps: 50
 
   logger:
@@ -245,8 +208,8 @@ logging:
       project: "mengrowth-semivae"
       entity: "mario-pg02-icai"
       name: null
-      tags: ["semivae", "meningioma", "semi-supervised", "exp3"]
-      notes: "Semi-supervised VAE with partitioned latent space for Neural ODE downstream"
+      tags: ["semivae", "meningioma", "semi-supervised", "exp3", "run3a"]
+      notes: "Run 3A: Increased semantic lambdas, reduced z_shape dims (12), delayed TC, disabled manifold"
       offline: true
       save_code: true
       log_model: false
@@ -271,13 +234,11 @@ logging:
 
   min_logs_per_epoch: 3
 
-  # Latent diagnostics
   latent_diag_every_n_epochs: 10
   latent_diag_num_samples: 128
   latent_diag_shift_vox: 5
   latent_diag_ids_name: "diagnostics/latent_probes/ids.txt"
 
-  # Active Units (on residual dimensions only)
   au_dense_until: 30
   au_sparse_interval: 5
   au_subset_fraction: 0.5
@@ -286,7 +247,6 @@ logging:
   au_subset_seed: 42
   au_residual_only: true
 
-  # Segmentation labels
   seg_labels:
     ncr: 1
     ed: 2
@@ -294,7 +254,6 @@ logging:
 
   log_grad_norm: true
 
-  # SemiVAE diagnostics
   semivae_diag_every_n_epochs: 10
   semivae_diag_num_samples: 100
   semivae_visualize_latent: true
