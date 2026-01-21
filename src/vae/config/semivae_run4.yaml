@@ -1,0 +1,285 @@
+# =============================================================================
+# SemiVAE Run 5 - "Final VAE Fight"
+# =============================================================================
+# Key innovations:
+#   1. Higher resolution (1.25mm → 160³) for better shape features
+#   2. Curriculum learning: Vol → Loc → Shape → TC (staged supervision)
+#   3. Volume-focused latent allocation (24 dims for z_vol)
+#   4. 4 GPUs, 600 epochs, batch_size=2
+#
+# Expected outcomes:
+#   - Vol R² > 0.85 (target for Gompertz proxy)
+#   - Loc R² > 0.90
+#   - Shape R² > 0.35 (improved with higher resolution)
+#   - z_residual AU > 15 (preserved with very late/weak TC)
+# =============================================================================
+
+data:
+  root_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
+  modalities: [t1c, t1n, t2f, t2w]
+
+  # CHANGE: Higher resolution for better shape features
+  roi_size: [160, 160, 160]     # Increased from 128
+  spacing: [1.25, 1.25, 1.25]   # Finer resolution (was 1.875)
+
+  orientation: RAS
+  batch_size: 2                  # Reduced due to larger images
+  num_workers: 8
+  cache_rate: 1.0
+  val_split: 0.1
+  test_split: 0.1
+  persistent_cache_subdir: "cache_semivae_run4_highres"
+
+  extract_semantic_features: true
+  semantic_feature_normalization: z_score
+
+model:
+  variant: semivae
+  z_dim: 128
+  input_channels: 4
+  base_filters: 32
+  num_groups: 8
+  norm: GROUP
+
+  # Spatial Broadcast Decoder for better disentanglement
+  use_sbd: true
+  sbd_grid_size: [10, 10, 10]   # Scaled for 160³
+  sbd_upsample_mode: resize_conv
+
+  architecture:
+    pre_activation: false
+    blocks_per_layer: [2, 2, 2, 2]
+    upsample_mode: resize_conv
+
+  # Spectral normalization for Lipschitz continuity (Neural ODE requirement)
+  use_spectral_norm: true
+
+  # ==========================================================================
+  # LATENT PARTITIONING - Volume-focused allocation
+  # ==========================================================================
+  latent_partitioning:
+    enabled: true
+
+    # Volume encoding - INCREASED capacity (critical for Gompertz)
+    # 4 features × 6 redundant dims = 24 dims
+    z_vol:
+      start_idx: 0
+      dim: 24                    # INCREASED from 16
+      supervision: "regression"
+      target_features: ["vol_total", "vol_ncr", "vol_ed", "vol_et"]
+
+    # Location encoding - REDUCED (3 features need less redundancy)
+    # 3 features × 2-3 redundant dims = 8 dims
+    z_loc:
+      start_idx: 24
+      dim: 8                     # REDUCED from 12
+      supervision: "regression"
+      target_features: ["loc_x", "loc_y", "loc_z"]
+
+    # Shape encoding - Moderate allocation
+    # 12 features × ~1.3 redundant dims = 16 dims
+    z_shape:
+      start_idx: 32
+      dim: 16                    # INCREASED from 12 (better for 1.25mm)
+      supervision: "regression"
+      target_features:
+        - "sphericity_total"
+        - "sphericity_ncr"
+        - "sphericity_et"
+        - "surface_area_total"
+        - "surface_area_ncr"
+        - "surface_area_et"
+        - "aspect_xy_total"
+        - "aspect_xz_total"
+        - "aspect_xy_ncr"
+        - "aspect_xz_ncr"
+        - "solidity_total"
+        - "solidity_et"
+
+    # Residual encoding - Reduced to fund semantic increase
+    z_residual:
+      start_idx: 48
+      dim: 80                    # Reduced from 88
+      supervision: "none"
+
+# =============================================================================
+# LOSS CONFIGURATION - Curriculum Learning
+# =============================================================================
+loss:
+  reduction: mean
+
+  # --------------------------------------------------------------------------
+  # CURRICULUM LEARNING: Staged semantic supervision
+  # Order: Volume (most critical) → Location → Shape → TC (last)
+  # --------------------------------------------------------------------------
+
+  # --- VOLUME SUPERVISION (First priority) ---
+  lambda_vol: 25.0               # STRONG - critical for Gompertz
+  vol_start_epoch: 30            # After basic VAE warmup
+  vol_annealing_epochs: 40       # Full by epoch 70
+
+  # --- LOCATION SUPERVISION (Second priority) ---
+  lambda_loc: 15.0               # Moderate - useful for α(location)
+  loc_start_epoch: 80            # After volume established
+  loc_annealing_epochs: 40       # Full by epoch 120
+
+  # --- SHAPE SUPERVISION (Third priority) ---
+  lambda_shape: 12.0             # Moderate - improved with 1.25mm
+  shape_start_epoch: 150         # After vol+loc established
+  shape_annealing_epochs: 50     # Full by epoch 200
+
+  # Legacy shared schedule (overridden by per-partition schedules above)
+  semantic_start_epoch: 30       # Fallback
+  semantic_annealing_epochs: 40  # Fallback
+
+  # --------------------------------------------------------------------------
+  # CROSS-PARTITION INDEPENDENCE (After semantic structure established)
+  # --------------------------------------------------------------------------
+  lambda_cross_partition: 3.0    # Moderate
+  cross_partition_start_epoch: 200
+
+  # --------------------------------------------------------------------------
+  # MANIFOLD REGULARIZATION (Disabled - let z_residual learn freely)
+  # --------------------------------------------------------------------------
+  lambda_manifold: 0.0           # DISABLED
+  manifold_start_epoch: 400      # Never active
+
+  # --------------------------------------------------------------------------
+  # TC REGULARIZATION (Very late, very weak - preserve z_residual)
+  # --------------------------------------------------------------------------
+  use_tc_residual: true
+  lambda_tc: 0.3                 # VERY WEAK
+  tc_estimator: minibatch_weighted
+  tc_start_epoch: 350            # VERY LATE
+  tc_annealing_epochs: 50        # Full by epoch 400
+
+  # DDP settings
+  use_ddp_gather: true
+  compute_in_fp32: true
+
+# =============================================================================
+# TRAINING CONFIGURATION
+# =============================================================================
+train:
+  seed: 42
+  max_epochs: 800                # Extended for curriculum
+  lr: 5e-5                       # Reduced for stability with larger images
+  weight_decay: 0.01
+  precision: bf16-mixed
+  gradient_checkpointing: true   # Required for 160³
+
+  # Multi-GPU setup
+  accelerator: gpu
+  devices: 4                     # 4 GPUs for memory
+  strategy: ddp
+  sync_batchnorm: true
+  deterministic: false
+
+  loss_reduction: mean
+  gradient_clip_val: 1.5         # Moderate clipping
+  gradient_clip_algorithm: norm
+
+  posterior_logvar_min: -6.0
+
+  # KL annealing (cyclical with more cycles for longer training)
+  kl_beta: 1.0
+  kl_annealing_epochs: 300       # 5 cycles × 60 epochs
+  kl_annealing_type: cyclical
+  kl_annealing_cycles: 5
+  kl_annealing_ratio: 0.5
+
+  # Free bits (prevents posterior collapse)
+  kl_free_bits: 0.2
+  kl_free_bits_mode: batch_mean
+
+  # KL on supervised partitions (light regularization to prevent logvar collapse)
+  kl_beta_supervised: 0.0        # Disabled for curriculum learning
+  kl_supervised_free_bits: 0.05
+
+  log_collapse_diagnostics: true
+  warmup_epochs: 20
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+logging:
+  save_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/results/semivae
+  run_tag: run5_curriculum
+  log_every_n_steps: 50
+
+  logger:
+    type: wandb
+    wandb:
+      project: mengrowth-semivae
+      entity: mario-pg02-icai
+      name: null
+      tags:
+        - semivae
+        - meningioma
+        - semi-supervised
+        - exp3
+        - run5
+        - curriculum
+        - high-res
+      notes: >
+        Run 5: Final VAE attempt with curriculum learning.
+        1.25mm resolution (160³), staged supervision (vol→loc→shape→TC),
+        volume-focused latent allocation (24 dims), 4 GPUs, 600 epochs.
+      offline: true
+      save_code: true
+      log_model: false
+
+  checkpointing:
+    save_top_k: 1
+    monitor: val_epoch/loss
+    mode: min
+    save_last: false
+    every_n_epochs: 1
+    filename: "semivae-{epoch:04d}"
+
+  visual:
+    log_reconstructions: true
+    recon_every_n_epochs: 10
+    num_recon_samples: 2
+    log_dashboard: true
+    dashboard_every_n_epochs: 20
+    log_latent_viz: true
+    latent_viz_every_n_epochs: 50
+    latent_viz_n_samples: 256
+
+  min_logs_per_epoch: 3
+  latent_diag_every_n_epochs: 20
+  latent_diag_num_samples: 128
+  latent_diag_shift_vox: 5
+  latent_diag_ids_name: diagnostics/latent_probes/ids.txt
+
+  # Active units diagnostics
+  au_dense_until: 50
+  au_sparse_interval: 10
+  au_subset_fraction: 0.5
+  au_batch_size: 16              # Reduced for larger images
+  eps_au: 0.01
+  au_subset_seed: 42
+  au_residual_only: true
+
+  seg_labels:
+    ncr: 1
+    ed: 2
+    et: 3
+
+  log_grad_norm: true
+
+  # SemiVAE-specific diagnostics
+  semivae_diag_every_n_epochs: 20
+  semivae_diag_num_samples: 100
+  semivae_visualize_latent: true
+  semivae_viz_every_n_epochs: 50
+  log_semantic_metrics: true
+  semantic_metrics:
+    - sem/vol_mse
+    - sem/vol_r2
+    - sem/loc_mse
+    - sem/loc_r2
+    - sem/shape_mse
+    - sem/shape_r2
+    - sem/total_supervised_loss

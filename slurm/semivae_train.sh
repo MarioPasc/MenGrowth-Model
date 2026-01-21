@@ -1,30 +1,16 @@
 #!/usr/bin/env bash
 #SBATCH -J log_semivae
-#SBATCH --time=1-12:00:00
+#SBATCH --time=2-12:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --constraint=dgx
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:4
 #SBATCH --output=%x.%j.out
 #SBATCH --error=%x.%j.err
 
 # =============================================================================
-# SEMI-SUPERVISED VAE TRAINING (Exp3)
-# =============================================================================
-# Multi-GPU training with DDP for SemiVAE with:
-# - Semantic supervision (volume, location, shape)
-# - Cross-partition independence loss
-# - Manifold density regularization
-# - Spectral normalization for Neural ODE compatibility
-#
-# GPU Configuration:
-#   - Default: 2 GPUs with DDP (--gres=gpu:2)
-#   - Fallback: Change to --gres=gpu:1 if DDP issues occur
-#
-# Memory Requirements:
-#   - ~32GB GPU memory per GPU for batch_size=4
-#   - CPU memory for data loading and caching
+# SEMI-SUPERVISED VAE TRAINING (Exp4)
 # =============================================================================
 
 set -euo pipefail
@@ -43,10 +29,10 @@ CONDA_ENV_NAME="vae-dynamics"
 REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 DATA_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men"
 RESULTS_DST="/mnt/home/users/tic_163_uma/mpascual/fscratch/results/${EXPERIMENT_NAME}"
-CONFIG_FILE="${REPO_SRC}/src/vae/config/${EXPERIMENT_NAME}.yaml"
+CONFIG_FILE="${REPO_SRC}/src/vae/config/${EXPERIMENT_NAME}_run4.yaml"
 
 # Number of GPUs (should match --gres=gpu:N)
-NUM_GPUS=2
+NUM_GPUS=4
 
 # ========================================================================
 # ENVIRONMENT SETUP

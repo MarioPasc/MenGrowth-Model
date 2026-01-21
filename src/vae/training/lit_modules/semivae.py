@@ -86,8 +86,16 @@ class SemiVAELitModule(pl.LightningModule):
         lambda_vol: float = 10.0,
         lambda_loc: float = 5.0,
         lambda_shape: float = 5.0,
+        # Legacy shared schedule (used if per-partition schedules not specified)
         semantic_start_epoch: int = 10,
         semantic_annealing_epochs: int = 20,
+        # Per-partition curriculum schedules (override shared schedule if > 0)
+        vol_start_epoch: int = -1,  # -1 means use semantic_start_epoch
+        vol_annealing_epochs: int = -1,
+        loc_start_epoch: int = -1,
+        loc_annealing_epochs: int = -1,
+        shape_start_epoch: int = -1,
+        shape_annealing_epochs: int = -1,
         # TC regularization
         use_tc_residual: bool = True,
         lambda_tc: float = 2.0,
@@ -129,8 +137,14 @@ class SemiVAELitModule(pl.LightningModule):
             lambda_vol: Weight for volume regression loss
             lambda_loc: Weight for location regression loss
             lambda_shape: Weight for shape regression loss
-            semantic_start_epoch: Epoch to start semantic supervision
-            semantic_annealing_epochs: Epochs for semantic loss warmup
+            semantic_start_epoch: Default epoch to start semantic supervision
+            semantic_annealing_epochs: Default epochs for semantic loss warmup
+            vol_start_epoch: Epoch to start volume supervision (-1 = use default)
+            vol_annealing_epochs: Epochs for volume warmup (-1 = use default)
+            loc_start_epoch: Epoch to start location supervision (-1 = use default)
+            loc_annealing_epochs: Epochs for location warmup (-1 = use default)
+            shape_start_epoch: Epoch to start shape supervision (-1 = use default)
+            shape_annealing_epochs: Epochs for shape warmup (-1 = use default)
             use_tc_residual: Whether to apply TC penalty on residual
             lambda_tc: Weight for TC penalty
             tc_estimator: TC estimator type ("minibatch_weighted" or "stratified")
@@ -166,6 +180,14 @@ class SemiVAELitModule(pl.LightningModule):
         self.lambda_shape = lambda_shape
         self.semantic_start_epoch = semantic_start_epoch
         self.semantic_annealing_epochs = semantic_annealing_epochs
+
+        # Per-partition curriculum schedules (use defaults if -1)
+        self.vol_start_epoch = vol_start_epoch if vol_start_epoch >= 0 else semantic_start_epoch
+        self.vol_annealing_epochs = vol_annealing_epochs if vol_annealing_epochs >= 0 else semantic_annealing_epochs
+        self.loc_start_epoch = loc_start_epoch if loc_start_epoch >= 0 else semantic_start_epoch
+        self.loc_annealing_epochs = loc_annealing_epochs if loc_annealing_epochs >= 0 else semantic_annealing_epochs
+        self.shape_start_epoch = shape_start_epoch if shape_start_epoch >= 0 else semantic_start_epoch
+        self.shape_annealing_epochs = shape_annealing_epochs if shape_annealing_epochs >= 0 else semantic_annealing_epochs
 
         # TC settings
         self.use_tc_residual = use_tc_residual
@@ -246,6 +268,13 @@ class SemiVAELitModule(pl.LightningModule):
             lambda_shape=cfg.loss.get("lambda_shape", 5.0),
             semantic_start_epoch=cfg.loss.get("semantic_start_epoch", 10),
             semantic_annealing_epochs=cfg.loss.get("semantic_annealing_epochs", 20),
+            # Per-partition curriculum schedules (-1 = use shared schedule)
+            vol_start_epoch=cfg.loss.get("vol_start_epoch", -1),
+            vol_annealing_epochs=cfg.loss.get("vol_annealing_epochs", -1),
+            loc_start_epoch=cfg.loss.get("loc_start_epoch", -1),
+            loc_annealing_epochs=cfg.loss.get("loc_annealing_epochs", -1),
+            shape_start_epoch=cfg.loss.get("shape_start_epoch", -1),
+            shape_annealing_epochs=cfg.loss.get("shape_annealing_epochs", -1),
             use_tc_residual=cfg.loss.get("use_tc_residual", True),
             lambda_tc=cfg.loss.get("lambda_tc", 2.0),
             tc_estimator=cfg.loss.get("tc_estimator", "minibatch_weighted"),
@@ -287,18 +316,18 @@ class SemiVAELitModule(pl.LightningModule):
             kl_annealing_ratio=self.kl_annealing_ratio,
         )
 
-        # Semantic schedules
+        # Semantic schedules (per-partition curriculum learning)
         self.current_lambda_vol = get_semantic_schedule(
             epoch, self.lambda_vol,
-            self.semantic_start_epoch, self.semantic_annealing_epochs
+            self.vol_start_epoch, self.vol_annealing_epochs
         )
         self.current_lambda_loc = get_semantic_schedule(
             epoch, self.lambda_loc,
-            self.semantic_start_epoch, self.semantic_annealing_epochs
+            self.loc_start_epoch, self.loc_annealing_epochs
         )
         self.current_lambda_shape = get_semantic_schedule(
             epoch, self.lambda_shape,
-            self.semantic_start_epoch, self.semantic_annealing_epochs
+            self.shape_start_epoch, self.shape_annealing_epochs
         )
 
         # TC schedule (delayed start for numerical stability)
@@ -742,7 +771,7 @@ class SemiVAELitModule(pl.LightningModule):
         for pair_name, corr_val in cross_part_result["per_pair"].items():
             self.log(f"cross_part/{pair_name}", corr_val, on_step=False, on_epoch=True, sync_dist=True)
 
-        # Schedules
+        # Schedules (current effective lambda values)
         self.log("sched/beta", self.current_beta, on_step=False, on_epoch=True)
         self.log("sched/lambda_vol", self.current_lambda_vol, on_step=False, on_epoch=True)
         self.log("sched/lambda_loc", self.current_lambda_loc, on_step=False, on_epoch=True)
@@ -752,6 +781,12 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("sched/lambda_manifold", self.current_lambda_manifold, on_step=False, on_epoch=True)
         self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
         self.log("sched/kl_beta_supervised", self.kl_beta_supervised, on_step=False, on_epoch=True)
+
+        # Log curriculum phase indicators (1 if active, 0 if not yet started)
+        self.log("curriculum/vol_active", float(self.current_lambda_vol > 0), on_step=False, on_epoch=True)
+        self.log("curriculum/loc_active", float(self.current_lambda_loc > 0), on_step=False, on_epoch=True)
+        self.log("curriculum/shape_active", float(self.current_lambda_shape > 0), on_step=False, on_epoch=True)
+        self.log("curriculum/tc_active", float(self.current_lambda_tc > 0), on_step=False, on_epoch=True)
 
         # Latent statistics
         self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True, sync_dist=True)
