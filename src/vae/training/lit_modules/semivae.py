@@ -865,6 +865,17 @@ class SemiVAELitModule(pl.LightningModule):
         # Total loss
         loss = recon_loss + kl_loss + kl_supervised_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
 
+        # Compute ODE readiness score for checkpoint selection
+        # This metric combines semantic encoding quality and factor independence
+        if "semantic_features" in batch:
+            ode_readiness = self._compute_ode_readiness(
+                semantic_losses=semantic_losses,
+                semantic_targets=semantic_targets,
+                cross_partition_corrs=cross_part_result["per_pair"],
+            )
+        else:
+            ode_readiness = torch.tensor(0.0, device=x.device)
+
         # Logging
         self.log("val_epoch/loss", loss, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
         self.log("val_epoch/recon", recon_loss, on_step=False, on_epoch=True, sync_dist=True)
@@ -874,6 +885,8 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("val_epoch/semantic_total", total_semantic_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/cross_partition", cross_part_result["loss"], on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/manifold", manifold_loss_raw, on_step=False, on_epoch=True, sync_dist=True)
+        # ODE readiness score for checkpoint selection (higher = better for Neural ODE)
+        self.log("val_epoch/ode_readiness", ode_readiness, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
 
         # Per-semantic losses
         for name, mse in semantic_losses.items():
@@ -1074,6 +1087,77 @@ class SemiVAELitModule(pl.LightningModule):
                              on_step=False, on_epoch=True, sync_dist=True)
 
         return loss
+
+    def _compute_ode_readiness(
+        self,
+        semantic_losses: Dict[str, torch.Tensor],
+        semantic_targets: Dict[str, torch.Tensor],
+        cross_partition_corrs: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Compute composite ODE readiness score for checkpoint selection.
+
+        This metric combines semantic encoding quality and factor independence
+        to select models optimal for downstream Neural ODE training.
+
+        Score = 0.5 * vol_r2_proxy + 0.25 * loc_r2_proxy + 0.25 * independence_score
+
+        Where:
+        - vol_r2_proxy: Approximate R² for volume encoding (1 - MSE/Var)
+        - loc_r2_proxy: Approximate R² for location encoding
+        - independence_score: 1 - max(|cross_partition_correlation|)
+
+        Args:
+            semantic_losses: Dictionary with z_vol_mse, z_loc_mse, z_shape_mse
+            semantic_targets: Dictionary with target tensors for variance estimation
+            cross_partition_corrs: Dictionary with per-pair absolute correlations
+
+        Returns:
+            ODE readiness score in [0, 1], higher is better
+        """
+        device = next(iter(semantic_losses.values())).device if semantic_losses else torch.device("cpu")
+
+        # Compute R² proxies: R² ≈ 1 - MSE/Var(target)
+        # Use target variance from batch (this is an approximation)
+        vol_r2_proxy = torch.tensor(0.0, device=device)
+        loc_r2_proxy = torch.tensor(0.0, device=device)
+
+        # Volume R² proxy
+        if "z_vol_mse" in semantic_losses and "z_vol" in semantic_targets:
+            vol_mse = semantic_losses["z_vol_mse"]
+            vol_target = semantic_targets["z_vol"]
+            vol_var = vol_target.var() + 1e-8  # Prevent division by zero
+            vol_r2_proxy = torch.clamp(1.0 - vol_mse / vol_var, min=0.0, max=1.0)
+
+        # Location R² proxy
+        if "z_loc_mse" in semantic_losses and "z_loc" in semantic_targets:
+            loc_mse = semantic_losses["z_loc_mse"]
+            loc_target = semantic_targets["z_loc"]
+            loc_var = loc_target.var() + 1e-8
+            loc_r2_proxy = torch.clamp(1.0 - loc_mse / loc_var, min=0.0, max=1.0)
+
+        # Independence score: 1 - max absolute cross-partition correlation
+        # Higher is better (less correlation = more independent)
+        independence_score = torch.tensor(1.0, device=device)
+        if cross_partition_corrs:
+            # Only consider correlations between supervised partitions (not with residual)
+            supervised_pairs = [k for k in cross_partition_corrs.keys()
+                               if "residual" not in k]
+            if supervised_pairs:
+                max_corr = max(cross_partition_corrs[k].abs()
+                              for k in supervised_pairs)
+                independence_score = torch.clamp(1.0 - max_corr, min=0.0, max=1.0)
+
+        # Composite score: weighted combination
+        # Volume is most critical for Gompertz ODE (50%)
+        # Location is secondary (25%)
+        # Independence ensures factors can evolve separately (25%)
+        ode_readiness = (
+            0.50 * vol_r2_proxy +
+            0.25 * loc_r2_proxy +
+            0.25 * independence_score
+        )
+
+        return ode_readiness
 
     def on_fit_start(self) -> None:
         """Called at the start of fit. Update dataset size."""

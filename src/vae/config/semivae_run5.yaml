@@ -1,0 +1,293 @@
+# =============================================================================
+# SemiVAE Run 6 - "Factor Independence"
+# =============================================================================
+# Key changes from Run 5 (based on Run 4 analysis):
+#   1. Increased cross-partition penalty (3.0 → 10.0) to fix z_vol↔z_shape entanglement
+#   2. Earlier cross-partition start (epoch 200 → 100)
+#   3. Reduced shape features (12 → 6) for better R²
+#   4. Earlier TC start (epoch 350 → 250) with gentler ramp
+#   5. New checkpoint metric: val_epoch/ode_readiness (composite)
+#
+# Targets:
+#   - Vol R² > 0.85 (primary ODE state)
+#   - Loc R² > 0.90 (secondary ODE state)
+#   - Shape R² > 0.40 (improved with fewer features)
+#   - Cross-partition |corr| < 0.30 (factor independence)
+#   - z_residual AU > 0.25 (preserved capacity)
+# =============================================================================
+
+data:
+  root_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
+  modalities: [t1c, t1n, t2f, t2w]
+
+  # Same high resolution as Run 5
+  roi_size: [160, 160, 160]
+  spacing: [1.25, 1.25, 1.25]
+
+  orientation: RAS
+  batch_size: 2
+  num_workers: 8
+  cache_rate: 1.0
+  val_split: 0.1
+  test_split: 0.1
+  persistent_cache_subdir: "cache_semivae_run6_independence"
+
+  extract_semantic_features: true
+  semantic_feature_normalization: z_score
+
+model:
+  variant: semivae
+  z_dim: 128
+  input_channels: 4
+  base_filters: 32
+  num_groups: 8
+  norm: GROUP
+
+  # Spatial Broadcast Decoder (essential - do not disable)
+  use_sbd: true
+  sbd_grid_size: [10, 10, 10]
+  sbd_upsample_mode: resize_conv
+
+  architecture:
+    pre_activation: false
+    blocks_per_layer: [2, 2, 2, 2]
+    upsample_mode: resize_conv
+
+  # Spectral normalization for Lipschitz continuity (Neural ODE requirement)
+  use_spectral_norm: true
+
+  # ==========================================================================
+  # LATENT PARTITIONING - Adjusted for reduced shape features
+  # ==========================================================================
+  latent_partitioning:
+    enabled: true
+
+    # Volume encoding - CRITICAL for Gompertz dynamics
+    # 4 features × 6 redundant dims = 24 dims
+    z_vol:
+      start_idx: 0
+      dim: 24
+      supervision: "regression"
+      target_features: ["vol_total", "vol_ncr", "vol_ed", "vol_et"]
+
+    # Location encoding
+    # 3 features × ~2.7 redundant dims = 8 dims
+    z_loc:
+      start_idx: 24
+      dim: 8
+      supervision: "regression"
+      target_features: ["loc_x", "loc_y", "loc_z"]
+
+    # Shape encoding - REDUCED to 6 most reliable features
+    # 6 features × 2 redundant dims = 12 dims (REDUCED from 16)
+    z_shape:
+      start_idx: 32
+      dim: 12                    # REDUCED from 16
+      supervision: "regression"
+      target_features:
+        - "sphericity_total"     # Most stable shape metric
+        - "surface_area_total"   # Robust to segmentation noise
+        - "solidity_total"       # Convexity measure
+        - "aspect_xy_total"      # Major axis ratio
+        - "sphericity_ncr"       # Tumor core shape
+        - "surface_area_ncr"     # Tumor core surface
+
+    # Residual encoding - INCREASED by 4 dims from shape reduction
+    z_residual:
+      start_idx: 44              # Changed from 48
+      dim: 84                    # INCREASED from 80
+      supervision: "none"
+
+# =============================================================================
+# LOSS CONFIGURATION - Focus on Factor Independence
+# =============================================================================
+loss:
+  reduction: mean
+
+  # --------------------------------------------------------------------------
+  # CURRICULUM LEARNING: Same order, adjusted timing
+  # --------------------------------------------------------------------------
+
+  # --- VOLUME SUPERVISION (First priority) ---
+  lambda_vol: 25.0
+  vol_start_epoch: 30
+  vol_annealing_epochs: 40       # Full by epoch 70
+
+  # --- LOCATION SUPERVISION (Second priority) ---
+  lambda_loc: 15.0
+  loc_start_epoch: 80
+  loc_annealing_epochs: 40       # Full by epoch 120
+
+  # --- SHAPE SUPERVISION (Third priority) ---
+  # CHANGED: Start after cross-partition is active
+  lambda_shape: 12.0
+  shape_start_epoch: 120         # CHANGED from 150 (start after cross-partition)
+  shape_annealing_epochs: 50     # Full by epoch 170
+
+  # Legacy shared schedule (fallback)
+  semantic_start_epoch: 30
+  semantic_annealing_epochs: 40
+
+  # --------------------------------------------------------------------------
+  # CROSS-PARTITION INDEPENDENCE - MAJOR CHANGES
+  # Key fix for z_vol↔z_shape entanglement (was -0.78 in Run 4)
+  # --------------------------------------------------------------------------
+  lambda_cross_partition: 10.0   # INCREASED from 3.0 (3.3× stronger)
+  cross_partition_start_epoch: 100  # CHANGED from 200 (100 epochs earlier)
+
+  # --------------------------------------------------------------------------
+  # MANIFOLD REGULARIZATION (Disabled)
+  # --------------------------------------------------------------------------
+  lambda_manifold: 0.0
+  manifold_start_epoch: 400
+
+  # --------------------------------------------------------------------------
+  # TC REGULARIZATION - Earlier start, gentler ramp
+  # --------------------------------------------------------------------------
+  use_tc_residual: true
+  lambda_tc: 0.3
+  tc_estimator: minibatch_weighted
+  tc_start_epoch: 250            # CHANGED from 350 (100 epochs earlier)
+  tc_annealing_epochs: 100       # CHANGED from 50 (gentler ramp)
+
+  # DDP settings
+  use_ddp_gather: true
+  compute_in_fp32: true
+
+# =============================================================================
+# TRAINING CONFIGURATION
+# =============================================================================
+train:
+  seed: 42
+  max_epochs: 800
+  lr: 5e-5
+  weight_decay: 0.01
+  precision: bf16-mixed
+  gradient_checkpointing: true
+
+  # Multi-GPU setup
+  accelerator: gpu
+  devices: 4
+  strategy: ddp
+  sync_batchnorm: true
+  deterministic: false
+
+  loss_reduction: mean
+  gradient_clip_val: 1.5
+  gradient_clip_algorithm: norm
+
+  posterior_logvar_min: -6.0
+
+  # KL annealing
+  kl_beta: 1.0
+  kl_annealing_epochs: 300
+  kl_annealing_type: cyclical
+  kl_annealing_cycles: 5
+  kl_annealing_ratio: 0.5
+
+  # Free bits
+  kl_free_bits: 0.2
+  kl_free_bits_mode: batch_mean
+
+  # KL on supervised partitions
+  kl_beta_supervised: 0.0
+  kl_supervised_free_bits: 0.05
+
+  log_collapse_diagnostics: true
+  warmup_epochs: 20
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+logging:
+  save_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/results/semivae
+  run_tag: run6_independence       # NEW tag
+  log_every_n_steps: 50
+
+  logger:
+    type: wandb
+    wandb:
+      project: mengrowth-semivae
+      entity: mario-pg02-icai
+      name: null
+      tags:
+        - semivae
+        - meningioma
+        - semi-supervised
+        - exp3
+        - run6
+        - independence
+        - high-res
+      notes: >
+        Run 6: Focus on factor independence.
+        Key changes: cross-partition penalty 10.0 (was 3.0), start epoch 100 (was 200),
+        reduced shape features (6 vs 12), earlier TC (250 vs 350).
+        Target: z_vol↔z_shape |corr| < 0.30.
+      offline: true
+      save_code: true
+      log_model: false
+
+  # --------------------------------------------------------------------------
+  # CHECKPOINTING - NEW: ODE readiness metric
+  # --------------------------------------------------------------------------
+  checkpointing:
+    save_top_k: 3                  # CHANGED from 1 (keep top 3)
+    monitor: val_epoch/ode_readiness  # NEW composite metric
+    mode: max                      # CHANGED from min (higher is better)
+    save_last: true                # NEW: also save final
+    every_n_epochs: 1
+    filename: "semivae-{epoch:04d}"
+
+  visual:
+    log_reconstructions: true
+    recon_every_n_epochs: 10
+    num_recon_samples: 2
+    log_dashboard: true
+    dashboard_every_n_epochs: 20
+    log_latent_viz: true
+    latent_viz_every_n_epochs: 50
+    latent_viz_n_samples: 256
+
+  min_logs_per_epoch: 3
+  latent_diag_every_n_epochs: 20
+  latent_diag_num_samples: 128
+  latent_diag_shift_vox: 5
+  latent_diag_ids_name: diagnostics/latent_probes/ids.txt
+
+  # Active units diagnostics
+  au_dense_until: 50
+  au_sparse_interval: 10
+  au_subset_fraction: 0.5
+  au_batch_size: 16
+  eps_au: 0.01
+  au_subset_seed: 42
+  au_residual_only: true
+
+  seg_labels:
+    ncr: 1
+    ed: 2
+    et: 3
+
+  log_grad_norm: true
+
+  # SemiVAE-specific diagnostics
+  semivae_diag_every_n_epochs: 20
+  semivae_diag_num_samples: 100
+  semivae_visualize_latent: true
+  semivae_viz_every_n_epochs: 50
+  log_semantic_metrics: true
+  semantic_metrics:
+    - sem/vol_mse
+    - sem/vol_r2
+    - sem/loc_mse
+    - sem/loc_r2
+    - sem/shape_mse
+    - sem/shape_r2
+    - sem/total_supervised_loss
+
+  # Variance monitoring thresholds (for post-hoc analysis)
+  # These are used by the analysis pipeline to flag issues
+  variance_monitoring:
+    min_residual_var_warning: 0.02   # Flag if z_residual_var drops below
+    deflation_threshold: 0.50        # Flag if variance declines >50% from peak
+    log_partition_variance: true     # Log per-partition variance every epoch
