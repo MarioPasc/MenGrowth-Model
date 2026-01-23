@@ -75,7 +75,18 @@ from vae.training.callbacks import (
     SemiVAELatentVisualizationCallback,
     SemiVAESemanticTrackingCallback,
 )
-from vae.utils import set_seed, setup_logging, save_config, create_run_dir, save_split_csvs, update_runs_index
+from vae.utils import (
+    set_seed,
+    setup_logging,
+    save_config,
+    create_run_dir,
+    save_split_csvs,
+    update_runs_index,
+    print_curriculum_schedule,
+    print_latent_partitioning,
+    print_model_summary,
+    log_curriculum_schedule,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -299,35 +310,32 @@ def main():
     elif variant_type == "semivae":
         # Exp3: Semi-supervised VAE
         lit_module = SemiVAELitModule.from_config(cfg)
-
-        # Log SemiVAE configuration
-        from vae.models.components.sbd import SpatialBroadcastDecoder
-
         model = lit_module.model
-        has_sbd = isinstance(model.decoder, SpatialBroadcastDecoder)
-        decoder_type = "SpatialBroadcastDecoder (SBD)" if has_sbd else "Standard Transposed-Conv"
 
-        logger.info("=" * 60)
-        logger.info("Semi-Supervised VAE Model Configuration")
-        logger.info("=" * 60)
-        logger.info(f"Decoder type:         {decoder_type}")
-        logger.info(f"Latent dim (z_dim):   {cfg.model.z_dim}")
-        logger.info(f"Gradient checkpoint:  {cfg.train.get('gradient_checkpointing', False)}")
-        logger.info(f"Posterior logvar_min: {cfg.train.get('posterior_logvar_min', -6.0)}")
+        # Print comprehensive model summary
+        print_model_summary(cfg, model)
+
+        # Print latent space partitioning visualization
+        print_latent_partitioning(cfg)
+
+        # Print curriculum learning schedule
+        print_curriculum_schedule(cfg)
+
+        # Also log to file for persistence
+        log_curriculum_schedule(cfg)
+
+        # Log additional SemiVAE-specific details
+        logger.info("Additional SemiVAE Configuration:")
+        logger.info(f"  Cross-partition λ:  {cfg.loss.get('lambda_cross_partition', 5.0)}")
+        logger.info(f"  Manifold λ:         {cfg.loss.get('lambda_manifold', 1.0)}")
+        logger.info(f"  TC estimator:       {cfg.loss.get('tc_estimator', 'minibatch_weighted')}")
+        logger.info(f"  KL β (supervised):  {cfg.train.get('kl_beta_supervised', 0.0)}")
         logger.info("")
-        logger.info("Latent Partitioning:")
-        for name, config in model.get_partition_info().items():
-            logger.info(f"  {name}: dims [{config['start_idx']}:{config['end_idx']}] "
-                       f"({config['dim']} dims, {config['supervision']})")
+
+        # Note about inference
+        logger.info("INFERENCE NOTE: Model requires only MRI sequences (4 channels).")
+        logger.info("                Segmentation is used for supervision during training only.")
         logger.info("")
-        logger.info("Semantic Loss Weights:")
-        logger.info(f"  λ_vol:   {cfg.loss.get('lambda_vol', 10.0)}")
-        logger.info(f"  λ_loc:   {cfg.loss.get('lambda_loc', 5.0)}")
-        logger.info(f"  λ_shape: {cfg.loss.get('lambda_shape', 5.0)}")
-        logger.info(f"  λ_tc:    {cfg.loss.get('lambda_tc', 2.0)}")
-        logger.info(f"  Semantic start epoch: {cfg.loss.get('semantic_start_epoch', 10)}")
-        logger.info(f"  Semantic warmup:      {cfg.loss.get('semantic_annealing_epochs', 20)} epochs")
-        logger.info("=" * 60)
     else:
         # Exp1: Baseline VAE
         lit_module = VAELitModule.from_config(cfg)
