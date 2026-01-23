@@ -198,7 +198,7 @@ class SemiVAEDiagnosticsCallback(Callback):
 
         # Compute semantic quality metrics
         if semantic_targets:
-            self._log_semantic_quality(epoch, semantic_preds, semantic_targets, trainer)
+            self._log_semantic_quality(epoch, semantic_preds, semantic_targets, trainer, pl_module)
 
         # Compute cross-partition correlations
         self._log_cross_correlations(epoch, mu, partition_info, trainer)
@@ -263,6 +263,7 @@ class SemiVAEDiagnosticsCallback(Callback):
         semantic_preds: Dict[str, torch.Tensor],
         semantic_targets: Dict[str, torch.Tensor],
         trainer: Trainer,
+        pl_module: Optional[LightningModule] = None,
     ) -> None:
         """Log semantic prediction quality metrics."""
         rows = []
@@ -271,8 +272,13 @@ class SemiVAEDiagnosticsCallback(Callback):
             if name not in semantic_targets:
                 continue
 
-            pred = semantic_preds[name]  # [N, F]
-            target = semantic_targets[name]  # [N, F]
+            pred = semantic_preds[name]  # [N, F_pred]
+            target = semantic_targets[name]  # [N, F_full]
+
+            # Filter target to match configured target_features subset
+            if hasattr(pl_module, '_target_feature_indices') and name in pl_module._target_feature_indices:
+                indices = pl_module._target_feature_indices[name]
+                target = target[:, indices]
 
             # Flatten for overall metrics
             pred_flat = pred.flatten()

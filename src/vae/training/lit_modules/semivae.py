@@ -246,6 +246,27 @@ class SemiVAELitModule(pl.LightningModule):
                 self.partition_indices[name] = (config["start_idx"], config["end_idx"])
                 self.supervised_dim += config["end_idx"] - config["start_idx"]
 
+        # Build target feature index mappings for partitions where
+        # target_features is a subset of the full feature group.
+        # The data pipeline always extracts the full feature group; this mapping
+        # lets us select only the configured features at loss computation time.
+        from ...data.semantic_features import get_feature_groups
+        feature_groups = get_feature_groups()
+        group_key_map = {"z_vol": "volume", "z_loc": "location", "z_shape": "shape"}
+        self._target_feature_indices: Dict[str, List[int]] = {}
+        for name, config in model.get_partition_info().items():
+            if config["supervision"] != "regression":
+                continue
+            group_key = group_key_map.get(name)
+            if group_key is None:
+                continue
+            full_features = feature_groups[group_key]
+            target_features = config.get("target_features", full_features)
+            if len(target_features) < len(full_features):
+                self._target_feature_indices[name] = [
+                    full_features.index(f) for f in target_features
+                ]
+
     @classmethod
     def from_config(cls, cfg: DictConfig) -> "SemiVAELitModule":
         """Create SemiVAELitModule from configuration.
@@ -516,6 +537,10 @@ class SemiVAELitModule(pl.LightningModule):
         for name, pred in semantic_preds.items():
             if name in semantic_targets:
                 target = semantic_targets[name]
+                # Filter target to match configured target_features subset
+                if name in self._target_feature_indices:
+                    indices = self._target_feature_indices[name]
+                    target = target[:, indices]
                 mse = F.mse_loss(pred, target, reduction="mean")
                 losses[f"{name}_mse"] = mse
 
