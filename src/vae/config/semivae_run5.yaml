@@ -30,7 +30,7 @@ data:
   cache_rate: 1.0
   val_split: 0.1
   test_split: 0.1
-  persistent_cache_subdir: "cache_semivae_run6_independence"
+  persistent_cache_subdir: "cache_semivae_run5"
 
   extract_semantic_features: true
   semantic_feature_normalization: z_score
@@ -159,7 +159,7 @@ loss:
 # =============================================================================
 train:
   seed: 42
-  max_epochs: 800
+  max_epochs: 1000
   lr: 5e-5
   weight_decay: 0.01
   precision: bf16-mixed
@@ -201,7 +201,7 @@ train:
 # =============================================================================
 logging:
   save_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/results/semivae
-  run_tag: run6_independence       # NEW tag
+  run_tag: run5
   log_every_n_steps: 50
 
   logger:
@@ -255,9 +255,9 @@ logging:
   latent_diag_ids_name: diagnostics/latent_probes/ids.txt
 
   # Active units diagnostics
-  au_dense_until: 50
+  au_dense_until: 100
   au_sparse_interval: 10
-  au_subset_fraction: 0.5
+  au_subset_fraction: 0.75
   au_batch_size: 16
   eps_au: 0.01
   au_subset_seed: 42
@@ -271,7 +271,7 @@ logging:
   log_grad_norm: true
 
   # SemiVAE-specific diagnostics
-  semivae_diag_every_n_epochs: 20
+  semivae_diag_every_n_epochs: 10
   semivae_diag_num_samples: 100
   semivae_visualize_latent: true
   semivae_viz_every_n_epochs: 50

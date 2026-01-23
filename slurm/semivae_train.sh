@@ -29,7 +29,7 @@ CONDA_ENV_NAME="vae-dynamics"
 REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 DATA_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men"
 RESULTS_DST="/mnt/home/users/tic_163_uma/mpascual/fscratch/results/${EXPERIMENT_NAME}"
-CONFIG_FILE="${REPO_SRC}/src/vae/config/${EXPERIMENT_NAME}_run4.yaml"
+CONFIG_FILE="${REPO_SRC}/src/vae/config/${EXPERIMENT_NAME}_run5.yaml"
 
 # Number of GPUs (should match --gres=gpu:N)
 NUM_GPUS=4
