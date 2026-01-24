@@ -317,6 +317,9 @@ def get_dataloaders(
     # Get transforms (with optional semantic extraction and normalizer)
     residualize_shape = cfg.data.get("residualize_shape", False)
     residual_params_path = cfg.data.get("residual_params_path", None)
+    if residual_params_path and not Path(residual_params_path).is_absolute():
+        project_root = Path(__file__).parents[3]
+        residual_params_path = str(project_root / residual_params_path)
 
     train_transforms = get_train_transforms(
         modalities, spacing, orientation, roi_size,
@@ -486,6 +489,9 @@ def get_dataloaders_with_test(
     # Get transforms
     residualize_shape = cfg.data.get("residualize_shape", False)
     residual_params_path = cfg.data.get("residual_params_path", None)
+    if residual_params_path and not Path(residual_params_path).is_absolute():
+        project_root = Path(__file__).parents[3]
+        residual_params_path = str(project_root / residual_params_path)
 
     train_transforms = get_train_transforms(
         modalities, spacing, orientation, roi_size,

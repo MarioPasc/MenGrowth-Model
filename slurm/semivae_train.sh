@@ -29,7 +29,7 @@ CONDA_ENV_NAME="vae-dynamics"
 REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 DATA_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men"
 RESULTS_DST="/mnt/home/users/tic_163_uma/mpascual/fscratch/results/${EXPERIMENT_NAME}"
-CONFIG_FILE="${REPO_SRC}/src/vae/config/${EXPERIMENT_NAME}_run5.yaml"
+CONFIG_FILE="${REPO_SRC}/src/vae/config/${EXPERIMENT_NAME}_run6.yaml"
 
 # Number of GPUs (should match --gres=gpu:N)
 NUM_GPUS=4
@@ -99,6 +99,10 @@ sed -i "s|  root_dir: .*|  root_dir: \"${DATA_SRC}\"|" "${MODIFIED_CONFIG}"
 sed -i "s|  save_dir: .*|  save_dir: \"${RESULTS_DST}\"|" "${MODIFIED_CONFIG}"
 sed -i "s|  persistent_cache_subdir: .*|  persistent_cache_subdir: \"${CACHE_DIR}\"|" "${MODIFIED_CONFIG}"
 
+# Set shape residual params path to results directory
+RESIDUAL_PARAMS_FILE="${CACHE_DIR}/shape_residual_params.json"
+sed -i "s|  residual_params_path: .*|  residual_params_path: \"${RESIDUAL_PARAMS_FILE}\"|" "${MODIFIED_CONFIG}"
+
 # Update GPU configuration based on available devices
 sed -i "s|  devices: .*|  devices: ${NUM_GPUS}|" "${MODIFIED_CONFIG}"
 
@@ -123,6 +127,30 @@ if [ ! -f "${NORMALIZER_FILE}" ]; then
     echo "Normalizer saved to: ${NORMALIZER_FILE}"
 else
     echo "Semantic normalizer already exists: ${NORMALIZER_FILE}"
+fi
+
+# ========================================================================
+# PRE-COMPUTE SHAPE RESIDUAL PARAMS (if not exists)
+# ========================================================================
+if [ ! -f "${RESIDUAL_PARAMS_FILE}" ]; then
+    echo ""
+    echo "=========================================="
+    echo "PRE-COMPUTING SHAPE RESIDUAL PARAMS"
+    echo "=========================================="
+    cd "${REPO_SRC}"
+
+    python -m vae.data.compute_shape_residuals \
+        --data_root "${DATA_SRC}" \
+        --output "${RESIDUAL_PARAMS_FILE}" \
+        --shape_features sphericity_total surface_area_total solidity_total \
+                         aspect_xy_total sphericity_ncr surface_area_ncr \
+        --volume_feature vol_total \
+        --spacing 1.25 1.25 1.25 \
+        --roi_size 160 160 160
+
+    echo "Residual params saved to: ${RESIDUAL_PARAMS_FILE}"
+else
+    echo "Shape residual params already exist: ${RESIDUAL_PARAMS_FILE}"
 fi
 
 # ========================================================================

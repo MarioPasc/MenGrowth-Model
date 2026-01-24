@@ -34,8 +34,9 @@ data:
   semantic_feature_normalization: z_score
 
   # Shape residualization (remove vol-shape confound)
+  # residual_params_path is overridden by the SLURM script at runtime
   residualize_shape: true
-  residual_params_path: "src/vae/config/shape_residual_params.json"
+  residual_params_path: "__RESIDUAL_PARAMS_PATH__"
 
 model:
   variant: semivae
