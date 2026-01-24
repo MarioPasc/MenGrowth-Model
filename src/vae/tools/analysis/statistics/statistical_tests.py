@@ -263,6 +263,210 @@ def levene_variance_test(
         )
 
 
+def cohens_d(
+    group1: Union[List[float], np.ndarray],
+    group2: Union[List[float], np.ndarray],
+) -> StatisticalTestResults:
+    """Compute Cohen's d effect size between two groups.
+
+    Uses pooled standard deviation. Interpretation:
+    - |d| < 0.2: negligible
+    - 0.2 <= |d| < 0.5: small
+    - 0.5 <= |d| < 0.8: medium
+    - |d| >= 0.8: large
+
+    Args:
+        group1: First sample
+        group2: Second sample
+
+    Returns:
+        StatisticalTestResults with effect size and interpretation
+    """
+    group1 = np.asarray(group1, dtype=float)
+    group2 = np.asarray(group2, dtype=float)
+
+    group1 = group1[~np.isnan(group1)]
+    group2 = group2[~np.isnan(group2)]
+
+    if len(group1) < 2 or len(group2) < 2:
+        return StatisticalTestResults(
+            test_name="Cohen's d",
+            notes="Insufficient data (need at least 2 samples per group)",
+        )
+
+    n1, n2 = len(group1), len(group2)
+    mean1, mean2 = np.mean(group1), np.mean(group2)
+    var1, var2 = np.var(group1, ddof=1), np.var(group2, ddof=1)
+
+    # Pooled standard deviation
+    pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
+
+    if pooled_std == 0:
+        d = 0.0
+    else:
+        d = (mean1 - mean2) / pooled_std
+
+    # Interpretation
+    abs_d = abs(d)
+    if abs_d < 0.2:
+        interpretation = "negligible"
+    elif abs_d < 0.5:
+        interpretation = "small"
+    elif abs_d < 0.8:
+        interpretation = "medium"
+    else:
+        interpretation = "large"
+
+    return StatisticalTestResults(
+        test_name="Cohen's d",
+        statistic=float(d),
+        effect_size=float(d),
+        effect_interpretation=interpretation,
+        notes=f"n1={n1}, n2={n2}, mean1={mean1:.4f}, mean2={mean2:.4f}",
+    )
+
+
+def cliff_delta(
+    group1: Union[List[float], np.ndarray],
+    group2: Union[List[float], np.ndarray],
+) -> StatisticalTestResults:
+    """Compute Cliff's delta non-parametric effect size.
+
+    Measures the probability that a random value from group1 is greater than
+    a random value from group2, normalized to [-1, 1].
+
+    Interpretation:
+    - |delta| < 0.147: negligible
+    - 0.147 <= |delta| < 0.33: small
+    - 0.33 <= |delta| < 0.474: medium
+    - |delta| >= 0.474: large
+
+    Args:
+        group1: First sample
+        group2: Second sample
+
+    Returns:
+        StatisticalTestResults with effect size and interpretation
+    """
+    group1 = np.asarray(group1, dtype=float)
+    group2 = np.asarray(group2, dtype=float)
+
+    group1 = group1[~np.isnan(group1)]
+    group2 = group2[~np.isnan(group2)]
+
+    if len(group1) < 1 or len(group2) < 1:
+        return StatisticalTestResults(
+            test_name="Cliff's delta",
+            notes="Insufficient data",
+        )
+
+    n1, n2 = len(group1), len(group2)
+
+    # Count dominance pairs
+    count_greater = 0
+    count_less = 0
+    for x in group1:
+        count_greater += np.sum(x > group2)
+        count_less += np.sum(x < group2)
+
+    delta = (count_greater - count_less) / (n1 * n2)
+
+    # Interpretation
+    abs_delta = abs(delta)
+    if abs_delta < 0.147:
+        interpretation = "negligible"
+    elif abs_delta < 0.33:
+        interpretation = "small"
+    elif abs_delta < 0.474:
+        interpretation = "medium"
+    else:
+        interpretation = "large"
+
+    return StatisticalTestResults(
+        test_name="Cliff's delta",
+        statistic=float(delta),
+        effect_size=float(delta),
+        effect_interpretation=interpretation,
+        notes=f"n1={n1}, n2={n2}",
+    )
+
+
+def benjamini_hochberg(
+    p_values: List[float],
+    alpha: float = 0.05,
+) -> List[Tuple[float, bool]]:
+    """Apply Benjamini-Hochberg FDR correction to a list of p-values.
+
+    Args:
+        p_values: List of raw p-values
+        alpha: Significance threshold (default: 0.05)
+
+    Returns:
+        List of (adjusted_p_value, is_significant) tuples, in original order
+    """
+    n = len(p_values)
+    if n == 0:
+        return []
+
+    # Sort p-values and keep track of original indices
+    indexed = sorted(enumerate(p_values), key=lambda x: x[1])
+
+    # Compute adjusted p-values
+    adjusted = [0.0] * n
+    for rank, (orig_idx, p) in enumerate(indexed, 1):
+        adjusted_p = p * n / rank
+        adjusted[orig_idx] = adjusted_p
+
+    # Enforce monotonicity (adjusted p-values should be non-decreasing
+    # when sorted by original p-values)
+    # Process from largest to smallest original p-value
+    sorted_by_p = sorted(range(n), key=lambda i: p_values[i], reverse=True)
+    running_min = 1.0
+    for idx in sorted_by_p:
+        adjusted[idx] = min(adjusted[idx], running_min)
+        running_min = min(running_min, adjusted[idx])
+
+    # Cap at 1.0
+    adjusted = [min(p, 1.0) for p in adjusted]
+
+    # Determine significance
+    results = [(adj_p, adj_p < alpha) for adj_p in adjusted]
+
+    return results
+
+
+def compute_stability_cv(
+    values: Union[List[float], np.ndarray],
+    tail_fraction: float = 0.20,
+) -> float:
+    """Compute coefficient of variation for the last portion of a time series.
+
+    The CV measures relative variability: std/|mean|. Lower CV indicates
+    more stable convergence.
+
+    Args:
+        values: Time series values
+        tail_fraction: Fraction of the series to use (from the end)
+
+    Returns:
+        Coefficient of variation (0 = perfectly stable, higher = more variable)
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[~np.isnan(values)]
+
+    if len(values) < 5:
+        return float("nan")
+
+    n_tail = max(5, int(len(values) * tail_fraction))
+    tail = values[-n_tail:]
+
+    mean_val = np.mean(tail)
+    if abs(mean_val) < 1e-10:
+        return float("nan")
+
+    return float(np.std(tail, ddof=1) / abs(mean_val))
+
+
 def test_convergence_monotonicity(
     epochs: Union[List[int], np.ndarray],
     values: Union[List[float], np.ndarray],

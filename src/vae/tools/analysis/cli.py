@@ -134,15 +134,24 @@ def cmd_visualize(args: argparse.Namespace) -> int:
 def cmd_compare(args: argparse.Namespace) -> int:
     """Run comparison across multiple runs."""
     run_dirs = args.run_dirs
+    run_names = args.names
 
     if len(run_dirs) < 2:
         logger.error("Need at least 2 run directories for comparison")
+        return 1
+
+    if run_names is not None and len(run_names) != len(run_dirs):
+        logger.error(
+            f"--names count ({len(run_names)}) must match "
+            f"run_dirs count ({len(run_dirs)})"
+        )
         return 1
 
     try:
         result = run_comparison(
             run_dirs=run_dirs,
             output_dir=args.output,
+            run_names=run_names,
             include_statistical_tests=not args.no_stats,
             dpi=args.dpi,
             format=args.format,
@@ -151,16 +160,38 @@ def cmd_compare(args: argparse.Namespace) -> int:
         print("\n" + "=" * 60)
         print("COMPARISON COMPLETE")
         print("=" * 60)
-        print(f"Compared {len(result['comparison'].run_ids)} runs")
+
+        comparison = result["comparison"]
+        name_map = result.get("name_map", {})
+
+        print(f"Compared {len(comparison.run_ids)} runs")
         print(f"Output: {result['output_dir']}")
-        print(f"\nBest run: {result['best_run']}")
+
+        best_id = result["best_run"]
+        best_name = name_map.get(best_id, best_id)
+        print(f"\nBest run: {best_name}")
 
         # Print comparison table
-        comparison = result["comparison"]
         print("\nRun Grades:")
         for run_id, summary in comparison.summaries.items():
-            short_id = run_id[:30] + "..." if len(run_id) > 30 else run_id
-            print(f"  {short_id}: {summary.overall_grade.value}")
+            display_name = name_map.get(run_id, run_id)
+            short_name = display_name[:30] + "..." if len(display_name) > 30 else display_name
+            print(f"  {short_name}: {summary.overall_grade.value}")
+
+        # Print key metrics
+        print("\nKey Metrics:")
+        print(f"  {'Run':<20} {'Vol R2':>8} {'Loc R2':>8} {'Shape R2':>9} {'ODE Score':>10}")
+        print(f"  {'-'*20} {'-'*8} {'-'*8} {'-'*9} {'-'*10}")
+        for run_id, summary in comparison.summaries.items():
+            display_name = name_map.get(run_id, run_id)
+            short_name = display_name[:20]
+            print(
+                f"  {short_name:<20} "
+                f"{summary.performance.vol_r2:>8.3f} "
+                f"{summary.performance.loc_r2:>8.3f} "
+                f"{summary.performance.shape_r2:>9.3f} "
+                f"{summary.ode_utility.ode_readiness:>10.3f}"
+            )
 
         return 0
 
@@ -286,6 +317,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         choices=["png", "pdf"],
         default="png",
         help="Image format",
+    )
+    compare_parser.add_argument(
+        "--names",
+        nargs="+",
+        default=None,
+        help="Human-readable names for runs (must match number of run_dirs)",
     )
 
     args = parser.parse_args(argv)

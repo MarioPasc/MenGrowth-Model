@@ -30,8 +30,10 @@ OPTIONAL_FILES = [
     "logs/test_metrics.csv",
     "diagnostics/active_units/au_history.csv",
     "diagnostics/semivae/semantic_quality.csv",
+    "diagnostics/semivae/semantic_tracking.csv",
     "diagnostics/semivae/partition_stats.csv",
     "diagnostics/semivae/cross_correlation.csv",
+    "diagnostics/gradients/grad_stats.csv",
 ]
 
 
@@ -230,8 +232,10 @@ def load_experiment_data(run_dir: str) -> Dict[str, Any]:
     # Load diagnostics CSVs
     data["au_history"] = load_diagnostics_csv(run_dir, "active_units", "au_history.csv")
     data["semantic_quality"] = load_diagnostics_csv(run_dir, "semivae", "semantic_quality.csv")
+    data["semantic_tracking"] = load_diagnostics_csv(run_dir, "semivae", "semantic_tracking.csv")
     data["partition_stats"] = load_diagnostics_csv(run_dir, "semivae", "partition_stats.csv")
     data["cross_correlation"] = load_diagnostics_csv(run_dir, "semivae", "cross_correlation.csv")
+    data["grad_stats"] = load_diagnostics_csv(run_dir, "gradients", "grad_stats.csv")
 
     return data
 

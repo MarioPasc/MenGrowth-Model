@@ -32,6 +32,7 @@ from .vae_sbd import VAESBD
 from ..components.encoder import Encoder3D
 from ..components.decoder import Decoder3D
 from ..components.sbd import SpatialBroadcastDecoder
+from ..components.aux_decoder import AuxDecoder3D
 
 
 class SemanticProjectionHead(nn.Module):
@@ -179,6 +180,7 @@ class SemiVAE(nn.Module):
 
         # Build semantic projection heads
         self.semantic_heads = nn.ModuleDict()
+        self._partition_bounds: Dict[str, Tuple[int, int]] = {}
         for name, config in self.partitioning.items():
             if config["supervision"] == "regression":
                 head = SemanticProjectionHead(
@@ -186,6 +188,19 @@ class SemiVAE(nn.Module):
                     output_dim=len(config["target_features"]),
                 )
                 self.semantic_heads[name] = head
+                self._partition_bounds[name] = (config["start_idx"], config["end_idx"])
+
+        # Auxiliary residual decoder (prevents z_residual deflation)
+        self.aux_decoder: Optional[AuxDecoder3D] = None
+        if latent_partitioning and latent_partitioning.get("aux_residual_decoder", False):
+            residual_dim = self._get_residual_dim()
+            if residual_dim > 0:
+                self.aux_decoder = AuxDecoder3D(
+                    z_dim=residual_dim,
+                    output_channels=input_channels,
+                    base_filters=16,
+                    num_groups=4,
+                )
 
     def _parse_partitioning(
         self, config: Optional[Dict]
@@ -224,6 +239,12 @@ class SemiVAE(nn.Module):
 
         return partitioning
 
+    def _get_residual_dim(self) -> int:
+        """Get the dimensionality of the residual partition."""
+        if "z_residual" in self.partitioning:
+            return self.partitioning["z_residual"]["dim"]
+        return 0
+
     def get_latent_subset(
         self, z: torch.Tensor, name: str
     ) -> torch.Tensor:
@@ -243,7 +264,7 @@ class SemiVAE(nn.Module):
         return z[:, config["start_idx"]:config["end_idx"]]
 
     def predict_semantic_features(
-        self, mu: torch.Tensor
+        self, mu: torch.Tensor, gradient_isolation: bool = False
     ) -> Dict[str, torch.Tensor]:
         """Predict semantic features from posterior mean.
 
@@ -252,13 +273,26 @@ class SemiVAE(nn.Module):
 
         Args:
             mu: Posterior mean [B, z_dim]
+            gradient_isolation: If True, each semantic head only receives
+                gradients for its own partition dims. Other dims are detached.
+                This prevents cross-partition gradient leakage where e.g.
+                the volume loss updates shape-encoding dimensions.
 
         Returns:
             Dictionary of predicted features per partition
         """
         predictions = {}
         for name, head in self.semantic_heads.items():
-            z_subset = self.get_latent_subset(mu, name)
+            if gradient_isolation and name in self._partition_bounds:
+                start, end = self._partition_bounds[name]
+                # Only the target partition retains gradients
+                z_subset = torch.cat([
+                    mu[:, :start].detach(),
+                    mu[:, start:end],  # Gradient flows only here
+                    mu[:, end:].detach(),
+                ], dim=1)[:, start:end]
+            else:
+                z_subset = self.get_latent_subset(mu, name)
             predictions[name] = head(z_subset)
         return predictions
 
@@ -307,12 +341,14 @@ class SemiVAE(nn.Module):
             return mu
 
     def forward(
-        self, x: torch.Tensor
+        self, x: torch.Tensor, gradient_isolation: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """Full forward pass.
 
         Args:
             x: Input tensor [B, C, D, H, W]
+            gradient_isolation: If True, semantic heads only receive gradients
+                for their own partition dimensions.
 
         Returns:
             x_hat: Reconstruction [B, C, D, H, W]
@@ -326,9 +362,25 @@ class SemiVAE(nn.Module):
         x_hat = self.decode(z)
 
         # Predict semantic features from mu (deterministic)
-        semantic_preds = self.predict_semantic_features(mu)
+        semantic_preds = self.predict_semantic_features(mu, gradient_isolation=gradient_isolation)
 
         return x_hat, mu, logvar, z, semantic_preds
+
+    def decode_residual(self, z_residual: torch.Tensor) -> torch.Tensor:
+        """Decode from residual dims only (for auxiliary reconstruction).
+
+        Args:
+            z_residual: Residual latent vector [B, residual_dim]
+
+        Returns:
+            Low-resolution reconstruction [B, C, 64, 64, 64]
+
+        Raises:
+            ValueError: If auxiliary decoder is not configured
+        """
+        if self.aux_decoder is None:
+            raise ValueError("Auxiliary decoder not configured. Set aux_residual_decoder=True in latent_partitioning.")
+        return self.aux_decoder(z_residual)
 
     def get_partition_info(self) -> Dict[str, Dict]:
         """Get information about latent partitioning.

@@ -344,6 +344,40 @@ def get_feature_groups() -> Dict[str, List[str]]:
     }
 
 
+def residualize_shape_features(
+    features: Dict[str, float],
+    residual_params: Dict[str, Dict[str, float]],
+    volume_feature: str = "vol_total",
+) -> Dict[str, float]:
+    """Remove volume-predictable component from shape features.
+
+    For each shape feature f with regression params (slope, intercept):
+        f_residual = f - (slope * vol_total + intercept)
+
+    This ensures z_shape encodes shape variation UNEXPLAINED by volume,
+    removing the natural confound (e.g., surface_area ~ V^(2/3)) that
+    prevents the Neural ODE from modeling volume and shape as independent dynamics.
+
+    Args:
+        features: Dictionary of all extracted features (must include volume_feature)
+        residual_params: Pre-computed OLS coefficients from compute_shape_residuals.py
+            {feature_name: {"slope": float, "intercept": float, "r2": float}}
+        volume_feature: Key for the volume feature used as predictor
+
+    Returns:
+        Modified features dict with residualized shape features
+    """
+    vol_value = features.get(volume_feature, 0.0)
+    residualized = dict(features)  # Copy all features
+
+    for feat_name, params in residual_params.items():
+        if feat_name in residualized:
+            predicted = params["slope"] * vol_value + params["intercept"]
+            residualized[feat_name] = residualized[feat_name] - predicted
+
+    return residualized
+
+
 class SemanticFeatureNormalizer:
     """Normalizer for semantic features using z-score standardization.
 

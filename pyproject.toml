@@ -65,6 +65,7 @@ Changelog = "https://github.com/MarioPasc/MenGrowth-Model/releases"
 
 [project.scripts]
 vae-train = "vae.training.engine.train:main"
+vae-analyze = "vae.tools.analysis.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

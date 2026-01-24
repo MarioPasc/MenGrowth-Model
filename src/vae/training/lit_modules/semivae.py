@@ -31,6 +31,7 @@ from omegaconf import DictConfig
 from ...losses.elbo import get_beta_schedule
 from ...losses.tc import compute_tc_loss_on_subset, compute_tc_ddp_aware
 from ...losses.cross_partition import compute_cross_partition_loss
+from ...losses.dcor import compute_dcor_loss, PartitionDCorBuffer
 from vae.metrics import compute_ssim_2d_slices, compute_psnr_3d
 
 
@@ -62,6 +63,54 @@ def get_semantic_schedule(
         return target_lambda
 
     return target_lambda * (effective_epoch / annealing_epochs)
+
+
+def get_semantic_schedule_with_decay(
+    epoch: int,
+    target_lambda: float,
+    start_epoch: int,
+    annealing_epochs: int,
+    decay_start_epoch: int = -1,
+    decay_target_fraction: float = 0.5,
+    decay_epochs: int = 200,
+) -> float:
+    """Three-phase schedule: ramp-up -> plateau -> decay.
+
+    Phase 1 (ramp): Linear 0->target over [start, start+annealing]
+    Phase 2 (plateau): Constant at target
+    Phase 3 (decay): Linear target->(target*decay_fraction) over
+                     [decay_start, decay_start+decay_epochs]
+
+    The decay phase releases encoder capacity in late training, allowing
+    the residual partition to reclaim information after semantic learning
+    has plateaued.
+
+    Args:
+        epoch: Current epoch
+        target_lambda: Target lambda value at plateau
+        start_epoch: Epoch to start ramp-up
+        annealing_epochs: Epochs for linear warmup
+        decay_start_epoch: Epoch to start decay (-1 = no decay)
+        decay_target_fraction: Final lambda as fraction of target (e.g. 0.5 = 50%)
+        decay_epochs: Number of epochs for decay phase
+
+    Returns:
+        Current lambda value
+    """
+    # Phase 1: ramp-up
+    if epoch < start_epoch:
+        return 0.0
+    effective = epoch - start_epoch
+    if effective < annealing_epochs:
+        return target_lambda * (effective / annealing_epochs)
+
+    # Phase 2: plateau (or no decay configured)
+    if decay_start_epoch < 0 or epoch < decay_start_epoch:
+        return target_lambda
+
+    # Phase 3: decay
+    decay_progress = min(1.0, (epoch - decay_start_epoch) / max(decay_epochs, 1))
+    return target_lambda * (1.0 - (1.0 - decay_target_fraction) * decay_progress)
 
 
 class SemiVAELitModule(pl.LightningModule):
@@ -120,6 +169,20 @@ class SemiVAELitModule(pl.LightningModule):
         # A small KL weight on supervised dims prevents logvar from collapsing to min
         kl_beta_supervised: float = 0.1,
         kl_supervised_free_bits: float = 0.05,
+        # Distance Correlation (replaces cross-partition)
+        lambda_dcor: float = 0.0,
+        dcor_start_epoch: int = 150,
+        dcor_annealing_epochs: int = 50,
+        dcor_buffer_size: int = 256,
+        # Gradient isolation
+        gradient_isolation: bool = False,
+        # Auxiliary residual reconstruction
+        lambda_aux_recon: float = 0.0,
+        aux_recon_target_size: int = 64,
+        # Lambda decay phase
+        sem_decay_start_epoch: int = -1,
+        sem_decay_target_fraction: float = 0.5,
+        sem_decay_epochs: int = 200,
         # General settings
         loss_reduction: str = "mean",
         use_ddp_gather: bool = True,
@@ -204,6 +267,24 @@ class SemiVAELitModule(pl.LightningModule):
         self.lambda_manifold = lambda_manifold
         self.manifold_start_epoch = manifold_start_epoch
 
+        # Distance Correlation settings (replaces cross-partition)
+        self.lambda_dcor = lambda_dcor
+        self.dcor_start_epoch = dcor_start_epoch
+        self.dcor_annealing_epochs = dcor_annealing_epochs
+        self.dcor_buffer_size = dcor_buffer_size
+
+        # Gradient isolation
+        self.gradient_isolation = gradient_isolation
+
+        # Auxiliary residual reconstruction
+        self.lambda_aux_recon = lambda_aux_recon
+        self.aux_recon_target_size = aux_recon_target_size
+
+        # Lambda decay phase
+        self.sem_decay_start_epoch = sem_decay_start_epoch
+        self.sem_decay_target_fraction = sem_decay_target_fraction
+        self.sem_decay_epochs = sem_decay_epochs
+
         # KL settings
         self.kl_beta = kl_beta
         self.kl_annealing_epochs = kl_annealing_epochs
@@ -233,6 +314,12 @@ class SemiVAELitModule(pl.LightningModule):
         self.current_lambda_tc = 0.0
         self.current_lambda_cross_partition = 0.0
         self.current_lambda_manifold = 0.0
+        self.current_lambda_dcor = 0.0
+
+        # Distance Correlation buffer
+        self.dcor_buffer: Optional[PartitionDCorBuffer] = None
+        if dcor_buffer_size > 0 and lambda_dcor > 0:
+            self.dcor_buffer = PartitionDCorBuffer(buffer_size=dcor_buffer_size)
 
         # Get residual indices from model
         self.residual_start, self.residual_end = model.get_residual_indices()
@@ -305,6 +392,21 @@ class SemiVAELitModule(pl.LightningModule):
             cross_partition_start_epoch=cfg.loss.get("cross_partition_start_epoch", 10),
             lambda_manifold=cfg.loss.get("lambda_manifold", 1.0),
             manifold_start_epoch=cfg.loss.get("manifold_start_epoch", 10),
+            # Distance Correlation (replaces cross-partition)
+            lambda_dcor=cfg.loss.get("lambda_dcor", 0.0),
+            dcor_start_epoch=cfg.loss.get("dcor_start_epoch", 150),
+            dcor_annealing_epochs=cfg.loss.get("dcor_annealing_epochs", 50),
+            dcor_buffer_size=cfg.loss.get("dcor_buffer_size", 256),
+            # Gradient isolation
+            gradient_isolation=cfg.loss.get("gradient_isolation", False),
+            # Auxiliary residual reconstruction
+            lambda_aux_recon=cfg.loss.get("lambda_aux_recon", 0.0),
+            aux_recon_target_size=cfg.loss.get("aux_recon_target_size", 64),
+            # Lambda decay
+            sem_decay_start_epoch=cfg.loss.get("sem_decay_start_epoch", -1),
+            sem_decay_target_fraction=cfg.loss.get("sem_decay_target_fraction", 0.5),
+            sem_decay_epochs=cfg.loss.get("sem_decay_epochs", 200),
+            # General
             kl_beta=cfg.train.kl_beta,
             kl_annealing_epochs=cfg.train.kl_annealing_epochs,
             kl_annealing_type=cfg.train.kl_annealing_type,
@@ -337,18 +439,24 @@ class SemiVAELitModule(pl.LightningModule):
             kl_annealing_ratio=self.kl_annealing_ratio,
         )
 
-        # Semantic schedules (per-partition curriculum learning)
-        self.current_lambda_vol = get_semantic_schedule(
+        # Semantic schedules with optional decay (per-partition curriculum learning)
+        self.current_lambda_vol = get_semantic_schedule_with_decay(
             epoch, self.lambda_vol,
-            self.vol_start_epoch, self.vol_annealing_epochs
+            self.vol_start_epoch, self.vol_annealing_epochs,
+            self.sem_decay_start_epoch, self.sem_decay_target_fraction,
+            self.sem_decay_epochs,
         )
-        self.current_lambda_loc = get_semantic_schedule(
+        self.current_lambda_loc = get_semantic_schedule_with_decay(
             epoch, self.lambda_loc,
-            self.loc_start_epoch, self.loc_annealing_epochs
+            self.loc_start_epoch, self.loc_annealing_epochs,
+            self.sem_decay_start_epoch, self.sem_decay_target_fraction,
+            self.sem_decay_epochs,
         )
-        self.current_lambda_shape = get_semantic_schedule(
+        self.current_lambda_shape = get_semantic_schedule_with_decay(
             epoch, self.lambda_shape,
-            self.shape_start_epoch, self.shape_annealing_epochs
+            self.shape_start_epoch, self.shape_annealing_epochs,
+            self.sem_decay_start_epoch, self.sem_decay_target_fraction,
+            self.sem_decay_epochs,
         )
 
         # TC schedule (delayed start for numerical stability)
@@ -367,6 +475,12 @@ class SemiVAELitModule(pl.LightningModule):
         self.current_lambda_manifold = get_semantic_schedule(
             epoch, self.lambda_manifold,
             self.manifold_start_epoch, self.semantic_annealing_epochs
+        )
+
+        # Distance Correlation schedule (delayed start, replaces cross-partition)
+        self.current_lambda_dcor = get_semantic_schedule(
+            epoch, self.lambda_dcor,
+            self.dcor_start_epoch, self.dcor_annealing_epochs
         )
 
     def _compute_reconstruction_loss(
@@ -583,6 +697,84 @@ class SemiVAELitModule(pl.LightningModule):
             "per_pair": result["per_pair"],
         }
 
+    def _compute_dcor_loss(
+        self,
+        mu: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Compute distance correlation between supervised partitions.
+
+        Uses Székely's dCor² on full multivariate partition vectors (not
+        dimension means like the broken cross-partition loss). With the
+        EMA buffer, effective sample size reaches 256 despite N=8 per batch.
+
+        Args:
+            mu: Posterior mean [B, z_dim]
+
+        Returns:
+            Dictionary with:
+                - loss: Total dCor² penalty (scalar)
+                - per_pair: Per-pair dCor² values for logging
+                - n_effective: Effective sample size used
+        """
+        if len(self.partition_indices) < 2 or self.current_lambda_dcor == 0:
+            return {
+                "loss": torch.tensor(0.0, device=mu.device),
+                "per_pair": {},
+                "n_effective": 0,
+            }
+
+        result = compute_dcor_loss(
+            mu=mu,
+            partition_indices=self.partition_indices,
+            buffer=self.dcor_buffer,
+            use_ddp_gather=self.use_ddp_gather,
+            compute_in_fp32=True,
+        )
+
+        # Update buffer with current batch (detached)
+        if self.dcor_buffer is not None:
+            partition_data = {}
+            for name, (start, end) in self.partition_indices.items():
+                partition_data[name] = mu[:, start:end].detach()
+            self.dcor_buffer.update(partition_data)
+
+        return result
+
+    def _compute_aux_recon_loss(
+        self,
+        z: torch.Tensor,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute auxiliary residual reconstruction loss.
+
+        Decodes from z_residual dims only through a lightweight 64^3 decoder.
+        This provides gradient signal to keep residual dims active.
+
+        Args:
+            z: Full sampled latent [B, z_dim]
+            x: Original input [B, C, D, H, W]
+
+        Returns:
+            MSE loss between aux decoder output and downsampled input
+        """
+        if self.lambda_aux_recon <= 0 or self.model.aux_decoder is None:
+            return torch.tensor(0.0, device=x.device)
+
+        # Extract residual dims
+        z_residual = z[:, self.residual_start:self.residual_end]
+
+        # Downsample target to 64^3
+        target_size = self.aux_recon_target_size
+        x_lowres = F.interpolate(
+            x, size=(target_size, target_size, target_size),
+            mode="trilinear", align_corners=False
+        )
+
+        # Decode from residual only
+        x_hat_aux = self.model.decode_residual(z_residual)
+
+        return F.mse_loss(x_hat_aux, x_lowres, reduction="mean")
+
     def _compute_manifold_density_loss(
         self,
         z: torch.Tensor,
@@ -723,8 +915,10 @@ class SemiVAELitModule(pl.LightningModule):
         """
         x = batch["image"]
 
-        # Forward pass
-        x_hat, mu, logvar, z, semantic_preds = self.model(x)
+        # Forward pass (with gradient isolation if configured)
+        x_hat, mu, logvar, z, semantic_preds = self.model(
+            x, gradient_isolation=self.gradient_isolation
+        )
 
         # Check for NaN/Inf in latents (critical for diagnosing training issues)
         self._check_nan_in_latents(mu, logvar, z, "train")
@@ -763,16 +957,27 @@ class SemiVAELitModule(pl.LightningModule):
             if "z_shape_mse" in semantic_losses:
                 total_semantic_loss = total_semantic_loss + self.current_lambda_shape * semantic_losses["z_shape_mse"]
 
-        # Cross-partition independence loss (penalize correlations between partitions)
+        # Cross-partition independence loss (legacy, can be disabled via lambda=0)
         cross_part_result = self._compute_cross_partition_loss(mu)
         cross_partition_loss = self.current_lambda_cross_partition * cross_part_result["loss"]
+
+        # Distance Correlation loss (replaces cross-partition when lambda_dcor > 0)
+        dcor_result = self._compute_dcor_loss(mu)
+        dcor_loss = self.current_lambda_dcor * dcor_result["loss"]
+
+        # Auxiliary residual reconstruction (prevents z_residual deflation)
+        aux_recon_loss = self.lambda_aux_recon * self._compute_aux_recon_loss(z, x)
 
         # Manifold density loss (keep residual latents near prior)
         manifold_loss_raw = self._compute_manifold_density_loss(z)
         manifold_loss = self.current_lambda_manifold * manifold_loss_raw
 
         # Total loss
-        loss = recon_loss + kl_loss + kl_supervised_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
+        loss = (
+            recon_loss + kl_loss + kl_supervised_loss + tc_loss +
+            total_semantic_loss + cross_partition_loss + dcor_loss +
+            aux_recon_loss + manifold_loss
+        )
 
         # Logging
         self.log("train_step/loss", loss, prog_bar=True, sync_dist=True)
@@ -786,15 +991,21 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("train_epoch/tc", tc_loss / max(self.lambda_tc, 1e-6), on_step=False, on_epoch=True, sync_dist=True)
         self.log("train_epoch/semantic_total", total_semantic_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("train_epoch/cross_partition", cross_part_result["loss"], on_step=False, on_epoch=True, sync_dist=True)
+        self.log("train_epoch/dcor", dcor_result["loss"], on_step=False, on_epoch=True, sync_dist=True)
+        self.log("train_epoch/aux_recon", aux_recon_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("train_epoch/manifold", manifold_loss_raw, on_step=False, on_epoch=True, sync_dist=True)
 
         # Per-semantic losses
         for name, mse in semantic_losses.items():
             self.log(f"train_epoch/{name}", mse, on_step=False, on_epoch=True, sync_dist=True)
 
-        # Per-pair cross-partition correlations
+        # Per-pair cross-partition correlations (legacy)
         for pair_name, corr_val in cross_part_result["per_pair"].items():
             self.log(f"cross_part/{pair_name}", corr_val, on_step=False, on_epoch=True, sync_dist=True)
+
+        # Per-pair distance correlations
+        for pair_name, dcor_val in dcor_result.get("per_pair", {}).items():
+            self.log(f"dcor/{pair_name}", dcor_val, on_step=False, on_epoch=True, sync_dist=True)
 
         # Schedules (current effective lambda values)
         self.log("sched/beta", self.current_beta, on_step=False, on_epoch=True)
@@ -803,6 +1014,7 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("sched/lambda_shape", self.current_lambda_shape, on_step=False, on_epoch=True)
         self.log("sched/lambda_tc", self.current_lambda_tc, on_step=False, on_epoch=True)
         self.log("sched/lambda_cross_partition", self.current_lambda_cross_partition, on_step=False, on_epoch=True)
+        self.log("sched/lambda_dcor", self.current_lambda_dcor, on_step=False, on_epoch=True)
         self.log("sched/lambda_manifold", self.current_lambda_manifold, on_step=False, on_epoch=True)
         self.log("sched/free_bits", self.kl_free_bits, on_step=False, on_epoch=True)
         self.log("sched/kl_beta_supervised", self.kl_beta_supervised, on_step=False, on_epoch=True)
@@ -812,6 +1024,7 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("curriculum/loc_active", float(self.current_lambda_loc > 0), on_step=False, on_epoch=True)
         self.log("curriculum/shape_active", float(self.current_lambda_shape > 0), on_step=False, on_epoch=True)
         self.log("curriculum/tc_active", float(self.current_lambda_tc > 0), on_step=False, on_epoch=True)
+        self.log("curriculum/dcor_active", float(self.current_lambda_dcor > 0), on_step=False, on_epoch=True)
 
         # Latent statistics
         self.log("train_epoch/mu_mean", mu.mean(), on_step=False, on_epoch=True, sync_dist=True)
@@ -821,6 +1034,11 @@ class SemiVAELitModule(pl.LightningModule):
         # Residual-specific stats
         mu_res = mu[:, self.residual_start:self.residual_end]
         self.log("train_epoch/mu_res_std", mu_res.std(), on_step=False, on_epoch=True, sync_dist=True)
+
+        # dCor buffer stats
+        if self.dcor_buffer is not None:
+            self.log("dcor/buffer_size", float(self.dcor_buffer.size), on_step=False, on_epoch=True)
+            self.log("dcor/n_effective", float(dcor_result.get("n_effective", 0)), on_step=False, on_epoch=True)
 
         return loss
 
@@ -840,7 +1058,7 @@ class SemiVAELitModule(pl.LightningModule):
         """
         x = batch["image"]
 
-        # Forward pass
+        # Forward pass (no gradient isolation in validation)
         x_hat, mu, logvar, z, semantic_preds = self.model(x)
 
         # Check for NaN/Inf in latents
@@ -879,24 +1097,36 @@ class SemiVAELitModule(pl.LightningModule):
             if "z_shape_mse" in semantic_losses:
                 total_semantic_loss = total_semantic_loss + self.current_lambda_shape * semantic_losses["z_shape_mse"]
 
-        # Cross-partition independence loss
+        # Cross-partition independence loss (legacy)
         cross_part_result = self._compute_cross_partition_loss(mu)
         cross_partition_loss = self.current_lambda_cross_partition * cross_part_result["loss"]
+
+        # Distance Correlation loss
+        dcor_result = self._compute_dcor_loss(mu)
+        dcor_loss = self.current_lambda_dcor * dcor_result["loss"]
+
+        # Auxiliary residual reconstruction
+        aux_recon_loss = self.lambda_aux_recon * self._compute_aux_recon_loss(z, x)
 
         # Manifold density loss
         manifold_loss_raw = self._compute_manifold_density_loss(z)
         manifold_loss = self.current_lambda_manifold * manifold_loss_raw
 
         # Total loss
-        loss = recon_loss + kl_loss + kl_supervised_loss + tc_loss + total_semantic_loss + cross_partition_loss + manifold_loss
+        loss = (
+            recon_loss + kl_loss + kl_supervised_loss + tc_loss +
+            total_semantic_loss + cross_partition_loss + dcor_loss +
+            aux_recon_loss + manifold_loss
+        )
 
         # Compute ODE readiness score for checkpoint selection
-        # This metric combines semantic encoding quality and factor independence
         if "semantic_features" in batch:
+            # Use dCor for independence scoring if available, else fall back to Pearson
+            independence_corrs = dcor_result.get("per_pair", {}) if self.lambda_dcor > 0 else cross_part_result["per_pair"]
             ode_readiness = self._compute_ode_readiness(
                 semantic_losses=semantic_losses,
                 semantic_targets=semantic_targets,
-                cross_partition_corrs=cross_part_result["per_pair"],
+                cross_partition_corrs=independence_corrs,
             )
         else:
             ode_readiness = torch.tensor(0.0, device=x.device)
@@ -909,6 +1139,8 @@ class SemiVAELitModule(pl.LightningModule):
         self.log("val_epoch/tc", tc_loss / max(self.lambda_tc, 1e-6), on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/semantic_total", total_semantic_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/cross_partition", cross_part_result["loss"], on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val_epoch/dcor", dcor_result["loss"], on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val_epoch/aux_recon", aux_recon_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("val_epoch/manifold", manifold_loss_raw, on_step=False, on_epoch=True, sync_dist=True)
         # ODE readiness score for checkpoint selection (higher = better for Neural ODE)
         self.log("val_epoch/ode_readiness", ode_readiness, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
@@ -917,9 +1149,13 @@ class SemiVAELitModule(pl.LightningModule):
         for name, mse in semantic_losses.items():
             self.log(f"val_epoch/{name}", mse, on_step=False, on_epoch=True, sync_dist=True)
 
-        # Per-pair cross-partition correlations
+        # Per-pair cross-partition correlations (legacy)
         for pair_name, corr_val in cross_part_result["per_pair"].items():
             self.log(f"val_cross_part/{pair_name}", corr_val, on_step=False, on_epoch=True, sync_dist=True)
+
+        # Per-pair distance correlations
+        for pair_name, dcor_val in dcor_result.get("per_pair", {}).items():
+            self.log(f"val_dcor/{pair_name}", dcor_val, on_step=False, on_epoch=True, sync_dist=True)
 
         # Collapse diagnostics on first batch
         if batch_idx == 0 and self.log_collapse_diagnostics:

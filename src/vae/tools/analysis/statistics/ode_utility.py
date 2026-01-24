@@ -187,12 +187,40 @@ def compute_ode_utility_metrics(
     result.loc_r2 = loc_r2
     result.shape_r2 = shape_r2
 
-    # ODE readiness composite score
+    # ODE readiness composite score (original)
     # 50% vol, 25% loc, 25% independence
     result.ode_readiness = (
         0.50 * vol_r2 +
         0.25 * loc_r2 +
         0.25 * result.independence_score
+    )
+
+    # Compute residual health from AU fraction
+    au_df = data.get("au_history")
+    partition_df = data.get("partition_stats")
+    au_frac_residual = 0.0
+    if partition_df is not None and not partition_df.empty:
+        residual_data = partition_df[partition_df["partition"] == "z_residual"]
+        if not residual_data.empty and "au_frac" in residual_data.columns:
+            if epoch is not None:
+                epoch_data = residual_data[residual_data["epoch"] == epoch]
+                if not epoch_data.empty:
+                    au_frac_residual = float(epoch_data["au_frac"].iloc[0])
+                else:
+                    au_frac_residual = float(residual_data["au_frac"].iloc[-1])
+            else:
+                au_frac_residual = float(residual_data["au_frac"].iloc[-1])
+
+    result.residual_health = min(au_frac_residual / 0.10, 1.0) if au_frac_residual > 0 else 0.0
+
+    # Expanded ODE readiness score
+    # 40% vol + 20% loc + 15% shape + 15% independence + 10% residual_health
+    result.ode_readiness_expanded = (
+        0.40 * vol_r2 +
+        0.20 * loc_r2 +
+        0.15 * max(0.0, shape_r2) +
+        0.15 * result.independence_score +
+        0.10 * result.residual_health
     )
 
     # Individual readiness flags
@@ -282,6 +310,8 @@ def compute_ode_utility_history(
             "max_cross_corr": metrics.max_cross_corr,
             "independence_score": metrics.independence_score,
             "ode_readiness": metrics.ode_readiness,
+            "ode_readiness_expanded": metrics.ode_readiness_expanded,
+            "residual_health": metrics.residual_health,
             "vol_ready": metrics.vol_ready,
             "loc_ready": metrics.loc_ready,
             "shape_ready": metrics.shape_ready,

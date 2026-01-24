@@ -13,6 +13,10 @@ from .cross_partition import (
     compute_cross_partition_covariance_loss,
     all_gather_with_grad,
 )
+from .dcor import (
+    compute_dcor_loss,
+    PartitionDCorBuffer,
+)
 
 __all__ = [
     "compute_elbo",
@@ -27,4 +31,6 @@ __all__ = [
     "compute_cross_partition_loss",
     "compute_cross_partition_covariance_loss",
     "all_gather_with_grad",
+    "compute_dcor_loss",
+    "PartitionDCorBuffer",
 ]

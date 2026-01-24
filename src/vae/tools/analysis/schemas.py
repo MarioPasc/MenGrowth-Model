@@ -127,9 +127,14 @@ class ODEUtilityMetrics:
     loc_r2: float = 0.0
     shape_r2: float = 0.0
 
-    # ODE readiness composite score
+    # ODE readiness composite score (original)
     # Formula: 0.50 * vol_r2 + 0.25 * loc_r2 + 0.25 * independence_score
     ode_readiness: float = 0.0
+
+    # Expanded ODE readiness composite score
+    # Formula: 0.40*vol_r2 + 0.20*loc_r2 + 0.15*shape_r2 + 0.15*independence + 0.10*residual_health
+    ode_readiness_expanded: float = 0.0
+    residual_health: float = 0.0  # min(au_frac_residual / 0.10, 1.0)
 
     # Individual readiness flags
     vol_ready: bool = False   # vol_r2 >= 0.85
@@ -171,8 +176,10 @@ class StatisticalTestResults:
     test_name: str = ""
     statistic: float = 0.0
     p_value: float = 0.0
-    significant: bool = False  # p < 0.05
+    p_adjusted: float = 0.0  # FDR-corrected p-value
+    significant: bool = False  # p_adjusted < 0.05
     effect_size: Optional[float] = None
+    effect_interpretation: str = ""  # "negligible", "small", "medium", "large"
     confidence_interval: Optional[tuple] = None
     notes: str = ""
 
@@ -219,6 +226,9 @@ class ComparisonSummary:
     """Summary for multi-run comparison."""
     run_ids: List[str] = field(default_factory=list)
 
+    # Run name mapping (folder_name -> display_name)
+    name_map: Dict[str, str] = field(default_factory=dict)
+
     # Per-run summaries
     summaries: Dict[str, AnalysisSummary] = field(default_factory=dict)
 
@@ -229,6 +239,15 @@ class ComparisonSummary:
 
     # Statistical test results
     test_results: List[StatisticalTestResults] = field(default_factory=list)
+
+    # Stability metrics per run: {run_id: {metric_name: cv_value}}
+    stability_metrics: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    # Bootstrap confidence intervals: {run_id: {metric_name: (lower, upper)}}
+    confidence_intervals: Dict[str, Dict[str, tuple]] = field(default_factory=dict)
+
+    # Convergence epochs: {run_id: {threshold_name: epoch}}
+    convergence_epochs: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""

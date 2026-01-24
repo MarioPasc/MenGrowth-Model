@@ -137,6 +137,9 @@ def create_semivae_model(cfg: DictConfig) -> nn.Module:
         latent_partitioning = OmegaConf.to_container(
             cfg.model.latent_partitioning, resolve=True
         )
+        # Enable auxiliary residual decoder if lambda_aux_recon > 0
+        if hasattr(cfg, "loss") and cfg.loss.get("lambda_aux_recon", 0.0) > 0:
+            latent_partitioning["aux_residual_decoder"] = True
 
     model = SemiVAE(
         input_channels=input_channels,

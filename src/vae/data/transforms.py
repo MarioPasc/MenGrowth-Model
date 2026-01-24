@@ -9,6 +9,7 @@ After transforms, the batch contains:
 """
 
 from typing import Dict, List, Optional, Tuple, Any
+import json
 
 import numpy as np
 import torch
@@ -34,6 +35,7 @@ from .semantic_features import (
     extract_semantic_features,
     get_feature_groups,
     features_to_tensor,
+    residualize_shape_features,
     SemanticFeatureNormalizer,
 )
 
@@ -59,6 +61,8 @@ class ExtractSemanticFeaturesd(MapTransform):
         seg_labels: Optional[Dict[str, int]] = None,
         compute_shape: bool = True,
         normalizer: Optional[SemanticFeatureNormalizer] = None,
+        residualize_shape: bool = False,
+        residual_params_path: Optional[str] = None,
     ):
         """Initialize the transform.
 
@@ -69,6 +73,10 @@ class ExtractSemanticFeaturesd(MapTransform):
             seg_labels: Segmentation label mapping
             compute_shape: Whether to compute shape descriptors
             normalizer: Optional normalizer for z-score standardization
+            residualize_shape: Whether to remove volume-predictable component
+                from shape features before normalization
+            residual_params_path: Path to JSON with OLS coefficients for
+                shape residualization (required if residualize_shape=True)
         """
         super().__init__(keys=[seg_key])
         self.seg_key = seg_key
@@ -77,6 +85,13 @@ class ExtractSemanticFeaturesd(MapTransform):
         self.seg_labels = seg_labels
         self.compute_shape = compute_shape
         self.normalizer = normalizer
+        self.residualize_shape = residualize_shape
+
+        # Load residualization parameters if configured
+        self.residual_params: Optional[Dict[str, Dict[str, float]]] = None
+        if residualize_shape and residual_params_path:
+            with open(residual_params_path) as f:
+                self.residual_params = json.load(f)
 
         # Get feature groups for partitioning
         self.feature_groups = get_feature_groups()
@@ -108,6 +123,12 @@ class ExtractSemanticFeaturesd(MapTransform):
             seg_labels=self.seg_labels,
             compute_shape=self.compute_shape,
         )
+
+        # Residualize shape features (remove volume-predictable component)
+        if self.residualize_shape and self.residual_params is not None:
+            features = residualize_shape_features(
+                features, self.residual_params, volume_feature="vol_total"
+            )
 
         # Apply normalization if available
         if self.normalizer is not None:
@@ -194,6 +215,8 @@ def get_train_transforms(
     extract_semantic: bool = False,
     seg_labels: Optional[Dict[str, int]] = None,
     semantic_normalizer: Optional[SemanticFeatureNormalizer] = None,
+    residualize_shape: bool = False,
+    residual_params_path: Optional[str] = None,
 ) -> Compose:
     """Get training transforms.
 
@@ -212,6 +235,8 @@ def get_train_transforms(
         extract_semantic: Whether to extract semantic features for semi-supervised VAE.
         seg_labels: Segmentation label mapping for semantic extraction.
         semantic_normalizer: Optional normalizer for semantic features.
+        residualize_shape: Whether to residualize shape features against volume.
+        residual_params_path: Path to JSON with OLS coefficients.
 
     Returns:
         MONAI Compose transform pipeline.
@@ -228,6 +253,8 @@ def get_train_transforms(
                 seg_labels=seg_labels,
                 compute_shape=True,
                 normalizer=semantic_normalizer,
+                residualize_shape=residualize_shape,
+                residual_params_path=residual_params_path,
             )
         )
 
@@ -243,6 +270,8 @@ def get_val_transforms(
     extract_semantic: bool = False,
     seg_labels: Optional[Dict[str, int]] = None,
     semantic_normalizer: Optional[SemanticFeatureNormalizer] = None,
+    residualize_shape: bool = False,
+    residual_params_path: Optional[str] = None,
 ) -> Compose:
     """Get validation transforms (deterministic only).
 
@@ -254,6 +283,8 @@ def get_val_transforms(
         extract_semantic: Whether to extract semantic features for semi-supervised VAE.
         seg_labels: Segmentation label mapping for semantic extraction.
         semantic_normalizer: Optional normalizer for semantic features.
+        residualize_shape: Whether to residualize shape features against volume.
+        residual_params_path: Path to JSON with OLS coefficients.
 
     Returns:
         MONAI Compose transform pipeline.
@@ -270,6 +301,8 @@ def get_val_transforms(
                 seg_labels=seg_labels,
                 compute_shape=True,
                 normalizer=semantic_normalizer,
+                residualize_shape=residualize_shape,
+                residual_params_path=residual_params_path,
             )
         )
 
