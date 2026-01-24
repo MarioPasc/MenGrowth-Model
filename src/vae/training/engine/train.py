@@ -412,7 +412,7 @@ def main():
             every_n_epochs=cfg.logging.latent_diag_every_n_epochs,
             num_samples=cfg.logging.latent_diag_num_samples,
             shift_vox=cfg.logging.latent_diag_shift_vox,
-            ids_name=cfg.logging.latent_diag_ids_name,
+            ids_name=cfg.logging.get("latent_diag_ids_name", "diagnostics/latent_probes/ids.txt"),
         )
         callbacks.append(diag_callback)
         logger.info(f"Configured latent diagnostics every {cfg.logging.latent_diag_every_n_epochs} epochs")

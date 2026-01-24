@@ -315,17 +315,24 @@ def get_dataloaders(
                 logger.warning("Features will NOT be normalized - gradient imbalance may occur!")
 
     # Get transforms (with optional semantic extraction and normalizer)
+    residualize_shape = cfg.data.get("residualize_shape", False)
+    residual_params_path = cfg.data.get("residual_params_path", None)
+
     train_transforms = get_train_transforms(
         modalities, spacing, orientation, roi_size,
         extract_semantic=extract_semantic,
         seg_labels=seg_labels,
         semantic_normalizer=semantic_normalizer,
+        residualize_shape=residualize_shape,
+        residual_params_path=residual_params_path,
     )
     val_transforms = get_val_transforms(
         modalities, spacing, orientation, roi_size,
         extract_semantic=extract_semantic,
         seg_labels=seg_labels,
         semantic_normalizer=semantic_normalizer,
+        residualize_shape=residualize_shape,
+        residual_params_path=residual_params_path,
     )
 
     # Create PersistentDatasets
@@ -477,17 +484,24 @@ def get_dataloaders_with_test(
                 logger.warning("Features will NOT be normalized!")
 
     # Get transforms
+    residualize_shape = cfg.data.get("residualize_shape", False)
+    residual_params_path = cfg.data.get("residual_params_path", None)
+
     train_transforms = get_train_transforms(
         modalities, spacing, orientation, roi_size,
         extract_semantic=extract_semantic,
         seg_labels=seg_labels,
         semantic_normalizer=semantic_normalizer,
+        residualize_shape=residualize_shape,
+        residual_params_path=residual_params_path,
     )
     val_transforms = get_val_transforms(
         modalities, spacing, orientation, roi_size,
         extract_semantic=extract_semantic,
         seg_labels=seg_labels,
         semantic_normalizer=semantic_normalizer,
+        residualize_shape=residualize_shape,
+        residual_params_path=residual_params_path,
     )
 
     # Create PersistentDatasets
