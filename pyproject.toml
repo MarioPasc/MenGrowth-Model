@@ -115,6 +115,7 @@ vae-analyze = "vae.tools.analysis.cli:main"
 
 # Experiment entry points
 growth-exp-lora-ablation = "experiments.lora_ablation.cli:main"
+growth-exp-lora-ablation-v2 = "experiments.lora_ablation.run_ablation_v2:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

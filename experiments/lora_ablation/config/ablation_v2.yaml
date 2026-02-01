@@ -1,0 +1,122 @@
+# experiments/lora_ablation/config/ablation_v2.yaml
+# Enhanced LoRA Ablation Experiment Configuration
+#
+# Key improvements over v1:
+# - Uses ORIGINAL SwinUNETR decoder (not lightweight)
+# - Optional auxiliary semantic prediction heads
+# - Multi-scale feature extraction
+# - Enhanced probe evaluation with MLP probes
+# - Target normalization
+
+experiment:
+  name: lora_ablation_v2
+  seed: 42
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/lora_ablation_v2
+
+paths:
+  checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+  # Optional: glioma data for domain shift analysis
+  glioma_data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Glioma
+
+# Conservative splits for robust evaluation
+data_splits:
+  lora_train: 200      # Train LoRA adaptation
+  lora_val: 100        # Early stopping
+  probe_train: 200     # Train probes (separate from LoRA)
+  test: 500            # Final evaluation
+
+# Experimental conditions
+conditions:
+  - name: baseline
+    lora_rank: null
+    description: Frozen encoder + original decoder (no adaptation)
+
+  - name: lora_r2
+    lora_rank: 2
+    lora_alpha: 4
+    description: LoRA rank 2 with original decoder
+
+  - name: lora_r4
+    lora_rank: 4
+    lora_alpha: 8
+    description: LoRA rank 4 with original decoder
+
+  - name: lora_r8
+    lora_rank: 8
+    lora_alpha: 16
+    description: LoRA rank 8 with original decoder (recommended)
+
+  - name: lora_r16
+    lora_rank: 16
+    lora_alpha: 32
+    description: LoRA rank 16 with original decoder
+
+  - name: lora_r32
+    lora_rank: 32
+    lora_alpha: 64
+    description: LoRA rank 32 with original decoder (saturation test)
+
+# Training hyperparameters
+training:
+  max_epochs: 100
+  early_stopping_patience: 15  # Increased patience for more stable training
+  batch_size: 4
+  lr_encoder: 1.0e-4      # For LoRA params
+  lr_decoder: 5.0e-4      # For decoder (if trainable)
+  weight_decay: 1.0e-5
+  num_workers: 4
+  lora_dropout: 0.1
+  gradient_clip: 1.0
+
+  # New options for v2
+  use_original_decoder: true   # Use full SwinUNETR decoder
+  freeze_decoder: false        # Train decoder (for better gradients)
+  use_semantic_heads: true     # Add auxiliary semantic prediction
+  lambda_aux: 0.1              # Weight for auxiliary loss
+
+# Segmentation loss
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  # Auxiliary semantic loss weights (if use_semantic_heads: true)
+  lambda_volume: 1.0
+  lambda_location: 1.0
+  lambda_shape: 1.0
+
+# Linear probe evaluation
+probe:
+  alpha_linear: 1.0           # Ridge regularization
+  alpha_mlp: 1.0e-4           # MLP L2 regularization
+  hidden_sizes: [256, 128]    # MLP hidden layers
+  normalize_features: true
+  normalize_targets: true     # KEY: normalize targets for stable training
+
+# Feature extraction
+feature_extraction:
+  # Single-scale: encoder10 (768-dim)
+  # Multi-scale: layers2+3+4 (192+384+768=1344-dim)
+  level: multi_scale
+  batch_size: 8
+
+# Domain analysis (glioma vs meningioma)
+domain_analysis:
+  enabled: true
+  num_samples: 200           # Samples per domain for UMAP
+
+# Visualization
+visualization:
+  umap_n_neighbors: 15
+  umap_min_dist: 0.1
+  color_by_semantic: true    # Color UMAP by semantic features
+  show_variance_per_dim: true
+  show_scatter_plots: true   # Predictions vs ground truth
+
+# Logging
+logging:
+  log_every_n_steps: 10
+  val_check_interval: 1.0
+
+# Model card generation
+model_card:
+  enabled: true
