@@ -44,6 +44,56 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def validate_experiment_outputs(config: dict) -> Dict[str, Dict[str, bool]]:
+    """Pre-flight check: validate which experiment outputs exist.
+
+    Returns a dict mapping condition -> {file_type: exists}.
+    """
+    output_dir = Path(config["experiment"]["output_dir"])
+    status = {}
+
+    expected_files = [
+        ("checkpoint", "best_model.pt"),
+        ("adapter", "adapter"),  # directory for LoRA
+        ("training_log", "training_log.csv"),
+        ("training_summary", "training_summary.yaml"),
+        ("features_probe", "features_probe.pt"),
+        ("features_test", "features_test.pt"),
+        ("targets_probe", "targets_probe.pt"),
+        ("targets_test", "targets_test.pt"),
+        ("metrics", "metrics.json"),
+    ]
+
+    logger.info("Pre-flight validation of experiment outputs:")
+    logger.info("-" * 60)
+
+    all_complete = True
+    for cond in config["conditions"]:
+        name = cond["name"]
+        cond_dir = output_dir / "conditions" / name
+        status[name] = {}
+
+        missing = []
+        for file_type, filename in expected_files:
+            path = cond_dir / filename
+            exists = path.exists()
+            status[name][file_type] = exists
+            if not exists:
+                missing.append(file_type)
+
+        if missing:
+            all_complete = False
+            logger.warning(f"  {name}: INCOMPLETE - missing {missing}")
+        else:
+            logger.info(f"  {name}: OK (all files present)")
+
+    logger.info("-" * 60)
+    if not all_complete:
+        logger.warning("Some conditions are incomplete. Analysis will proceed with available data.")
+
+    return status
+
+
 def load_all_metrics(config: dict) -> Dict[str, Dict]:
     """Load metrics from all conditions."""
     output_dir = Path(config["experiment"]["output_dir"])
@@ -403,8 +453,12 @@ def analyze_results(
     logger.info("LoRA Ablation Analysis Pipeline")
     logger.info("=" * 60)
 
+    # Step 0: Pre-flight validation
+    logger.info("\n[0/5] Validating experiment outputs...")
+    validate_experiment_outputs(config)
+
     # Step 1: Load metrics
-    logger.info("\n[1/4] Loading experiment metrics...")
+    logger.info("\n[1/5] Loading experiment metrics...")
     metrics = load_all_metrics(config)
 
     if not metrics:
@@ -412,7 +466,7 @@ def analyze_results(
         return
 
     # Step 2: Statistical analysis
-    logger.info("\n[2/4] Running statistical analysis...")
+    logger.info("\n[2/5] Running statistical analysis...")
     try:
         stats = run_statistical_analysis(config_path)
         save_statistical_results(stats, output_dir)
@@ -422,16 +476,16 @@ def analyze_results(
 
     # Step 3: Generate visualizations
     if not skip_figures:
-        logger.info("\n[3/4] Generating publication figures...")
+        logger.info("\n[3/5] Generating publication figures...")
         try:
             generate_all_figures(config_path, glioma_features_path)
         except Exception as e:
             logger.warning(f"Figure generation failed: {e}")
     else:
-        logger.info("\n[3/4] Skipping figure generation (--skip-figures)")
+        logger.info("\n[3/5] Skipping figure generation (--skip-figures)")
 
     # Step 4: Generate reports
-    logger.info("\n[4/4] Generating reports...")
+    logger.info("\n[4/5] Generating reports...")
 
     # Markdown report
     md_report = generate_markdown_report(config, metrics, stats)

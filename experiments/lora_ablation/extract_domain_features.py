@@ -310,6 +310,7 @@ def extract_meningioma_subset_features(
     condition_name: str,
     n_samples: int = 200,
     device: str = "cuda",
+    config_path: str = "experiments/lora_ablation/config/ablation.yaml",
 ) -> Path:
     """Extract features from a subset of BraTS-MEN test set.
 
@@ -318,14 +319,13 @@ def extract_meningioma_subset_features(
         condition_name: Which condition's encoder to use.
         n_samples: Number of samples to extract.
         device: Device to use.
+        config_path: Path to config file (for loading splits).
 
     Returns:
         Path to saved features file.
     """
     # Load splits to get test set subjects
-    splits = load_splits(
-        f"experiments/lora_ablation/config/ablation.yaml"
-    )
+    splits = load_splits(config_path)
 
     test_subjects = splits["test"]
     logger.info(f"Test set has {len(test_subjects)} subjects")
@@ -409,7 +409,7 @@ def extract_domain_features(
     logger.info(f"Extracting {n_meningioma} meningioma features")
     logger.info(f"{'='*50}")
     paths["meningioma"] = extract_meningioma_subset_features(
-        config, condition_name, n_meningioma, device
+        config, condition_name, n_meningioma, device, config_path
     )
 
     return paths

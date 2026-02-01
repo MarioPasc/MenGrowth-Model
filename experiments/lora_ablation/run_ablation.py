@@ -319,7 +319,7 @@ def main():
         type=str,
         nargs="+",
         default=None,
-        choices=["baseline", "lora_r4", "lora_r8", "lora_r16"],
+        choices=["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"],
         help="Conditions to run (default: all)",
     )
     parser.add_argument(

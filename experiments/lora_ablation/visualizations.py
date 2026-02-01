@@ -390,7 +390,8 @@ def plot_latent_space_umap(
 
     # Optionally add glioma features
     if glioma_features_path and glioma_features_path.exists():
-        glioma_features = torch.load(glioma_features_path).numpy()
+        glioma_data = torch.load(glioma_features_path)
+        glioma_features = glioma_data["features"].numpy()
         if len(glioma_features) > n_samples:
             indices = np.random.choice(len(glioma_features), n_samples, replace=False)
             glioma_features = glioma_features[indices]

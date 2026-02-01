@@ -558,7 +558,7 @@ if __name__ == "__main__":
         "--condition",
         type=str,
         required=True,
-        choices=["baseline", "lora_r4", "lora_r8", "lora_r16"],
+        choices=["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"],
         help="Condition to train",
     )
     parser.add_argument(
