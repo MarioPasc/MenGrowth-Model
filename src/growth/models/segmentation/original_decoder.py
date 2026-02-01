@@ -103,11 +103,17 @@ class OriginalDecoderWrapper(nn.Module):
 
     def forward(
         self,
+        x_in: torch.Tensor,
         hidden_states: List[torch.Tensor],
     ) -> torch.Tensor:
         """Forward pass through original decoder.
 
+        Note: This follows MONAI's SwinUNETR architecture exactly.
+        encoder1 processes the original input, while encoder2-4 process
+        hidden states from the Swin transformer.
+
         Args:
+            x_in: Original input tensor [B, 4, 96, 96, 96].
             hidden_states: List of 5 tensors from SwinViT:
                 - hidden_states[0]: [B, 48, 48, 48, 48] after patch_embed
                 - hidden_states[1]: [B, 96, 24, 24, 24] after layers1
@@ -119,10 +125,11 @@ class OriginalDecoderWrapper(nn.Module):
             Segmentation logits [B, out_channels, 96, 96, 96].
         """
         # Process encoder outputs through encoder blocks
-        enc0 = self.encoder1(hidden_states[0])  # [B, 48, 48, 48, 48]
-        enc1 = self.encoder2(hidden_states[1])  # [B, 96, 24, 24, 24]
-        enc2 = self.encoder3(hidden_states[2])  # [B, 192, 12, 12, 12]
-        enc3 = self.encoder4(hidden_states[3])  # [B, 384, 6, 6, 6]
+        # NOTE: encoder1 takes original input (4 ch), encoder2-4 take hidden states
+        enc0 = self.encoder1(x_in)              # [B, 48, 96, 96, 96] from input
+        enc1 = self.encoder2(hidden_states[0])  # [B, 48, 48, 48, 48]
+        enc2 = self.encoder3(hidden_states[1])  # [B, 96, 24, 24, 24]
+        enc3 = self.encoder4(hidden_states[2])  # [B, 192, 12, 12, 12]
 
         # Bottleneck
         dec4 = self.encoder10(hidden_states[4])  # [B, 768, 3, 3, 3]
@@ -214,8 +221,8 @@ class OriginalDecoderSegmentationModel(nn.Module):
         # Get hidden states from swinViT
         hidden_states = self.encoder.swinViT(x, self.encoder.normalize)
 
-        # Decode
-        return self.decoder(hidden_states)
+        # Decode (pass both original input and hidden states)
+        return self.decoder(x, hidden_states)
 
     def get_hidden_states(self, x: torch.Tensor) -> List[torch.Tensor]:
         """Get encoder hidden states for feature extraction."""
@@ -314,8 +321,8 @@ class LoRAOriginalDecoderModel(nn.Module):
         # Get hidden states through LoRA-adapted encoder
         hidden_states = self.lora_encoder.get_hidden_states(x)
 
-        # Decode
-        logits = self.decoder(hidden_states)
+        # Decode (pass both original input and hidden states)
+        logits = self.decoder(x, hidden_states)
 
         if return_features:
             features = self.decoder.get_bottleneck_features(hidden_states)
@@ -343,8 +350,8 @@ class LoRAOriginalDecoderModel(nn.Module):
         # Get hidden states
         hidden_states = self.lora_encoder.get_hidden_states(x)
 
-        # Decode
-        logits = self.decoder(hidden_states)
+        # Decode (pass both original input and hidden states)
+        logits = self.decoder(x, hidden_states)
         features = self.decoder.get_bottleneck_features(hidden_states)
 
         result = {
