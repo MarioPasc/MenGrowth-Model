@@ -13,7 +13,9 @@ keywords = [
     "magnetic-resonance-imaging",
     "deep-learning",
     "tumour-growth-prediction",
-    "meningioma"
+    "meningioma",
+    "neural-ode",
+    "foundation-model",
 ]
 authors = [
     {name = "Mario Pascual-González", email = "mpascual@uma.es"},
@@ -26,8 +28,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -35,25 +35,53 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
 
+# Core dependencies (shared between VAE and Growth modules)
 dependencies = [
+    # Deep learning framework
     "torch>=2.0.0",
-    "monai>=1.3.0",
     "pytorch-lightning>=2.0.0",
-    "omegaconf>=2.3.0",
-    "matplotlib>=3.7.0",
-    "numpy>=1.24.0",
+    "torchmetrics>=1.0.0",
+
+    # Medical imaging
+    "monai>=1.3.0",
     "nibabel>=5.0.0",
+
+    # Configuration and data
+    "omegaconf>=2.3.0",
+    "numpy>=1.24.0",
     "scikit-learn>=1.3.0",
     "pandas>=2.0.0",
-    "wandb>=0.16.0",
-    "torchmetrics>=1.0.0",
-    "scikit-image>=0.21.0",
+
+    # Required for SwinUNETR
+    "einops>=0.7.0",
 ]
 
 [project.optional-dependencies]
+# VAE experiment dependencies (legacy module)
+vae = [
+    "wandb>=0.16.0",
+    "matplotlib>=3.7.0",
+    "scikit-image>=0.21.0",
+]
+
+# Growth pipeline dependencies (foundation model + Neural ODE)
+growth = [
+    "tensorboard>=2.15.0",
+    "torchdiffeq>=0.2.3",
+    "matplotlib>=3.7.0",
+]
+
+# Development dependencies
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+# All optional dependencies combined
+all = [
+    "mengrowth-model[vae,growth,dev]",
 ]
 
 [project.urls]
@@ -64,8 +92,14 @@ Repository = "https://github.com/MarioPasc/MenGrowth-Model"
 Changelog = "https://github.com/MarioPasc/MenGrowth-Model/releases"
 
 [project.scripts]
+# VAE module entry points (legacy)
 vae-train = "vae.training.engine.train:main"
 vae-analyze = "vae.tools.analysis.cli:main"
+
+# Growth module entry points (future)
+# growth-train-lora = "growth.training.train_lora:main"
+# growth-train-sdp = "growth.training.train_sdp:main"
+# growth-train-ode = "growth.training.train_ode:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -73,13 +107,18 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["vae*", "engine*"]
+include = ["vae*", "growth*"]
 
 [tool.setuptools.package-data]
 vae = ["py.typed", "config/*.yaml"]
+growth = ["py.typed", "config/*.yaml"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -99,6 +138,7 @@ ignore_missing_imports = true
 module = [
     "torch.*",
     "torchvision.*",
+    "monai.*",
     "yaml",
     "pandas",
     "SimpleITK.*",
@@ -107,5 +147,19 @@ module = [
     "numpy.*",
     "nibabel.*",
     "nrrd.*",
+    "torchdiffeq.*",
+    "einops.*",
 ]
 ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]  # Line too long (handled by formatter)
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]

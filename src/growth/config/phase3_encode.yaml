@@ -1,0 +1,3 @@
+# src/growth/config/phase3_encode.yaml
+# Phase 3: Encoding and harmonization configuration.
+# Encodes BraTS-MEN and private cohort, applies ComBat harmonization if needed.

@@ -1,0 +1,259 @@
+# src/growth/models/encoder/swin_loader.py
+"""BrainSegFounder SwinUNETR encoder loader.
+
+Loads the pre-trained SwinViT encoder from BrainSegFounder checkpoint.
+Extracts only encoder components (swinViT + encoder1-4 + encoder10).
+"""
+
+import logging
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
+
+import torch
+from torch import nn
+
+try:
+    from monai.networks.nets import SwinUNETR
+except ImportError:
+    raise ImportError(
+        "MONAI is required for SwinUNETR. Install with: pip install monai>=1.3.0"
+    )
+
+from growth.utils.checkpoint import (
+    load_checkpoint,
+    extract_encoder_weights,
+    get_checkpoint_stats,
+)
+
+logger = logging.getLogger(__name__)
+
+# BrainSegFounder architecture constants
+BRAINSEGFOUNDER_FEATURE_SIZE = 48   # Base channel count
+BRAINSEGFOUNDER_IN_CHANNELS = 4     # t1c, t1n, t2f, t2w
+BRAINSEGFOUNDER_OUT_CHANNELS = 3    # BraTS segmentation classes (NCR, ED, ET)
+BRAINSEGFOUNDER_DEPTHS = (2, 2, 2, 2)
+BRAINSEGFOUNDER_NUM_HEADS = (3, 6, 12, 24)
+
+
+def create_swinunetr(
+    in_channels: int = BRAINSEGFOUNDER_IN_CHANNELS,
+    out_channels: int = BRAINSEGFOUNDER_OUT_CHANNELS,
+    feature_size: int = BRAINSEGFOUNDER_FEATURE_SIZE,
+    depths: Tuple[int, ...] = BRAINSEGFOUNDER_DEPTHS,
+    num_heads: Tuple[int, ...] = BRAINSEGFOUNDER_NUM_HEADS,
+    use_checkpoint: bool = False,
+    spatial_dims: int = 3,
+) -> SwinUNETR:
+    """Create SwinUNETR model matching BrainSegFounder architecture.
+
+    Args:
+        in_channels: Number of input channels (default: 4 for MRI modalities).
+        out_channels: Number of output channels (default: 3 for BraTS).
+        feature_size: Base feature size (default: 48, must match checkpoint).
+        depths: Number of Swin Transformer blocks per stage.
+        num_heads: Number of attention heads per stage.
+        use_checkpoint: If True, use gradient checkpointing to save memory.
+        spatial_dims: Spatial dimensions (2 or 3).
+
+    Returns:
+        SwinUNETR model instance.
+
+    Example:
+        >>> model = create_swinunetr()
+        >>> x = torch.randn(1, 4, 96, 96, 96)
+        >>> out = model(x)
+        >>> out.shape
+        torch.Size([1, 3, 96, 96, 96])
+    """
+    model = SwinUNETR(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        feature_size=feature_size,
+        depths=depths,
+        num_heads=num_heads,
+        norm_name="instance",
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        dropout_path_rate=0.0,
+        normalize=True,
+        use_checkpoint=use_checkpoint,
+        spatial_dims=spatial_dims,
+    )
+
+    logger.info(
+        f"Created SwinUNETR: in={in_channels}, out={out_channels}, "
+        f"feature_size={feature_size}, depths={depths}"
+    )
+
+    return model
+
+
+def load_swin_encoder(
+    ckpt_path: Union[str, Path],
+    include_encoder10: bool = True,
+    freeze: bool = True,
+    use_checkpoint: bool = False,
+    device: Union[str, torch.device] = "cpu",
+    strict_load: bool = False,
+) -> SwinUNETR:
+    """Load BrainSegFounder SwinUNETR encoder from checkpoint.
+
+    Creates a SwinUNETR model and loads only the encoder weights,
+    discarding the U-Net decoder and segmentation head.
+
+    Args:
+        ckpt_path: Path to BrainSegFounder checkpoint (.pt file).
+        include_encoder10: If True, include encoder10 (bottleneck processor).
+            Output will be 768-dim. If False, use swinViT.layers4 directly
+            for 384-dim output.
+        freeze: If True, freeze all encoder parameters.
+        use_checkpoint: If True, use gradient checkpointing (saves memory).
+        device: Device to load model to ("cpu", "cuda", etc.).
+        strict_load: If True, raise error on missing encoder keys.
+
+    Returns:
+        SwinUNETR model with encoder weights loaded.
+
+    Raises:
+        FileNotFoundError: If checkpoint doesn't exist.
+        RuntimeError: If weight loading fails.
+
+    Example:
+        >>> encoder = load_swin_encoder(
+        ...     "checkpoints/finetuned_model_fold_0.pt",
+        ...     freeze=True
+        ... )
+        >>> encoder.eval()
+        >>> x = torch.randn(1, 4, 96, 96, 96)
+        >>> with torch.no_grad():
+        ...     hidden = encoder.swinViT(x, encoder.normalize)
+    """
+    ckpt_path = Path(ckpt_path)
+
+    # Load checkpoint
+    checkpoint = load_checkpoint(ckpt_path)
+    state_dict = checkpoint["state_dict"]
+
+    # Log checkpoint statistics
+    stats = get_checkpoint_stats(state_dict)
+    logger.info("Checkpoint weight groups:")
+    for prefix, info in sorted(stats.items()):
+        logger.info(f"  {prefix}: {info['count']} keys, {info['params_m']:.2f}M params")
+
+    # Extract encoder weights
+    encoder_state_dict = extract_encoder_weights(
+        state_dict,
+        include_encoder10=include_encoder10,
+        strict=strict_load,
+    )
+
+    # Create model
+    model = create_swinunetr(use_checkpoint=use_checkpoint)
+
+    # Load encoder weights (strict=False to ignore missing decoder keys)
+    missing, unexpected = model.load_state_dict(encoder_state_dict, strict=False)
+
+    # Categorize missing keys
+    decoder_prefixes = ("decoder", "out")
+    expected_missing = [k for k in missing if k.startswith(decoder_prefixes)]
+    actual_missing = [k for k in missing if not k.startswith(decoder_prefixes)]
+
+    if actual_missing:
+        logger.warning(f"Missing encoder keys ({len(actual_missing)}): {actual_missing[:5]}...")
+    if unexpected:
+        logger.warning(f"Unexpected keys ({len(unexpected)}): {unexpected[:5]}...")
+
+    encoder_params = sum(p.numel() for p in model.parameters())
+    logger.info(
+        f"Loaded encoder: {len(encoder_state_dict)} keys, "
+        f"{encoder_params/1e6:.2f}M params, "
+        f"{len(expected_missing)} decoder keys not loaded (expected)"
+    )
+
+    # Freeze encoder if requested
+    if freeze:
+        for param in model.parameters():
+            param.requires_grad = False
+        logger.info("Froze all encoder parameters")
+
+    # Move to device and set eval mode
+    model = model.to(device)
+    if freeze:
+        model.eval()
+
+    return model
+
+
+def get_swin_feature_dims(
+    feature_size: int = BRAINSEGFOUNDER_FEATURE_SIZE,
+) -> Dict[str, Tuple[int, int]]:
+    """Get feature dimensions at each Swin stage.
+
+    Args:
+        feature_size: Base feature size (default: 48).
+
+    Returns:
+        Dictionary mapping stage names to (channels, spatial_downsample_factor).
+        The spatial factor indicates downsampling relative to input size.
+
+    Example:
+        >>> dims = get_swin_feature_dims()
+        >>> dims["layers4"]
+        (384, 32)
+    """
+    # MONAI 1.5+ SwinUNETR hidden states dimensions
+    # Note: channels double at each stage after patch_embed
+    return {
+        "patch_embed": (feature_size, 2),          # 48, input/2
+        "layers1": (feature_size * 2, 4),          # 96, input/4
+        "layers2": (feature_size * 4, 8),          # 192, input/8
+        "layers3": (feature_size * 8, 16),         # 384, input/16
+        "layers4": (feature_size * 16, 32),        # 768, input/32
+        "encoder10": (feature_size * 16, 32),      # 768, input/32 (same as layers4)
+    }
+
+
+def get_encoder_output_dim(
+    feature_level: str = "encoder10",
+    feature_size: int = BRAINSEGFOUNDER_FEATURE_SIZE,
+) -> int:
+    """Get output dimension for a given feature level.
+
+    Args:
+        feature_level: Feature extraction level.
+        feature_size: Base feature size.
+
+    Returns:
+        Output channel dimension.
+
+    Raises:
+        ValueError: If feature_level is unknown.
+    """
+    dims = get_swin_feature_dims(feature_size)
+
+    if feature_level == "multi_scale":
+        # layers2 + layers3 + layers4
+        return dims["layers2"][0] + dims["layers3"][0] + dims["layers4"][0]
+
+    if feature_level not in dims:
+        raise ValueError(
+            f"Unknown feature level: {feature_level}. "
+            f"Choose from: {list(dims.keys())} or 'multi_scale'"
+        )
+
+    return dims[feature_level][0]
+
+
+def count_parameters(model: nn.Module, trainable_only: bool = False) -> int:
+    """Count model parameters.
+
+    Args:
+        model: PyTorch model.
+        trainable_only: If True, count only trainable parameters.
+
+    Returns:
+        Number of parameters.
+    """
+    if trainable_only:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return sum(p.numel() for p in model.parameters())

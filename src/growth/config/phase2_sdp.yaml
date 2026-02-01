@@ -1,0 +1,3 @@
+# src/growth/config/phase2_sdp.yaml
+# Phase 2: Supervised Disentangled Projection (SDP) training.
+# Trains lightweight MLP to map frozen encoder features to disentangled latent space.

@@ -1,0 +1,3 @@
+# src/growth/config/phase1_lora.yaml
+# Phase 1: LoRA adaptation of BrainSegFounder encoder via segmentation objective.
+# Adapts Stages 3-4 of SwinViT to meningioma morphology using BraTS-MEN data.
