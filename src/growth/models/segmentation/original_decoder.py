@@ -31,6 +31,33 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _get_out_layer_channels(out_layer: nn.Module) -> tuple:
+    """Get in_channels and out_channels from output layer.
+
+    Handles both:
+    1. Original MONAI structure: out.conv.conv (UnetOutBlock)
+    2. Already-replaced Sequential: out[0] (nn.Conv3d)
+
+    Returns:
+        (in_channels, out_channels) tuple.
+    """
+    # Try original MONAI structure first
+    if hasattr(out_layer, 'conv') and hasattr(out_layer.conv, 'conv'):
+        return out_layer.conv.conv.in_channels, out_layer.conv.conv.out_channels
+
+    # Try Sequential (already replaced)
+    if isinstance(out_layer, nn.Sequential) and len(out_layer) > 0:
+        first_layer = out_layer[0]
+        if isinstance(first_layer, nn.Conv3d):
+            return first_layer.in_channels, first_layer.out_channels
+
+    # Try direct Conv3d
+    if isinstance(out_layer, nn.Conv3d):
+        return out_layer.in_channels, out_layer.out_channels
+
+    raise ValueError(f"Cannot determine channels from output layer: {type(out_layer)}")
+
+
 class OriginalDecoderWrapper(nn.Module):
     """Wrapper to extract and use the original SwinUNETR decoder.
 
@@ -209,12 +236,12 @@ class OriginalDecoderSegmentationModel(nn.Module):
         self.decoder = OriginalDecoderWrapper(encoder, freeze_decoder=freeze_decoder)
 
         # If output channels differ from model, replace out layer
-        if out_channels != encoder.out.conv.conv.out_channels:
-            in_channels = encoder.out.conv.conv.in_channels
+        current_in_ch, current_out_ch = _get_out_layer_channels(encoder.out)
+        if out_channels != current_out_ch:
             self.decoder.out = nn.Sequential(
-                nn.Conv3d(in_channels, out_channels, kernel_size=1),
+                nn.Conv3d(current_in_ch, out_channels, kernel_size=1),
             )
-            logger.info(f"Replaced output layer: {in_channels} -> {out_channels}")
+            logger.info(f"Replaced output layer: {current_in_ch} -> {out_channels}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through encoder and decoder.
@@ -292,10 +319,10 @@ class LoRAOriginalDecoderModel(nn.Module):
         self.decoder = OriginalDecoderWrapper(base_model, freeze_decoder=freeze_decoder)
 
         # Replace output layer if needed
-        if out_channels != base_model.out.conv.conv.out_channels:
-            in_channels = base_model.out.conv.conv.in_channels
+        current_in_ch, current_out_ch = _get_out_layer_channels(base_model.out)
+        if out_channels != current_out_ch:
             self.decoder.out = nn.Sequential(
-                nn.Conv3d(in_channels, out_channels, kernel_size=1),
+                nn.Conv3d(current_in_ch, out_channels, kernel_size=1),
             )
 
         # Optional semantic prediction heads
