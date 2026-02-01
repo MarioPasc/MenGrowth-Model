@@ -260,7 +260,253 @@ class TestLoadSwinEncoderReal:
 
         with torch.no_grad():
             hidden_states = model.swinViT(x, model.normalize)
-            x4 = hidden_states[4]  # [1, 384, 3, 3, 3]
+            x4 = hidden_states[4]  # [1, 768, 3, 3, 3]
             enc10 = model.encoder10(x4)  # [1, 768, 3, 3, 3]
 
         assert enc10.shape == (1, 768, 3, 3, 3)
+
+
+class TestWeightLoadingVerification:
+    """Critical tests to verify all encoder weights are loaded correctly.
+
+    These tests ensure no weights are silently dropped during loading.
+    """
+
+    def test_all_encoder_keys_present(self, real_checkpoint_path: Path):
+        """Verify all encoder keys from checkpoint exist in model."""
+        from growth.utils.checkpoint import load_checkpoint, extract_encoder_weights, ENCODER_PREFIXES
+
+        # Load checkpoint
+        checkpoint = load_checkpoint(real_checkpoint_path)
+        state_dict = checkpoint["state_dict"]
+        encoder_weights = extract_encoder_weights(state_dict, include_encoder10=True)
+
+        # Create fresh model
+        model = create_swinunetr()
+        model_state = model.state_dict()
+
+        # Get model's encoder keys only
+        model_encoder_keys = {
+            k for k in model_state.keys()
+            if k.split(".")[0] in ENCODER_PREFIXES
+        }
+
+        ckpt_keys = set(encoder_weights.keys())
+
+        # All checkpoint keys should exist in model
+        extra_in_ckpt = ckpt_keys - model_encoder_keys
+        assert len(extra_in_ckpt) == 0, (
+            f"Checkpoint has {len(extra_in_ckpt)} keys not in model: "
+            f"{sorted(extra_in_ckpt)[:5]}..."
+        )
+
+        # All model encoder keys should exist in checkpoint
+        missing_in_ckpt = model_encoder_keys - ckpt_keys
+        assert len(missing_in_ckpt) == 0, (
+            f"Model has {len(missing_in_ckpt)} encoder keys not in checkpoint: "
+            f"{sorted(missing_in_ckpt)[:5]}..."
+        )
+
+    def test_all_encoder_shapes_match(self, real_checkpoint_path: Path):
+        """Verify all encoder weight shapes match between checkpoint and model."""
+        from growth.utils.checkpoint import load_checkpoint, extract_encoder_weights
+
+        # Load checkpoint
+        checkpoint = load_checkpoint(real_checkpoint_path)
+        state_dict = checkpoint["state_dict"]
+        encoder_weights = extract_encoder_weights(state_dict, include_encoder10=True)
+
+        # Create fresh model
+        model = create_swinunetr()
+        model_state = model.state_dict()
+
+        # Check each weight shape matches
+        shape_mismatches = []
+        for key in encoder_weights.keys():
+            if key in model_state:
+                ckpt_shape = tuple(encoder_weights[key].shape)
+                model_shape = tuple(model_state[key].shape)
+                if ckpt_shape != model_shape:
+                    shape_mismatches.append((key, ckpt_shape, model_shape))
+
+        assert len(shape_mismatches) == 0, (
+            f"Shape mismatches found:\n" +
+            "\n".join(f"  {k}: ckpt={cs} vs model={ms}"
+                      for k, cs, ms in shape_mismatches[:10])
+        )
+
+    def test_encoder_weight_count(self, real_checkpoint_path: Path):
+        """Verify expected number of encoder weights are loaded."""
+        from growth.utils.checkpoint import load_checkpoint, extract_encoder_weights
+
+        checkpoint = load_checkpoint(real_checkpoint_path)
+        state_dict = checkpoint["state_dict"]
+        encoder_weights = extract_encoder_weights(state_dict, include_encoder10=True)
+
+        # BrainSegFounder encoder should have 137 weight tensors
+        assert len(encoder_weights) == 137, (
+            f"Expected 137 encoder weights, got {len(encoder_weights)}"
+        )
+
+    def test_load_state_dict_no_unexpected_keys(self, real_checkpoint_path: Path):
+        """Verify load_state_dict reports no unexpected keys."""
+        from growth.utils.checkpoint import load_checkpoint, extract_encoder_weights
+
+        checkpoint = load_checkpoint(real_checkpoint_path)
+        state_dict = checkpoint["state_dict"]
+        encoder_weights = extract_encoder_weights(state_dict, include_encoder10=True)
+
+        model = create_swinunetr()
+        result = model.load_state_dict(encoder_weights, strict=False)
+
+        # Should have no unexpected keys (all ckpt keys exist in model)
+        assert len(result.unexpected_keys) == 0, (
+            f"Unexpected keys: {result.unexpected_keys[:5]}..."
+        )
+
+        # Missing keys should only be decoder keys
+        non_decoder_missing = [
+            k for k in result.missing_keys
+            if not k.startswith(("decoder", "out"))
+        ]
+        assert len(non_decoder_missing) == 0, (
+            f"Missing non-decoder keys: {non_decoder_missing}"
+        )
+
+
+class TestRealDataForwardPass:
+    """Tests with real BraTS-MEN data to verify end-to-end functionality."""
+
+    def test_forward_pass_real_data(
+        self, real_checkpoint_path: Path, real_data_path: Path
+    ):
+        """Test complete forward pass with real MRI data."""
+        from growth.models.encoder.feature_extractor import FeatureExtractor
+        from growth.data.transforms import get_val_transforms
+
+        # Load encoder and create feature extractor
+        encoder = load_swin_encoder(real_checkpoint_path, freeze=True)
+        extractor = FeatureExtractor(encoder, level="encoder10")
+        extractor.eval()
+
+        # Load real subject
+        subjects = list(real_data_path.iterdir())
+        subject = subjects[0]
+
+        data = {}
+        for modality in ["t1c", "t1n", "t2f", "t2w"]:
+            files = list(subject.glob(f"*-{modality}.nii.gz"))
+            if not files:
+                pytest.skip(f"Missing {modality} for {subject.name}")
+            data[modality] = str(files[0])
+
+        seg_files = list(subject.glob("*-seg.nii.gz"))
+        if seg_files:
+            data["seg"] = str(seg_files[0])
+
+        # Apply transforms
+        transforms = get_val_transforms()
+        result = transforms(data)
+        image = result["image"].unsqueeze(0)  # [1, 4, 96, 96, 96]
+
+        # Forward pass
+        with torch.no_grad():
+            features = extractor(image)
+
+        # Verify output
+        assert features.shape == (1, 768), f"Expected (1, 768), got {features.shape}"
+        assert not torch.isnan(features).any(), "NaN values in output"
+        assert not torch.isinf(features).any(), "Inf values in output"
+        assert features.abs().sum() > 0, "Output is all zeros"
+
+    def test_forward_pass_output_statistics(
+        self, real_checkpoint_path: Path, real_data_path: Path
+    ):
+        """Verify output statistics are reasonable for real data."""
+        from growth.models.encoder.feature_extractor import FeatureExtractor
+        from growth.data.transforms import get_val_transforms
+
+        encoder = load_swin_encoder(real_checkpoint_path, freeze=True)
+        extractor = FeatureExtractor(encoder, level="encoder10")
+        extractor.eval()
+
+        # Load multiple subjects for statistics
+        subjects = list(real_data_path.iterdir())[:3]
+        transforms = get_val_transforms()
+
+        all_features = []
+        for subject in subjects:
+            data = {}
+            try:
+                for modality in ["t1c", "t1n", "t2f", "t2w"]:
+                    files = list(subject.glob(f"*-{modality}.nii.gz"))
+                    data[modality] = str(files[0])
+                seg_files = list(subject.glob("*-seg.nii.gz"))
+                if seg_files:
+                    data["seg"] = str(seg_files[0])
+            except (IndexError, StopIteration):
+                continue
+
+            result = transforms(data)
+            image = result["image"].unsqueeze(0)
+
+            with torch.no_grad():
+                features = extractor(image)
+            all_features.append(features)
+
+        if len(all_features) < 2:
+            pytest.skip("Not enough valid subjects for statistics")
+
+        features = torch.cat(all_features, dim=0)
+
+        # Features should have reasonable statistics
+        mean = features.mean().item()
+        std = features.std().item()
+
+        # Mean should be roughly in [-5, 5] range
+        assert -10 < mean < 10, f"Mean {mean} seems unreasonable"
+        # Std should be positive and not too extreme
+        assert 0.1 < std < 10, f"Std {std} seems unreasonable"
+
+        # Different subjects should produce different features
+        if len(all_features) >= 2:
+            diff = (all_features[0] - all_features[1]).abs().mean()
+            assert diff > 0.01, "Different subjects produced nearly identical features"
+
+    def test_forward_pass_deterministic(
+        self, real_checkpoint_path: Path, real_data_path: Path
+    ):
+        """Verify forward pass is deterministic for frozen encoder."""
+        from growth.models.encoder.feature_extractor import FeatureExtractor
+        from growth.data.transforms import get_val_transforms
+
+        encoder = load_swin_encoder(real_checkpoint_path, freeze=True)
+        extractor = FeatureExtractor(encoder, level="encoder10")
+        extractor.eval()
+
+        subjects = list(real_data_path.iterdir())
+        subject = subjects[0]
+
+        data = {}
+        for modality in ["t1c", "t1n", "t2f", "t2w"]:
+            files = list(subject.glob(f"*-{modality}.nii.gz"))
+            if not files:
+                pytest.skip(f"Missing {modality}")
+            data[modality] = str(files[0])
+        seg_files = list(subject.glob("*-seg.nii.gz"))
+        if seg_files:
+            data["seg"] = str(seg_files[0])
+
+        transforms = get_val_transforms()
+        result = transforms(data)
+        image = result["image"].unsqueeze(0)
+
+        # Run twice
+        with torch.no_grad():
+            features1 = extractor(image.clone())
+            features2 = extractor(image.clone())
+
+        # Should be exactly identical
+        assert torch.allclose(features1, features2, atol=1e-6), (
+            "Forward pass not deterministic for frozen encoder"
+        )

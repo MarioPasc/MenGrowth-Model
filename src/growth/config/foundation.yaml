@@ -22,6 +22,9 @@ paths:
   # BraTS-MEN dataset root
   data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
 
+  # BraTS-GLI dataset root, only needed for some experiments regarding LoRa usefullness
+  brats_gli_root: /media/mpascual/PortableSSD/BraTS_GLI/source/BraTS2024-BraTS-GLI-TrainingData/training_data1_v2
+
   # Persistent cache for MONAI transforms (speeds up subsequent runs)
   cache_dir: ${paths.data_root}/.cache
 
