@@ -33,7 +33,7 @@ import yaml
 
 from growth.utils.seed import set_seed
 
-from .data_splits import generate_splits, load_splits
+from .data_splits import main as generate_splits, load_splits
 
 logging.basicConfig(
     level=logging.INFO,
