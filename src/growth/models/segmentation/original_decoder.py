@@ -418,6 +418,11 @@ def load_original_decoder_model(
 ) -> OriginalDecoderSegmentationModel:
     """Load model with original decoder from checkpoint.
 
+    IMPORTANT: This uses load_full_swinunetr() to load ALL pretrained weights
+    including the decoder, which is essential for achieving good Dice scores
+    (~0.85+). Using load_swin_encoder() would only load encoder weights and
+    leave the decoder randomly initialized.
+
     Args:
         checkpoint_path: Path to BrainSegFounder checkpoint.
         freeze_encoder: If True, freeze encoder weights.
@@ -426,19 +431,22 @@ def load_original_decoder_model(
         device: Device to load model to.
 
     Returns:
-        OriginalDecoderSegmentationModel instance.
+        OriginalDecoderSegmentationModel instance with pretrained weights.
     """
-    from growth.models.encoder.swin_loader import load_swin_encoder
+    from growth.models.encoder.swin_loader import load_full_swinunetr
 
-    # Load full model (including decoder weights)
-    encoder = load_swin_encoder(
+    # Load FULL model (encoder + decoder weights) - critical for good performance!
+    full_model = load_full_swinunetr(
         checkpoint_path,
-        freeze=freeze_encoder,
+        freeze_encoder=freeze_encoder,
+        freeze_decoder=freeze_decoder,
+        out_channels=out_channels,
         device=device,
     )
 
+    # Wrap in our segmentation model class
     model = OriginalDecoderSegmentationModel(
-        encoder,
+        full_model,
         freeze_decoder=freeze_decoder,
         out_channels=out_channels,
     )

@@ -257,3 +257,92 @@ def count_parameters(model: nn.Module, trainable_only: bool = False) -> int:
     if trainable_only:
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
     return sum(p.numel() for p in model.parameters())
+
+
+def load_full_swinunetr(
+    ckpt_path: Union[str, Path],
+    freeze_encoder: bool = True,
+    freeze_decoder: bool = False,
+    out_channels: int = 4,
+    use_checkpoint: bool = False,
+    device: Union[str, torch.device] = "cpu",
+) -> SwinUNETR:
+    """Load FULL BrainSegFounder SwinUNETR with ALL pretrained weights.
+
+    Unlike load_swin_encoder(), this loads both encoder AND decoder weights,
+    which is necessary for using the original SwinUNETR decoder architecture
+    with pretrained weights (achieving ~0.85+ Dice).
+
+    Args:
+        ckpt_path: Path to BrainSegFounder checkpoint (.pt file).
+        freeze_encoder: If True, freeze encoder (swinViT) parameters.
+        freeze_decoder: If True, freeze decoder parameters.
+        out_channels: Number of output channels (4 for BraTS-MEN with background).
+        use_checkpoint: If True, use gradient checkpointing (saves memory).
+        device: Device to load model to.
+
+    Returns:
+        SwinUNETR model with ALL weights loaded (encoder + decoder).
+
+    Example:
+        >>> model = load_full_swinunetr("checkpoint.pt", freeze_encoder=True)
+        >>> # Now model.decoder1-5 have pretrained weights!
+    """
+    ckpt_path = Path(ckpt_path)
+
+    # Load checkpoint
+    checkpoint = load_checkpoint(ckpt_path)
+    state_dict = checkpoint["state_dict"]
+
+    # Log checkpoint statistics
+    stats = get_checkpoint_stats(state_dict)
+    logger.info("Loading FULL SwinUNETR (encoder + decoder):")
+    for prefix, info in sorted(stats.items()):
+        logger.info(f"  {prefix}: {info['count']} keys, {info['params_m']:.2f}M params")
+
+    # Create model (use same out_channels as checkpoint for weight loading)
+    # BrainSegFounder was trained with out_channels=3 (BraTS classes without background)
+    model = create_swinunetr(out_channels=3, use_checkpoint=use_checkpoint)
+
+    # Load ALL weights (strict=True to ensure everything matches)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+
+    if missing:
+        logger.warning(f"Missing keys ({len(missing)}): {missing[:5]}...")
+    if unexpected:
+        logger.warning(f"Unexpected keys ({len(unexpected)}): {unexpected[:5]}...")
+
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"Loaded full model: {len(state_dict)} keys, {total_params/1e6:.2f}M params")
+
+    # Modify output layer if needed (BrainSegFounder: 3 classes, BraTS-MEN: 4 classes)
+    if out_channels != 3:
+        in_features = model.out.conv.conv.in_channels
+        model.out = nn.Sequential(
+            nn.Conv3d(in_features, out_channels, kernel_size=1),
+        )
+        logger.info(f"Replaced output layer: {in_features} -> {out_channels} channels")
+
+    # Freeze encoder if requested
+    if freeze_encoder:
+        # Freeze swinViT (the main encoder)
+        for param in model.swinViT.parameters():
+            param.requires_grad = False
+        logger.info("Froze encoder (swinViT) parameters")
+
+    # Freeze decoder if requested
+    if freeze_decoder:
+        decoder_modules = [
+            model.encoder1, model.encoder2, model.encoder3, model.encoder4,
+            model.encoder10, model.decoder5, model.decoder4, model.decoder3,
+            model.decoder2, model.decoder1, model.out
+        ]
+        for module in decoder_modules:
+            for param in module.parameters():
+                param.requires_grad = False
+        logger.info("Froze decoder parameters")
+
+    # Move to device
+    model = model.to(device)
+
+    return model

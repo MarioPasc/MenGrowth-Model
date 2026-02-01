@@ -33,8 +33,8 @@ import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset, create_dataloaders
 from growth.losses.segmentation import SegmentationLoss, DiceMetric
-from growth.models.encoder.lora_adapter import LoRASwinViT, create_lora_encoder
-from growth.models.encoder.swin_loader import load_swin_encoder
+from growth.models.encoder.lora_adapter import LoRASwinViT
+from growth.models.encoder.swin_loader import load_full_swinunetr
 from growth.models.segmentation.original_decoder import (
     LoRAOriginalDecoderModel,
     OriginalDecoderSegmentationModel,
@@ -53,21 +53,20 @@ logger = logging.getLogger(__name__)
 
 
 class BaselineOriginalDecoderModel(nn.Module):
-    """Frozen encoder with original SwinUNETR decoder.
+    """Frozen encoder with original SwinUNETR decoder (pretrained weights).
 
     Used for baseline condition with the full decoder capacity.
+    IMPORTANT: Uses load_full_swinunetr to load pretrained decoder weights.
     """
 
-    def __init__(self, encoder: nn.Module, out_channels: int = 4):
+    def __init__(self, full_model: nn.Module, out_channels: int = 4):
         super().__init__()
 
-        # Freeze encoder
-        for param in encoder.parameters():
-            param.requires_grad = False
-
+        # full_model already has pretrained decoder weights from load_full_swinunetr
+        # Wrap in OriginalDecoderSegmentationModel
         self.model = OriginalDecoderSegmentationModel(
-            encoder=encoder,
-            freeze_decoder=False,  # Train decoder
+            encoder=full_model,
+            freeze_decoder=False,  # Train decoder (fine-tune on meningiomas)
             out_channels=out_channels,
         )
 
@@ -99,39 +98,55 @@ def create_model(
     use_semantic_heads: bool = False,
     freeze_decoder: bool = False,
 ) -> nn.Module:
-    """Create model with original decoder.
+    """Create model with original decoder and PRETRAINED weights.
+
+    IMPORTANT: Uses load_full_swinunetr() to load ALL pretrained weights
+    including the decoder, which is essential for good performance (~0.85 Dice).
 
     Args:
         condition_config: Condition config dict.
-        checkpoint_path: Path to encoder checkpoint.
+        checkpoint_path: Path to BrainSegFounder checkpoint.
         device: Device to load model to.
         use_semantic_heads: If True, add auxiliary semantic heads.
         freeze_decoder: If True, freeze decoder weights.
 
     Returns:
-        Model with original decoder architecture.
+        Model with original decoder architecture and pretrained weights.
     """
     lora_rank = condition_config.get("lora_rank")
 
     if lora_rank is None:
-        # Baseline: frozen encoder + trainable original decoder
-        logger.info("Creating baseline model with ORIGINAL decoder")
-        encoder = load_swin_encoder(
+        # Baseline: frozen encoder + trainable original decoder (pretrained)
+        logger.info("Creating baseline model with ORIGINAL decoder (pretrained weights)")
+        full_model = load_full_swinunetr(
             checkpoint_path,
-            freeze=True,
+            freeze_encoder=True,   # Freeze swinViT
+            freeze_decoder=False,  # Train decoder (fine-tune for meningiomas)
+            out_channels=4,
             device=device,
         )
-        model = BaselineOriginalDecoderModel(encoder, out_channels=4)
+        model = BaselineOriginalDecoderModel(full_model, out_channels=4)
     else:
-        # LoRA: frozen encoder + LoRA adapters + original decoder
+        # LoRA: frozen encoder + LoRA adapters + pretrained original decoder
         lora_alpha = condition_config.get("lora_alpha", lora_rank * 2)
-        logger.info(f"Creating LoRA model with ORIGINAL decoder (rank={lora_rank})")
+        logger.info(f"Creating LoRA model with ORIGINAL decoder (rank={lora_rank}, pretrained weights)")
 
-        lora_encoder = create_lora_encoder(
+        # Load full model with pretrained decoder weights
+        full_model = load_full_swinunetr(
             checkpoint_path,
+            freeze_encoder=True,   # Will be unfrozen for LoRA layers
+            freeze_decoder=freeze_decoder,
+            out_channels=4,
+            device=device,
+        )
+
+        # Wrap with LoRA adapters
+        lora_encoder = LoRASwinViT(
+            full_model,
             rank=lora_rank,
             alpha=lora_alpha,
-            device=device,
+            dropout=0.1,
+            target_stages=[3, 4],
         )
 
         model = LoRAOriginalDecoderModel(
