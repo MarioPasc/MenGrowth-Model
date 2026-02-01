@@ -1,0 +1,71 @@
+# experiments/lora_ablation/config/ablation.yaml
+# LoRA Ablation Experiment Configuration
+
+experiment:
+  name: lora_ablation
+  seed: 42
+  output_dir: ./results/lora_ablation
+
+paths:
+  checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+
+# Conservative splits for robust evaluation
+data_splits:
+  lora_train: 200      # Train LoRA adaptation (segmentation)
+  lora_val: 100        # Early stopping for LoRA
+  probe_train: 200     # Train linear probes (separate from LoRA)
+  test: 500            # Final evaluation (never touched during training)
+
+# Experimental conditions
+conditions:
+  - name: baseline
+    lora_rank: null
+    description: Frozen glioma-trained encoder (no adaptation)
+
+  - name: lora_r4
+    lora_rank: 4
+    lora_alpha: 8
+    description: LoRA with rank 4 (~18K params)
+
+  - name: lora_r8
+    lora_rank: 8
+    lora_alpha: 16
+    description: LoRA with rank 8 (~37K params)
+
+  - name: lora_r16
+    lora_rank: 16
+    lora_alpha: 32
+    description: LoRA with rank 16 (~74K params)
+
+# Training hyperparameters
+training:
+  max_epochs: 100
+  early_stopping_patience: 10
+  batch_size: 4
+  lr_encoder: 1.0e-4      # For LoRA params
+  lr_decoder: 5.0e-4      # For seg head
+  weight_decay: 1.0e-5
+  num_workers: 4
+  lora_dropout: 0.1
+  gradient_clip: 1.0
+
+# Segmentation loss
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+
+# Linear probe evaluation
+probe:
+  alpha: 1.0              # Ridge regularization
+  normalize: true         # Standardize features before fitting
+
+# Feature extraction
+feature_extraction:
+  level: encoder10        # 768-dim features
+  batch_size: 8           # Can be larger since no gradients
+
+# Logging
+logging:
+  log_every_n_steps: 10
+  val_check_interval: 1.0  # Validate every epoch
