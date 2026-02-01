@@ -6,9 +6,10 @@ This script runs the complete enhanced ablation pipeline:
 1. Generate data splits (if not exist)
 2. Train all conditions with original decoder
 3. Extract multi-scale features
-4. Evaluate with linear + MLP probes
-5. Generate enhanced visualizations
-6. Statistical analysis and recommendations
+4. Extract domain features (Glioma + Meningioma) for UMAP
+5. Evaluate with linear + MLP probes
+6. Generate enhanced visualizations
+7. Statistical analysis and recommendations
 
 Key improvements over v1:
 - Uses original SwinUNETR decoder for stronger gradients
@@ -16,24 +17,26 @@ Key improvements over v1:
 - MLP probes to detect nonlinear encoding
 - Target normalization for stable evaluation
 - Multi-scale feature extraction
+- Domain shift analysis (Glioma vs Meningioma UMAP)
 
 Usage:
     python -m experiments.lora_ablation.run_ablation_v2 \
         --config experiments/lora_ablation/config/ablation_v2.yaml \
-        run-all
+        run-all --domain-features
 """
 
 import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import yaml
 
 from growth.utils.seed import set_seed
 
 from .data_splits import main as generate_splits, load_splits
+from .extract_domain_features import extract_domain_features
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,6 +122,48 @@ def run_extract_all(
             logger.warning(f"Failed to extract {condition}: {e}")
 
 
+def run_domain(
+    config_path: str,
+    condition: str,
+    n_glioma: int = 200,
+    n_meningioma: int = 200,
+    device: str = "cuda",
+) -> None:
+    """Extract domain features (Glioma + Meningioma) for a condition."""
+    logger.info(f"Extracting domain features for: {condition}")
+    extract_domain_features(
+        config_path=config_path,
+        condition_name=condition,
+        n_glioma=n_glioma,
+        n_meningioma=n_meningioma,
+        device=device,
+    )
+
+
+def run_domain_all(
+    config_path: str,
+    n_glioma: int = 200,
+    n_meningioma: int = 200,
+    device: str = "cuda",
+) -> None:
+    """Extract domain features for all conditions."""
+    logger.info("=" * 60)
+    logger.info("STEP 4: Extracting Domain Features (Glioma vs Meningioma)")
+    logger.info("=" * 60)
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    conditions = [c["name"] for c in config["conditions"]]
+
+    for condition in conditions:
+        logger.info(f"\nExtracting domain features: {condition}")
+        try:
+            run_domain(config_path, condition, n_glioma, n_meningioma, device)
+        except Exception as e:
+            logger.warning(f"Failed to extract domain features for {condition}: {e}")
+
+
 def run_probes(
     config_path: str,
     condition: str,
@@ -137,7 +182,7 @@ def run_probes_all(
 ) -> None:
     """Evaluate probes for all conditions."""
     logger.info("=" * 60)
-    logger.info("STEP 4: Evaluating Probes")
+    logger.info("STEP 5: Evaluating Probes")
     logger.info("=" * 60)
 
     with open(config_path) as f:
@@ -156,22 +201,21 @@ def run_probes_all(
 def run_visualize(config_path: str) -> None:
     """Generate visualizations."""
     logger.info("=" * 60)
-    logger.info("STEP 5: Generating Visualizations")
+    logger.info("STEP 6: Generating Visualizations")
     logger.info("=" * 60)
 
     from .visualizations_v2 import main as viz_main
     viz_main(config_path)
 
 
-def run_analysis(config_path: str) -> None:
+def run_analysis(config_path: str, glioma_features_path: Optional[str] = None) -> None:
     """Run statistical analysis."""
     logger.info("=" * 60)
-    logger.info("STEP 6: Statistical Analysis")
+    logger.info("STEP 7: Statistical Analysis")
     logger.info("=" * 60)
 
-    # Import original analysis (it still works with enhanced metrics)
-    from .analyze_results import main as analyze_main
-    analyze_main(config_path, with_glioma=False)
+    from .analyze_results import analyze_results
+    analyze_results(config_path, glioma_features_path=glioma_features_path)
 
 
 def run_all(
@@ -179,6 +223,9 @@ def run_all(
     max_epochs: Optional[int] = None,
     device: str = "cuda",
     skip_training: bool = False,
+    domain_features: bool = False,
+    n_glioma: int = 200,
+    n_meningioma: int = 200,
 ) -> None:
     """Run complete enhanced ablation pipeline."""
     logger.info("=" * 60)
@@ -191,6 +238,8 @@ def run_all(
     logger.info("  - MLP probes for nonlinear analysis")
     logger.info("  - Target normalization")
     logger.info("  - Multi-scale feature extraction")
+    if domain_features:
+        logger.info("  - Domain shift analysis (Glioma vs Meningioma)")
     logger.info("")
 
     with open(config_path) as f:
@@ -210,14 +259,28 @@ def run_all(
     # Step 3: Extract features
     run_extract_all(config_path, device)
 
-    # Step 4: Evaluate probes
+    # Step 4: Extract domain features (optional)
+    glioma_features_path = None
+    if domain_features:
+        run_domain_all(config_path, n_glioma, n_meningioma, device)
+        # Get path to glioma features from first condition with them
+        output_dir = Path(config["experiment"]["output_dir"])
+        for cond in config["conditions"]:
+            glioma_path = output_dir / "conditions" / cond["name"] / "features_glioma.pt"
+            if glioma_path.exists():
+                glioma_features_path = str(glioma_path)
+                break
+    else:
+        logger.info("Skipping domain features (use --domain-features to enable)")
+
+    # Step 5: Evaluate probes
     run_probes_all(config_path, device)
 
-    # Step 5: Generate visualizations
+    # Step 6: Generate visualizations
     run_visualize(config_path)
 
-    # Step 6: Statistical analysis
-    run_analysis(config_path)
+    # Step 7: Statistical analysis
+    run_analysis(config_path, glioma_features_path)
 
     logger.info("")
     logger.info("=" * 60)
@@ -272,11 +335,26 @@ def main():
     probes_all_parser = subparsers.add_parser("probes-all", help="Evaluate all probes")
     probes_all_parser.add_argument("--device", type=str, default="cuda")
 
+    # domain (extract domain features for one condition)
+    domain_parser = subparsers.add_parser("domain", help="Extract domain features (Glioma + Meningioma)")
+    domain_parser.add_argument("--condition", type=str, required=True)
+    domain_parser.add_argument("--n-glioma", type=int, default=200, help="Number of glioma samples")
+    domain_parser.add_argument("--n-meningioma", type=int, default=200, help="Number of meningioma samples")
+    domain_parser.add_argument("--device", type=str, default="cuda")
+
+    # domain-all (extract domain features for all conditions)
+    domain_all_parser = subparsers.add_parser("domain-all", help="Extract domain features for all conditions")
+    domain_all_parser.add_argument("--n-glioma", type=int, default=200, help="Number of glioma samples")
+    domain_all_parser.add_argument("--n-meningioma", type=int, default=200, help="Number of meningioma samples")
+    domain_all_parser.add_argument("--device", type=str, default="cuda")
+
     # visualize
     subparsers.add_parser("visualize", help="Generate visualizations")
 
     # analyze
-    subparsers.add_parser("analyze", help="Run statistical analysis")
+    analyze_parser = subparsers.add_parser("analyze", help="Run statistical analysis")
+    analyze_parser.add_argument("--glioma-features", type=str, default=None,
+                               help="Path to glioma features for domain shift visualization")
 
     # run-all
     run_all_parser = subparsers.add_parser("run-all", help="Run complete pipeline")
@@ -284,6 +362,12 @@ def main():
     run_all_parser.add_argument("--device", type=str, default="cuda")
     run_all_parser.add_argument("--skip-training", action="store_true",
                                help="Skip training (use existing checkpoints)")
+    run_all_parser.add_argument("--domain-features", action="store_true",
+                               help="Extract domain features (Glioma vs Meningioma) for UMAP")
+    run_all_parser.add_argument("--n-glioma", type=int, default=200,
+                               help="Number of glioma samples for domain features")
+    run_all_parser.add_argument("--n-meningioma", type=int, default=200,
+                               help="Number of meningioma samples for domain features")
 
     args = parser.parse_args()
 
@@ -297,6 +381,10 @@ def main():
         run_extract(args.config, args.condition, args.device)
     elif args.command == "extract-all":
         run_extract_all(args.config, args.device)
+    elif args.command == "domain":
+        run_domain(args.config, args.condition, args.n_glioma, args.n_meningioma, args.device)
+    elif args.command == "domain-all":
+        run_domain_all(args.config, args.n_glioma, args.n_meningioma, args.device)
     elif args.command == "probes":
         run_probes(args.config, args.condition, args.device)
     elif args.command == "probes-all":
@@ -304,9 +392,12 @@ def main():
     elif args.command == "visualize":
         run_visualize(args.config)
     elif args.command == "analyze":
-        run_analysis(args.config)
+        run_analysis(args.config, args.glioma_features)
     elif args.command == "run-all":
-        run_all(args.config, args.max_epochs, args.device, args.skip_training)
+        run_all(
+            args.config, args.max_epochs, args.device, args.skip_training,
+            args.domain_features, args.n_glioma, args.n_meningioma
+        )
     else:
         parser.print_help()
 
