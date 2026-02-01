@@ -17,7 +17,7 @@
 # =============================================================================
 paths:
   # BrainSegFounder checkpoints (5 folds from BraTS2021 fine-tuning)
-  checkpoint_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS
+  checkpoint_dir: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS
 
   # BraTS-MEN dataset root
   data_root: /media/hddb/mario/data/BraTS-MEN

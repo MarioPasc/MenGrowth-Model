@@ -349,7 +349,7 @@ For more information on a specific command:
   ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
   │ splits                 │ Generate train/val/test data splits                             │
   ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
-  │ run --condition <name> │ Train a single condition (baseline, lora_r4, lora_r8, lora_r16) │
+  │ run --condition <name> │ Train a single condition (baseline, lora_r2/4/8/16/32)          │
   ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
   │ extract                │ Extract encoder features for probe evaluation                   │
   ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
@@ -406,7 +406,7 @@ For more information on a specific command:
         "--condition",
         type=str,
         required=True,
-        choices=["baseline", "lora_r4", "lora_r8", "lora_r16"],
+        choices=["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"],
         help="Condition to train",
     )
     sp_run.add_argument(
@@ -534,7 +534,7 @@ For more information on a specific command:
         type=str,
         nargs="+",
         default=None,
-        choices=["baseline", "lora_r4", "lora_r8", "lora_r16"],
+        choices=["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"],
         help="Specific conditions to run (default: all)",
     )
     sp_run_all.add_argument(

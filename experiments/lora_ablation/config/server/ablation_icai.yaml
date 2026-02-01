@@ -7,7 +7,7 @@ experiment:
   output_dir: /media/hddb/mario/results/growth/lora_ablation
 
 paths:
-  checkpoint: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS//finetuned_model_fold_0.pt
+  checkpoint: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   data_root: /media/hddb/mario/data/BraTS-MEN
 
 # Conservative splits for robust evaluation
@@ -23,6 +23,11 @@ conditions:
     lora_rank: null
     description: Frozen glioma-trained encoder (no adaptation)
 
+  - name: lora_r2
+    lora_rank: 2
+    lora_alpha: 4
+    description: LoRA with rank 2 (~9K params) - lower bound test
+
   - name: lora_r4
     lora_rank: 4
     lora_alpha: 8
@@ -37,6 +42,11 @@ conditions:
     lora_rank: 16
     lora_alpha: 32
     description: LoRA with rank 16 (~74K params)
+
+  - name: lora_r32
+    lora_rank: 32
+    lora_alpha: 64
+    description: LoRA with rank 32 (~148K params) - saturation test
 
 # Training hyperparameters
 training:

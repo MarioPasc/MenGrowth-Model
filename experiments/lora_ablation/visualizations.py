@@ -28,7 +28,7 @@ import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 import yaml
 
-from .settings import (
+from experiments.utils.settings import (
     apply_ieee_style,
     get_figure_size,
     get_significance_stars,

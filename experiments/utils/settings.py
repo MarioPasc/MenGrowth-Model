@@ -51,46 +51,58 @@ PAUL_TOL_MUTED = [
 
 CONDITION_COLORS = {
     "baseline": "#BBBBBB",   # Grey - frozen encoder (reference)
-    "lora_r4": "#66CCEE",    # Cyan - lightest adaptation
+    "lora_r2": "#88CCEE",    # Light cyan - minimal adaptation (lower bound)
+    "lora_r4": "#66CCEE",    # Cyan - light adaptation
     "lora_r8": "#4477AA",    # Blue - moderate adaptation
-    "lora_r16": "#228833",   # Green - strongest adaptation
+    "lora_r16": "#228833",   # Green - strong adaptation
+    "lora_r32": "#117733",   # Dark green - maximum adaptation (saturation test)
 }
 
 CONDITION_MARKERS = {
     "baseline": "o",   # Circle
+    "lora_r2": "v",    # Triangle down
     "lora_r4": "s",    # Square
     "lora_r8": "D",    # Diamond
-    "lora_r16": "^",   # Triangle
+    "lora_r16": "^",   # Triangle up
+    "lora_r32": "p",   # Pentagon
 }
 
 CONDITION_LINESTYLES = {
     "baseline": "--",  # Dashed (reference)
+    "lora_r2": "-",    # Solid
     "lora_r4": "-",    # Solid
     "lora_r8": "-",    # Solid
     "lora_r16": "-",   # Solid
+    "lora_r32": "-",   # Solid
 }
 
 CONDITION_HATCHES = {
     "baseline": "//",   # Diagonal stripes
+    "lora_r2": None,    # Solid
     "lora_r4": None,    # Solid
     "lora_r8": None,    # Solid
-    "lora_r16": "\\\\", # Back diagonal
+    "lora_r16": None,   # Solid
+    "lora_r32": "\\\\", # Back diagonal (saturation marker)
 }
 
 # LaTeX-formatted labels for conditions
 CONDITION_LABELS = {
     "baseline": r"Baseline (Frozen)",
+    "lora_r2": r"LoRA $r{=}2$",
     "lora_r4": r"LoRA $r{=}4$",
     "lora_r8": r"LoRA $r{=}8$",
     "lora_r16": r"LoRA $r{=}16$",
+    "lora_r32": r"LoRA $r{=}32$",
 }
 
 # Short labels for tight spaces
 CONDITION_LABELS_SHORT = {
     "baseline": "Base",
+    "lora_r2": "r=2",
     "lora_r4": "r=4",
     "lora_r8": "r=8",
     "lora_r16": "r=16",
+    "lora_r32": "r=32",
 }
 
 # =============================================================================
