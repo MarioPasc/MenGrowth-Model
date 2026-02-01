@@ -1,0 +1,155 @@
+# src/growth/config/foundation.yaml
+# =============================================================================
+# Growth Pipeline Foundation Configuration
+# =============================================================================
+# Base configuration for BrainSegFounder encoder with feature extraction.
+# This config is used as a base for Phase 1 (LoRA) and Phase 2 (SDP).
+#
+# Usage:
+#   python -m growth.training.train_lora --config src/growth/config/foundation.yaml
+#   python -m growth.training.train_sdp --config src/growth/config/foundation.yaml
+#
+# Override via CLI:
+#   --overrides "train.seed=123" "data.batch_size=8"
+
+# =============================================================================
+# Paths
+# =============================================================================
+paths:
+  # BrainSegFounder checkpoints (5 folds from BraTS2021 fine-tuning)
+  checkpoint_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS
+
+  # BraTS-MEN dataset root
+  data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+
+  # BraTS-GLI dataset root, only needed for some experiments regarding LoRa usefullness
+  brats_gli_root: /media/mpascual/PortableSSD/BraTS_GLI/source/BraTS2024-BraTS-GLI-TrainingData/training_data1_v2
+
+  # Persistent cache for MONAI transforms (speeds up subsequent runs)
+  cache_dir: ${paths.data_root}/.cache
+
+  # Output directory for results, checkpoints, logs
+  output_dir: ./results/growth
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # MRI modalities (must match BrainSegFounder training)
+  modalities:
+    - t1c   # T1 contrast-enhanced
+    - t1n   # T1 native (non-enhanced)
+    - t2f   # T2-FLAIR
+    - t2w   # T2-weighted
+
+  # Spatial configuration (must match SwinUNETR input size)
+  roi_size: [96, 96, 96]      # SwinUNETR native resolution
+  spacing: [1.0, 1.0, 1.0]    # Isotropic 1mm spacing
+  orientation: RAS            # Standard neuroimaging orientation
+
+  # DataLoader configuration
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+
+  # Data splits (reproducible with train.seed)
+  val_split: 0.1
+  test_split: 0.1
+
+  # MONAI caching
+  persistent_cache: true
+  cache_rate: 1.0             # Fraction of data to cache (1.0 = all)
+
+# =============================================================================
+# Encoder Configuration
+# =============================================================================
+encoder:
+  # BrainSegFounder fold to use (0-4 available)
+  fold: 0
+
+  # Architecture parameters (must match checkpoint)
+  feature_size: 48            # Base channel count in SwinUNETR
+  in_channels: 4              # Number of input modalities
+
+  # Feature extraction level (MONAI 1.5+ dimensions)
+  # - encoder10: 768-dim (bottleneck, same as layers4)
+  # - layers4: 768-dim (last Swin stage)
+  # - multi_scale: 1344-dim (layers2=192 + layers3=384 + layers4=768)
+  feature_level: encoder10
+  feature_dim: 768            # Output dimension (depends on feature_level)
+
+  # Encoder behavior
+  freeze: true                # Freeze encoder weights (for Phase 2)
+  use_checkpoint: false       # Gradient checkpointing (saves memory, slower)
+
+  # SwinUNETR architecture (must match BrainSegFounder)
+  depths: [2, 2, 2, 2]        # Blocks per stage
+  num_heads: [3, 6, 12, 24]   # Attention heads per stage
+  norm_name: instance         # Normalization type
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+train:
+  # Reproducibility
+  seed: 42
+  deterministic: false        # Set true for full reproducibility (slower)
+
+  # Hardware
+  precision: bf16-mixed       # bf16-mixed, 16-mixed, 32
+  accelerator: gpu
+  devices: 1
+  strategy: auto              # auto, ddp, ddp_spawn
+
+  # Optimization
+  max_epochs: 100
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+  # Learning rate (separate groups possible in phase-specific configs)
+  lr: 1.0e-4
+  weight_decay: 0.01
+
+  # Scheduler
+  scheduler:
+    type: cosine              # cosine, linear, constant
+    warmup_epochs: 5
+    min_lr: 1.0e-6
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+# Note: No WandB - using Lightning's built-in loggers only
+logging:
+  # Output directory
+  save_dir: ${paths.output_dir}
+
+  # Logging frequency
+  log_every_n_steps: 50
+
+  # TensorBoard logger
+  tensorboard:
+    enabled: true
+    name: growth_foundation
+    version: null             # null = auto-increment
+
+  # CSV logger for metrics
+  csv:
+    enabled: true
+
+  # Model checkpointing
+  checkpointing:
+    save_top_k: 3             # Keep top k checkpoints
+    monitor: val/loss         # Metric to monitor
+    mode: min                 # min or max
+    save_last: true           # Always save last checkpoint
+    every_n_epochs: 1         # Save frequency
+    filename: "{epoch:04d}-{val_loss:.4f}"
+
+# =============================================================================
+# Segmentation Labels (for semantic feature extraction)
+# =============================================================================
+seg_labels:
+  ncr: 1                      # Necrotic core
+  ed: 2                       # Peritumoral edema
+  et: 3                       # Enhancing tumor
