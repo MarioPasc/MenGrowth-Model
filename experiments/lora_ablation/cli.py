@@ -114,7 +114,7 @@ def cmd_run(args) -> int:
         extract_features(args.condition, config, splits, device)
 
         logger.info("Evaluating probes...")
-        evaluate_probes(args.condition, config)
+        evaluate_probes(args.condition, config, config_path, device)
 
     return 0
 
@@ -178,6 +178,9 @@ def cmd_probes(args) -> int:
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
+    device = check_cuda(args.device)
+    skip_dice = getattr(args, "skip_dice", False)
+
     if args.condition == "all":
         conditions = [c["name"] for c in config["conditions"]]
     else:
@@ -185,7 +188,7 @@ def cmd_probes(args) -> int:
 
     for cond in conditions:
         logger.info(f"Evaluating probes for {cond}")
-        evaluate_probes(cond, config)
+        evaluate_probes(cond, config, config_path, device, skip_dice)
 
     return 0
 
@@ -282,7 +285,7 @@ def cmd_run_all(args) -> int:
 
     for cond in conditions:
         logger.info(f"Evaluating probes for {cond}")
-        evaluate_probes(cond, config)
+        evaluate_probes(cond, config, config_path, device)
 
     # Step 5: Extract domain features (optional)
     glioma_features_path = None
@@ -497,6 +500,17 @@ For more information on a specific command:
         type=str,
         default="all",
         help="Condition to evaluate (default: all)",
+    )
+    sp_probes.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device for Dice evaluation (default: cuda)",
+    )
+    sp_probes.add_argument(
+        "--skip-dice",
+        action="store_true",
+        help="Skip test Dice evaluation (faster)",
     )
     sp_probes.set_defaults(func=cmd_probes)
 

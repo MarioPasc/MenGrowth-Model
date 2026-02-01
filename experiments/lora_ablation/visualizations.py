@@ -198,41 +198,47 @@ def plot_dice_comparison(
     config: dict,
     output_dir: Path,
 ) -> plt.Figure:
-    """Create Dice score comparison plot."""
+    """Create TEST Dice score comparison plot.
+
+    Uses test_dice_* metrics from metrics.json (computed by evaluate_probes.py).
+    This ensures we report TEST set performance, not validation.
+    """
     setup_style()
 
     conditions = [c["name"] for c in config["conditions"]]
     dice_data = {}
 
     for cond in conditions:
-        summary_path = output_dir / "conditions" / cond / "training_summary.yaml"
-        log_path = output_dir / "conditions" / cond / "training_log.csv"
+        # Load TEST Dice from metrics.json (NOT validation from training_summary)
+        metrics_path = output_dir / "conditions" / cond / "metrics.json"
 
-        if summary_path.exists():
-            with open(summary_path) as f:
-                summary = yaml.safe_load(f)
-            dice_data[cond] = {"best_dice": summary.get("best_val_dice", 0)}
+        if metrics_path.exists():
+            with open(metrics_path) as f:
+                metrics = json.load(f)
 
-            # Load per-class dice if available
-            if log_path.exists():
-                df = pd.read_csv(log_path)
-                if "val_dice_0" in df.columns:
-                    best_idx = df["val_dice_mean"].idxmax()
-                    dice_data[cond]["dice_per_class"] = [
-                        df.loc[best_idx, "val_dice_0"],
-                        df.loc[best_idx, "val_dice_1"],
-                        df.loc[best_idx, "val_dice_2"],
-                    ]
+            # Check if test Dice metrics are available
+            if "test_dice_mean" in metrics:
+                dice_data[cond] = {
+                    "mean": metrics.get("test_dice_mean", 0),
+                    "per_class": [
+                        metrics.get("test_dice_NCR", 0),
+                        metrics.get("test_dice_ED", 0),
+                        metrics.get("test_dice_ET", 0),
+                    ],
+                }
+            else:
+                logger.warning(f"No test Dice in metrics.json for {cond}. "
+                             "Run 'probes' command to compute test Dice.")
 
     if not dice_data:
-        logger.warning("No Dice data found")
+        logger.warning("No test Dice data found. Skipping Dice comparison plot.")
         return None
 
     fig, ax = plt.subplots(figsize=get_figure_size("single", 0.8))
 
-    # Simple bar plot of best dice
+    # Bar plot of mean test dice
     conds = list(dice_data.keys())
-    values = [dice_data[c]["best_dice"] for c in conds]
+    values = [dice_data[c]["mean"] for c in conds]
     colors = [CONDITION_COLORS.get(c, "gray") for c in conds]
 
     bars = ax.bar(
@@ -255,7 +261,7 @@ def plot_dice_comparison(
         )
 
     ax.set_xlabel("Condition", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    ax.set_ylabel("Best Validation Dice", fontsize=PLOT_SETTINGS["axes_labelsize"])
+    ax.set_ylabel("Test Dice Score", fontsize=PLOT_SETTINGS["axes_labelsize"])
     ax.set_xticks(range(len(conds)))
     ax.set_xticklabels([CONDITION_LABELS.get(c, c) for c in conds], rotation=15, ha="right")
     ax.set_ylim(0, 1.0)

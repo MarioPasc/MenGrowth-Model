@@ -150,7 +150,7 @@ def generate_latex_table(
         r"\begin{tabular}{lcccccc}",
         r"\toprule",
         r"Condition & $R^2_\mathrm{vol}$ & $R^2_\mathrm{loc}$ & $R^2_\mathrm{shape}$ & "
-        r"$R^2_\mathrm{mean}$ & Val.\ Dice & Params \\",
+        r"$R^2_\mathrm{mean}$ & Test Dice & Params \\",
         r"\midrule",
     ]
 
@@ -168,7 +168,9 @@ def generate_latex_table(
         r2_loc = f"{m.get('r2_location', 0):.3f}"
         r2_shape = f"{m.get('r2_shape', 0):.3f}"
         r2_mean = f"{m.get('r2_mean', 0):.3f}"
-        val_dice = f"{m.get('val_dice', 0):.3f}" if m.get('val_dice') else "---"
+        # Prefer test Dice, fall back to validation Dice
+        test_dice = m.get('test_dice_mean') or m.get('val_dice')
+        dice_str = f"{test_dice:.3f}" if test_dice else "---"
 
         # Format params
         params = m.get("param_counts", {})
@@ -195,7 +197,7 @@ def generate_latex_table(
             label = f"LoRA $r={rank}$"
 
         lines.append(
-            f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & {r2_mean} & {val_dice} & {params_str} \\\\"
+            f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & {r2_mean} & {dice_str} & {params_str} \\\\"
         )
 
     lines.extend([
@@ -286,8 +288,8 @@ def generate_markdown_report(
         "",
         "## 3. Secondary Results: Segmentation Dice",
         "",
-        "| Condition | Best Val Dice | Best Epoch | Training Time (min) |",
-        "|-----------|---------------|------------|---------------------|",
+        "| Condition | Test Dice (Mean) | Test Dice (NCR) | Test Dice (ED) | Test Dice (ET) |",
+        "|-----------|------------------|-----------------|----------------|----------------|",
     ])
 
     for cond in config["conditions"]:
@@ -296,11 +298,13 @@ def generate_markdown_report(
             continue
 
         m = metrics[name]
-        dice = f"{m.get('val_dice', 0):.4f}" if m.get('val_dice') else "N/A"
-        epoch = str(m.get("best_epoch", "N/A"))
-        time = f"{m.get('training_time_minutes', 0):.1f}" if m.get("training_time_minutes") else "N/A"
+        # Use test dice from metrics.json
+        dice_mean = f"{m.get('test_dice_mean', 0):.4f}" if m.get('test_dice_mean') else "N/A"
+        dice_ncr = f"{m.get('test_dice_NCR', 0):.4f}" if m.get('test_dice_NCR') else "N/A"
+        dice_ed = f"{m.get('test_dice_ED', 0):.4f}" if m.get('test_dice_ED') else "N/A"
+        dice_et = f"{m.get('test_dice_ET', 0):.4f}" if m.get('test_dice_ET') else "N/A"
 
-        lines.append(f"| {name} | {dice} | {epoch} | {time} |")
+        lines.append(f"| {name} | {dice_mean} | {dice_ncr} | {dice_ed} | {dice_et} |")
 
     lines.extend([
         "",
@@ -513,7 +517,11 @@ def analyze_results(
                 "r2_location": m.get("r2_location"),
                 "r2_shape": m.get("r2_shape"),
                 "r2_mean": m.get("r2_mean"),
-                "val_dice": m.get("val_dice"),
+                "test_dice_mean": m.get("test_dice_mean"),
+                "test_dice_NCR": m.get("test_dice_NCR"),
+                "test_dice_ED": m.get("test_dice_ED"),
+                "test_dice_ET": m.get("test_dice_ET"),
+                "val_dice": m.get("val_dice"),  # Keep for reference
                 "variance_mean": m.get("variance_mean"),
             })
 

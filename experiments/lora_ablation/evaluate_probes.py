@@ -6,7 +6,8 @@ This script:
 1. Loads pre-extracted features (probe_train and test)
 2. Trains separate linear probes for volume, location, and shape
 3. Evaluates on test set and computes R² scores
-4. Saves results and trained probe models
+4. Evaluates Dice scores on test set (segmentation quality)
+5. Saves results and trained probe models
 
 Usage:
     python -m experiments.lora_ablation.evaluate_probes \
@@ -19,25 +20,185 @@ import json
 import logging
 import pickle
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 import yaml
 
+from growth.data.bratsmendata import BraTSMENDataset
+from growth.data.transforms import get_val_transforms
 from growth.evaluation.latent_quality import (
     LinearProbe,
     SemanticProbes,
     ProbeResults,
     compute_variance_per_dim,
 )
+from growth.losses.segmentation import DiceMetric
 from growth.utils.seed import set_seed
+
+from .data_splits import load_splits
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def load_segmentation_model(
+    condition_name: str,
+    config: dict,
+    device: str = "cuda",
+) -> nn.Module:
+    """Load trained segmentation model for a condition.
+
+    Args:
+        condition_name: Name of the condition (baseline, lora_r4, etc.).
+        config: Experiment configuration.
+        device: Device to load model on.
+
+    Returns:
+        Trained segmentation model in eval mode.
+    """
+    from growth.models.encoder.swin_loader import load_swin_encoder
+    from growth.models.segmentation.seg_head import (
+        SegmentationHead,
+        LoRASegmentationModel,
+    )
+
+    output_dir = Path(config["experiment"]["output_dir"])
+    condition_dir = output_dir / "conditions" / condition_name
+
+    # Get condition config
+    cond_config = None
+    for c in config["conditions"]:
+        if c["name"] == condition_name:
+            cond_config = c
+            break
+
+    if cond_config is None:
+        raise ValueError(f"Unknown condition: {condition_name}")
+
+    # Load base encoder
+    encoder = load_swin_encoder(config["paths"]["checkpoint"])
+
+    # Create model based on condition
+    lora_rank = cond_config.get("lora_rank")
+
+    if lora_rank is None:
+        # Baseline: just encoder + segmentation head
+        from .train_condition import BaselineSegmentationModel
+        model = BaselineSegmentationModel(encoder, out_channels=4)
+    else:
+        # LoRA model
+        lora_alpha = cond_config.get("lora_alpha", lora_rank * 2)
+        model = LoRASegmentationModel(
+            encoder=encoder,
+            out_channels=4,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+        )
+
+    # Load checkpoint
+    checkpoint_path = condition_dir / "best_model.pt"
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model.to(device)
+    model.eval()
+
+    logger.info(f"Loaded model from {checkpoint_path}")
+    return model
+
+
+def evaluate_test_dice(
+    condition_name: str,
+    config: dict,
+    config_path: str,
+    device: str = "cuda",
+) -> Dict[str, float]:
+    """Evaluate Dice scores on the test set.
+
+    Args:
+        condition_name: Name of the condition.
+        config: Experiment configuration.
+        config_path: Path to config file (for loading splits).
+        device: Device to use.
+
+    Returns:
+        Dict with test Dice scores: 'test_dice_mean', 'test_dice_NCR', etc.
+    """
+    logger.info(f"Evaluating test Dice for {condition_name}...")
+
+    # Load model
+    try:
+        model = load_segmentation_model(condition_name, config, device)
+    except FileNotFoundError as e:
+        logger.warning(f"Could not load model: {e}")
+        return {}
+
+    # Load test split
+    splits = load_splits(config_path)
+    test_subjects = splits["test"]
+
+    # Create test dataset
+    dataset = BraTSMENDataset(
+        data_root=config["paths"]["data_root"],
+        subject_ids=test_subjects,
+        transform=get_val_transforms(),
+        compute_semantic=False,
+    )
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config["training"]["batch_size"],
+        shuffle=False,
+        num_workers=config["training"].get("num_workers", 4),
+        pin_memory=True,
+    )
+
+    # Evaluate Dice
+    dice_metric = DiceMetric()
+    all_dice_scores = []
+
+    with torch.no_grad():
+        for batch in dataloader:
+            images = batch["image"].to(device)
+            segs = batch["seg"].to(device)
+
+            # Forward pass
+            outputs = model(images)
+
+            # Handle deep supervision (use main output)
+            if isinstance(outputs, (list, tuple)):
+                outputs = outputs[0]
+
+            # Compute Dice
+            pred = torch.softmax(outputs, dim=1)
+            dice_scores = dice_metric(pred, segs)
+            all_dice_scores.append(dice_scores.cpu())
+
+    # Aggregate
+    dice_tensor = torch.stack(all_dice_scores).mean(dim=0)
+
+    results = {
+        "test_dice_mean": dice_tensor.mean().item(),
+        "test_dice_NCR": dice_tensor[0].item(),
+        "test_dice_ED": dice_tensor[1].item(),
+        "test_dice_ET": dice_tensor[2].item(),
+    }
+
+    logger.info(f"  Test Dice Mean: {results['test_dice_mean']:.4f}")
+    logger.info(f"  Test Dice NCR:  {results['test_dice_NCR']:.4f}")
+    logger.info(f"  Test Dice ED:   {results['test_dice_ED']:.4f}")
+    logger.info(f"  Test Dice ET:   {results['test_dice_ET']:.4f}")
+
+    return results
 
 
 def load_features_and_targets(condition_dir: Path) -> Dict[str, torch.Tensor]:
@@ -77,17 +238,21 @@ def load_features_and_targets(condition_dir: Path) -> Dict[str, torch.Tensor]:
 def evaluate_probes(
     condition_name: str,
     config: dict,
-    device: str = "cpu",
+    config_path: str = "experiments/lora_ablation/config/ablation.yaml",
+    device: str = "cuda",
+    skip_dice: bool = False,
 ) -> Dict[str, float]:
     """Train and evaluate linear probes for a condition.
 
     Args:
         condition_name: Name of the condition.
         config: Full experiment configuration.
-        device: Device (unused, probes are CPU-based).
+        config_path: Path to config file (for loading splits for Dice eval).
+        device: Device for Dice evaluation.
+        skip_dice: If True, skip test Dice evaluation.
 
     Returns:
-        Dict with R² metrics and MSE values.
+        Dict with R² metrics, MSE values, and test Dice scores.
     """
     logger.info(f"Evaluating probes for condition: {condition_name}")
 
@@ -145,6 +310,20 @@ def evaluate_probes(
     logger.info(f"  Variance (min):  {metrics['variance_min']:.4f}")
     logger.info("=" * 50 + "\n")
 
+    # Evaluate test Dice (segmentation quality on test set)
+    if not skip_dice:
+        logger.info("Evaluating test set Dice scores...")
+        try:
+            dice_metrics = evaluate_test_dice(
+                condition_name, config, config_path, device
+            )
+            metrics.update(dice_metrics)
+        except Exception as e:
+            logger.warning(f"Test Dice evaluation failed: {e}")
+            # Continue without Dice metrics
+    else:
+        logger.info("Skipping test Dice evaluation (--skip-dice)")
+
     # Save metrics
     metrics_path = condition_dir / "metrics.json"
     with open(metrics_path, "w") as f:
@@ -173,12 +352,16 @@ def evaluate_probes(
 def main(
     config_path: str,
     condition: str,
+    device: str = "cuda",
+    skip_dice: bool = False,
 ) -> None:
     """Main entry point for probe evaluation.
 
     Args:
         config_path: Path to ablation.yaml.
         condition: Condition name.
+        device: Device for Dice evaluation.
+        skip_dice: If True, skip test Dice evaluation.
     """
     # Load configuration
     with open(config_path) as f:
@@ -191,6 +374,9 @@ def main(
     evaluate_probes(
         condition_name=condition,
         config=config,
+        config_path=config_path,
+        device=device,
+        skip_dice=skip_dice,
     )
 
 
@@ -211,6 +397,17 @@ if __name__ == "__main__":
         choices=["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"],
         help="Condition to evaluate",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device for Dice evaluation",
+    )
+    parser.add_argument(
+        "--skip-dice",
+        action="store_true",
+        help="Skip test Dice evaluation (faster)",
+    )
 
     args = parser.parse_args()
-    main(args.config, args.condition)
+    main(args.config, args.condition, args.device, args.skip_dice)

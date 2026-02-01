@@ -150,13 +150,13 @@ def run_ablation(
             config=config,
         )
 
-        # Load training summary
+        # Load training summary (for training metadata only)
         summary_path = condition_dir / "training_summary.yaml"
         if summary_path.exists():
             with open(summary_path) as f:
                 training_summary = yaml.safe_load(f)
-            metrics["val_dice"] = training_summary.get("best_val_dice", None)
             metrics["best_epoch"] = training_summary.get("best_epoch", None)
+            # Note: test_dice_mean is already in metrics from evaluate_probes()
 
         results[condition_name] = metrics
 
@@ -206,7 +206,7 @@ def create_comparison_table(results: Dict[str, Dict]) -> pd.DataFrame:
             "R²_loc": metrics.get("r2_location", None),
             "R²_shape": metrics.get("r2_shape", None),
             "R²_mean": metrics.get("r2_mean", None),
-            "Val_Dice": metrics.get("val_dice", None),
+            "Test_Dice": metrics.get("test_dice_mean", None),
             "Var_mean": metrics.get("variance_mean", None),
         }
         rows.append(row)
@@ -214,7 +214,7 @@ def create_comparison_table(results: Dict[str, Dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
 
     # Format numeric columns
-    for col in ["R²_vol", "R²_loc", "R²_shape", "R²_mean", "Val_Dice", "Var_mean"]:
+    for col in ["R²_vol", "R²_loc", "R²_shape", "R²_mean", "Test_Dice", "Var_mean"]:
         if col in df.columns:
             df[col] = df[col].apply(lambda x: f"{x:.4f}" if x is not None else "N/A")
 

@@ -577,8 +577,11 @@ def create_summary_table(
             row["R²_shape"] = metrics.get("r2_shape", None)
             row["R²_mean"] = metrics.get("r2_mean", None)
 
-            summary = all_data[cond].get("training_summary", {})
-            row["Val_Dice"] = summary.get("best_val_dice", None)
+            # Use TEST Dice from metrics.json (not validation from training_summary)
+            row["Test_Dice"] = metrics.get("test_dice_mean", None)
+            row["Test_Dice_NCR"] = metrics.get("test_dice_NCR", None)
+            row["Test_Dice_ED"] = metrics.get("test_dice_ED", None)
+            row["Test_Dice_ET"] = metrics.get("test_dice_ET", None)
 
         if cond != "baseline" and cond in results.comparisons:
             # Add delta and significance
