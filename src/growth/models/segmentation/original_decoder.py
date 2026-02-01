@@ -109,8 +109,12 @@ class OriginalDecoderWrapper(nn.Module):
         """Forward pass through original decoder.
 
         Note: This follows MONAI's SwinUNETR architecture exactly.
-        encoder1 processes the original input, while encoder2-4 process
-        hidden states from the Swin transformer.
+        The skip connections match spatial dimensions at each decoder level:
+        - decoder5 (3³→6³): skip from hidden_states[3] (6³, 384ch)
+        - decoder4 (6³→12³): skip from enc3 = encoder4(hidden_states[2]) (12³, 192ch)
+        - decoder3 (12³→24³): skip from enc2 = encoder3(hidden_states[1]) (24³, 96ch)
+        - decoder2 (24³→48³): skip from enc1 = encoder2(hidden_states[0]) (48³, 48ch)
+        - decoder1 (48³→96³): skip from enc0 = encoder1(x_in) (96³, 48ch)
 
         Args:
             x_in: Original input tensor [B, 4, 96, 96, 96].
@@ -124,25 +128,28 @@ class OriginalDecoderWrapper(nn.Module):
         Returns:
             Segmentation logits [B, out_channels, 96, 96, 96].
         """
-        # Process encoder outputs through encoder blocks
-        # NOTE: encoder1 takes original input (4 ch), encoder2-4 take hidden states
-        enc0 = self.encoder1(x_in)              # [B, 48, 96, 96, 96] from input
-        enc1 = self.encoder2(hidden_states[0])  # [B, 48, 48, 48, 48]
-        enc2 = self.encoder3(hidden_states[1])  # [B, 96, 24, 24, 24]
-        enc3 = self.encoder4(hidden_states[2])  # [B, 192, 12, 12, 12]
+        # Process features through encoder blocks for skip connections
+        enc0 = self.encoder1(x_in)              # [B, 4, 96³] -> [B, 48, 96³]
+        enc1 = self.encoder2(hidden_states[0])  # [B, 48, 48³] -> [B, 48, 48³]
+        enc2 = self.encoder3(hidden_states[1])  # [B, 96, 24³] -> [B, 96, 24³]
+        enc3 = self.encoder4(hidden_states[2])  # [B, 192, 12³] -> [B, 192, 12³]
 
         # Bottleneck
-        dec4 = self.encoder10(hidden_states[4])  # [B, 768, 3, 3, 3]
+        dec4 = self.encoder10(hidden_states[4])  # [B, 768, 3³]
 
-        # Decoder with skip connections
-        dec3 = self.decoder5(dec4, enc3)  # [B, 384, 6, 6, 6]
-        dec2 = self.decoder4(dec3, enc2)  # [B, 192, 12, 12, 12]
-        dec1 = self.decoder3(dec2, enc1)  # [B, 96, 24, 24, 24]
-        dec0 = self.decoder2(dec1, enc0)  # [B, 48, 48, 48, 48]
+        # Decoder with skip connections (spatial sizes must match!)
+        # decoder5: 3³ -> 6³, skip from hidden_states[3] directly (NOT enc3!)
+        dec3 = self.decoder5(dec4, hidden_states[3])  # [B, 384, 6³]
+        # decoder4: 6³ -> 12³, skip from enc3
+        dec2 = self.decoder4(dec3, enc3)              # [B, 192, 12³]
+        # decoder3: 12³ -> 24³, skip from enc2
+        dec1 = self.decoder3(dec2, enc2)              # [B, 96, 24³]
+        # decoder2: 24³ -> 48³, skip from enc1
+        dec0 = self.decoder2(dec1, enc1)              # [B, 48, 48³]
+        # decoder1: 48³ -> 96³, skip from enc0
+        out = self.decoder1(dec0, enc0)               # [B, 48, 96³]
 
-        # Final upsampling and output
-        out = self.decoder1(dec0)  # [B, 48, 96, 96, 96]
-        logits = self.out(out)     # [B, out_channels, 96, 96, 96]
+        logits = self.out(out)  # [B, out_channels, 96³]
 
         return logits
 
