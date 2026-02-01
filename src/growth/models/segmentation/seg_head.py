@@ -136,15 +136,15 @@ class UpsampleBlock(nn.Module):
 
 
 class SegmentationHead(nn.Module):
-    """Lightweight segmentation decoder for BraTS-style 3-class segmentation.
+    """Lightweight segmentation decoder for BraTS-style 4-class segmentation.
 
     Takes multi-scale features from SwinViT encoder and produces segmentation
-    masks for NCR (1), ED (2), and ET (3) classes.
+    masks. BraTS uses 4 classes: 0=background, 1=NCR, 2=ED, 3=ET.
 
     Args:
         encoder_channels: Channel counts from encoder stages [stage0, ..., stage4].
             Default matches SwinUNETR with feature_size=48.
-        out_channels: Number of output segmentation classes.
+        out_channels: Number of output segmentation classes. Default is 4 for BraTS.
         use_deep_supervision: If True, return intermediate outputs for deep supervision.
 
     Example:
@@ -159,13 +159,13 @@ class SegmentationHead(nn.Module):
         ... ]
         >>> out = head(hidden_states)
         >>> out.shape
-        torch.Size([1, 3, 96, 96, 96])
+        torch.Size([1, 4, 96, 96, 96])
     """
 
     def __init__(
         self,
         encoder_channels: Tuple[int, ...] = (48, 96, 192, 384, 768),
-        out_channels: int = 3,
+        out_channels: int = 4,
         use_deep_supervision: bool = False,
     ):
         super().__init__()
@@ -282,7 +282,8 @@ class LoRASegmentationModel(nn.Module):
 
     Args:
         lora_encoder: LoRASwinViT instance.
-        out_channels: Number of segmentation classes.
+        out_channels: Number of segmentation classes. Default is 4 for BraTS
+            (0=background, 1=NCR, 2=ED, 3=ET).
         use_deep_supervision: Enable deep supervision.
 
     Example:
@@ -292,13 +293,13 @@ class LoRASegmentationModel(nn.Module):
         >>> x = torch.randn(1, 4, 96, 96, 96)
         >>> out = model(x)
         >>> out.shape
-        torch.Size([1, 3, 96, 96, 96])
+        torch.Size([1, 4, 96, 96, 96])
     """
 
     def __init__(
         self,
         lora_encoder: nn.Module,
-        out_channels: int = 3,
+        out_channels: int = 4,
         use_deep_supervision: bool = False,
     ):
         super().__init__()

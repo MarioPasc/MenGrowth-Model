@@ -56,9 +56,12 @@ class BaselineSegmentationModel(nn.Module):
     """Frozen encoder with trainable segmentation head.
 
     Used for baseline condition (no LoRA).
+
+    Note: BraTS has 4 classes (0=background, 1=NCR, 2=ED, 3=ET),
+    so out_channels must be 4 for proper one-hot encoding in the loss.
     """
 
-    def __init__(self, encoder: nn.Module, out_channels: int = 3):
+    def __init__(self, encoder: nn.Module, out_channels: int = 4):
         super().__init__()
         self.encoder = encoder
         # Freeze encoder

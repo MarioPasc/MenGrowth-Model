@@ -214,8 +214,8 @@ class DiceMetric(nn.Module):
         pred_onehot = F.one_hot(pred_argmax.squeeze(1), num_classes)
         pred_onehot = pred_onehot.permute(0, 4, 1, 2, 3).float()
 
-        # Convert target to one-hot
-        target_onehot = F.one_hot(target.squeeze(1), num_classes)
+        # Convert target to one-hot (must be LongTensor for one_hot)
+        target_onehot = F.one_hot(target.squeeze(1).long(), num_classes)
         target_onehot = target_onehot.permute(0, 4, 1, 2, 3).float()
 
         # Compute Dice per class

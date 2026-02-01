@@ -95,32 +95,32 @@ class TestSegmentationHead:
         ]
 
     def test_default_forward(self, mock_hidden_states):
-        """Test forward pass with default settings."""
+        """Test forward pass with default settings (4 classes for BraTS)."""
         head = SegmentationHead()
-        out = head(mock_hidden_states)
-
-        assert out.shape == (1, 3, 96, 96, 96)
-
-    def test_custom_out_channels(self, mock_hidden_states):
-        """Test with custom output channels."""
-        head = SegmentationHead(out_channels=4)
         out = head(mock_hidden_states)
 
         assert out.shape == (1, 4, 96, 96, 96)
 
+    def test_custom_out_channels(self, mock_hidden_states):
+        """Test with custom output channels."""
+        head = SegmentationHead(out_channels=3)
+        out = head(mock_hidden_states)
+
+        assert out.shape == (1, 3, 96, 96, 96)
+
     def test_deep_supervision(self, mock_hidden_states):
-        """Test with deep supervision enabled."""
+        """Test with deep supervision enabled (4 classes for BraTS)."""
         head = SegmentationHead(use_deep_supervision=True)
         out, ds_outputs = head(mock_hidden_states)
 
-        assert out.shape == (1, 3, 96, 96, 96)
+        assert out.shape == (1, 4, 96, 96, 96)
         assert len(ds_outputs) == 3
-        assert ds_outputs[0].shape == (1, 3, 6, 6, 6)
-        assert ds_outputs[1].shape == (1, 3, 12, 12, 12)
-        assert ds_outputs[2].shape == (1, 3, 24, 24, 24)
+        assert ds_outputs[0].shape == (1, 4, 6, 6, 6)
+        assert ds_outputs[1].shape == (1, 4, 12, 12, 12)
+        assert ds_outputs[2].shape == (1, 4, 24, 24, 24)
 
     def test_batch_size(self, mock_hidden_states):
-        """Test with larger batch size."""
+        """Test with larger batch size (4 classes for BraTS)."""
         # Update mock to batch=4
         mock_hidden_states_batch = [
             torch.randn(4, 48, 48, 48, 48),
@@ -132,7 +132,7 @@ class TestSegmentationHead:
         head = SegmentationHead()
         out = head(mock_hidden_states_batch)
 
-        assert out.shape == (4, 3, 96, 96, 96)
+        assert out.shape == (4, 4, 96, 96, 96)
 
     def test_param_count(self):
         """Test parameter count is reasonable."""
@@ -163,7 +163,7 @@ class TestLoRASegmentationModel:
     """Tests for LoRASegmentationModel."""
 
     def test_forward_with_real_encoder(self, real_checkpoint_path: Path):
-        """Test forward pass with real LoRA encoder."""
+        """Test forward pass with real LoRA encoder (4 classes for BraTS)."""
         from growth.models.encoder.lora_adapter import create_lora_encoder
 
         lora_encoder = create_lora_encoder(
@@ -176,7 +176,7 @@ class TestLoRASegmentationModel:
         with torch.no_grad():
             out = model(x)
 
-        assert out.shape == (1, 3, 96, 96, 96)
+        assert out.shape == (1, 4, 96, 96, 96)
 
     def test_param_count_breakdown(self, real_checkpoint_path: Path):
         """Test parameter count breakdown."""

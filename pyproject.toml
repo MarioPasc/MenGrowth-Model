@@ -101,6 +101,9 @@ vae-analyze = "vae.tools.analysis.cli:main"
 # growth-train-sdp = "growth.training.train_sdp:main"
 # growth-train-ode = "growth.training.train_ode:main"
 
+# Experiment entry points
+growth-exp-lora-ablation = "experiments.lora_ablation.cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
@@ -113,8 +116,8 @@ filterwarnings = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["src"]
-include = ["vae*", "growth*"]
+where = ["src", "."]
+include = ["vae*", "growth*", "experiments*"]
 
 [tool.setuptools.package-data]
 vae = ["py.typed", "config/*.yaml"]
