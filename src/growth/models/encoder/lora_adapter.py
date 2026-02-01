@@ -18,13 +18,16 @@ Optionally also targets projection layers:
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 from peft import LoraConfig, PeftModel, get_peft_model
 
 from .swin_loader import load_swin_encoder
+
+if TYPE_CHECKING:
+    from growth.utils.model_card import LoRAModelCardConfig
 
 logger = logging.getLogger(__name__)
 
@@ -196,14 +199,28 @@ class LoRASwinViT(nn.Module):
         logger.info("LoRA weights merged into base model")
         return merged
 
-    def save_lora(self, path: Union[str, Path]) -> None:
+    def save_lora(
+        self,
+        path: Union[str, Path],
+        model_card_config: Optional["LoRAModelCardConfig"] = None,
+    ) -> None:
         """Save only LoRA adapter weights.
 
         Args:
             path: Directory path to save adapter.
+            model_card_config: Optional model card configuration. If provided,
+                a README.md with training metadata will be generated. PEFT will
+                then merge its own metadata into the card.
         """
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
+
+        # Save model card first (if configured) so PEFT can merge into it
+        if model_card_config is not None:
+            from growth.utils.model_card import save_lora_model_card
+
+            save_lora_model_card(path, model_card_config)
+
         self.model.save_pretrained(path)
         logger.info(f"LoRA adapter saved to {path}")
 

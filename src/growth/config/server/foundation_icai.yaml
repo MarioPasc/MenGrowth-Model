@@ -20,10 +20,10 @@ paths:
   checkpoint_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS
 
   # BraTS-MEN dataset root
-  data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+  data_root: /media/hddb/mario/data/BraTS-MEN
 
   # BraTS-GLI dataset root, only needed for some experiments regarding LoRa usefullness
-  brats_gli_root: /media/mpascual/PortableSSD/BraTS_GLI/source/BraTS2024-BraTS-GLI-TrainingData/training_data1_v2
+  brats_gli_root: /media/hddb/mario/data/BraTS-GLI-100
 
   # Persistent cache for MONAI transforms (speeds up subsequent runs)
   cache_dir: ${paths.data_root}/.cache

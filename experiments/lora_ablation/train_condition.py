@@ -42,6 +42,7 @@ from growth.models.encoder.lora_adapter import LoRASwinViT, create_lora_encoder
 from growth.models.encoder.swin_loader import load_swin_encoder
 from growth.models.segmentation.seg_head import SegmentationHead, LoRASegmentationModel
 from growth.utils.seed import set_seed
+from growth.utils.model_card import LoRAModelCardConfig, model_card_from_training
 
 from .data_splits import load_splits
 
@@ -460,6 +461,32 @@ def train_condition(
     total_time = time.time() - start_time
     logger.info(f"\nTraining completed in {total_time / 60:.1f} minutes")
     logger.info(f"Best validation Dice: {best_dice:.4f} at epoch {best_metrics['epoch']}")
+
+    # Generate model card for LoRA adapters (if enabled)
+    if not is_baseline and config.get("model_card", {}).get("enabled", True):
+        adapter_dir = condition_dir / "adapter"
+        model_card_cfg = model_card_from_training(
+            lora_rank=condition_config["lora_rank"],
+            lora_alpha=condition_config.get("lora_alpha", condition_config["lora_rank"] * 2),
+            lora_dropout=training_config.get("lora_dropout", 0.1),
+            train_samples=len(splits["lora_train"]),
+            val_samples=len(splits["lora_val"]),
+            epochs=best_metrics["epoch"],
+            batch_size=training_config["batch_size"],
+            lr_encoder=training_config["lr_encoder"],
+            lr_decoder=training_config["lr_decoder"],
+            best_val_dice=best_dice,
+            final_train_loss=best_metrics.get("train_loss", 0.0),
+            training_time_seconds=total_time,
+            device=device,
+            seed=config["experiment"]["seed"],
+            trainable_params=param_counts.get("encoder", 0),
+            base_model_path=config["paths"]["checkpoint"],
+            condition_name=condition_name,
+        )
+        # Re-save adapter with model card
+        model.encoder.save_lora(adapter_dir, model_card_config=model_card_cfg)
+        logger.info("Model card generated for LoRA adapter")
 
     # Save final metrics
     final_metrics_path = condition_dir / "training_summary.yaml"
