@@ -125,3 +125,23 @@ logging:
 # Model card generation
 model_card:
   enabled: true
+
+# =============================================================================
+# BACKWARD COMPATIBILITY NOTES
+# =============================================================================
+#
+# To reproduce v1 results (lightweight decoder):
+#   training:
+#     decoder_type: "lightweight"
+#   probe:
+#     use_mlp_probes: false
+#   feature_extraction:
+#     level: encoder10
+#
+# To reproduce v2 results (original decoder, default):
+#   training:
+#     decoder_type: "original"
+#   probe:
+#     use_mlp_probes: true
+#   feature_extraction:
+#     level: multi_scale
