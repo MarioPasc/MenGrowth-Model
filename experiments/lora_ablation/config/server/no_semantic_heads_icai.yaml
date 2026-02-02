@@ -25,10 +25,6 @@ data_splits:
 
 # Experimental conditions
 conditions:
-  - name: baseline
-    lora_rank: null
-    description: Frozen encoder + decoder (no adaptation)
-
   - name: lora_r2
     lora_rank: 2
     lora_alpha: 4
@@ -53,6 +49,10 @@ conditions:
     lora_rank: 32
     lora_alpha: 64
     description: LoRA rank 32 (saturation test)
+  
+  - name: baseline
+    lora_rank: null
+    description: Frozen encoder + decoder (no adaptation)
 
 # Training hyperparameters
 training:
