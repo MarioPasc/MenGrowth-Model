@@ -1,52 +1,49 @@
 #!/usr/bin/env python
 # experiments/lora_ablation/run_ablation.py
-"""Main orchestrator for the LoRA ablation experiment.
+"""Unified LoRA ablation orchestrator with configurable decoder.
 
-This script runs the complete ablation study:
-1. Generate/load data splits
-2. For each condition (baseline, lora_r4, lora_r8, lora_r16):
-   a. Train segmentation model
-   b. Extract features
-   c. Evaluate linear probes
-3. Generate comparison table
-4. Print summary and recommendation
+This script runs the complete ablation pipeline:
+1. Generate data splits (if not exist)
+2. Train all conditions
+3. Extract multi-scale features
+4. Extract domain features (Glioma + Meningioma) for UMAP (optional)
+5. Evaluate with linear + MLP probes
+6. Generate enhanced visualizations
+7. Statistical analysis and recommendations
+
+Supports both decoder architectures via decoder_type config:
+- "lightweight": Custom SegmentationHead (~2M params)
+- "original": Full SwinUNETR decoder (~30M params, recommended)
 
 Usage:
-    # Full run (all conditions)
-    python -m experiments.lora_ablation.run_ablation \
-        --config experiments/lora_ablation/config/ablation.yaml
-
-    # Skip training (use existing checkpoints)
+    # Run complete pipeline
     python -m experiments.lora_ablation.run_ablation \
         --config experiments/lora_ablation/config/ablation.yaml \
-        --skip-training
+        run-all
 
-    # Single condition
+    # With domain shift analysis
     python -m experiments.lora_ablation.run_ablation \
         --config experiments/lora_ablation/config/ablation.yaml \
-        --conditions lora_r8
+        run-all --domain-features
 
-    # Quick test (2 epochs)
+    # Train single condition
     python -m experiments.lora_ablation.run_ablation \
         --config experiments/lora_ablation/config/ablation.yaml \
-        --max-epochs 2
+        train --condition lora_r8
 """
 
 import argparse
-import json
 import logging
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
-import pandas as pd
 import yaml
 
 from growth.utils.seed import set_seed
 
 from .data_splits import main as generate_splits, load_splits
-from .train_condition import train_condition
-from .extract_features import extract_features
-from .evaluate_probes import evaluate_probes
+from .extract_domain_features import extract_domain_features
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,311 +52,375 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_ablation(
+def run_splits(config_path: str) -> None:
+    """Generate data splits."""
+    logger.info("=" * 60)
+    logger.info("STEP 1: Generating Data Splits")
+    logger.info("=" * 60)
+    generate_splits(config_path)
+
+
+def run_train(
     config_path: str,
-    conditions: Optional[List[str]] = None,
-    skip_training: bool = False,
-    skip_extraction: bool = False,
+    condition: str,
     max_epochs: Optional[int] = None,
     device: str = "cuda",
-) -> pd.DataFrame:
-    """Run the complete LoRA ablation experiment.
+) -> None:
+    """Train a single condition."""
+    from .train_condition import main as train_main
 
-    Args:
-        config_path: Path to ablation.yaml configuration.
-        conditions: List of conditions to run. If None, runs all.
-        skip_training: Skip training (use existing checkpoints).
-        skip_extraction: Skip feature extraction (use existing features).
-        max_epochs: Override max epochs (for testing).
-        device: Device to use.
+    logger.info(f"Training condition: {condition}")
+    train_main(config_path, condition, max_epochs, device)
 
-    Returns:
-        DataFrame with comparison results.
-    """
-    # Load configuration
+
+def run_train_all(
+    config_path: str,
+    max_epochs: Optional[int] = None,
+    device: str = "cuda",
+) -> None:
+    """Train all conditions."""
+    logger.info("=" * 60)
+    logger.info("STEP 2: Training All Conditions")
+    logger.info("=" * 60)
+
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    # Set seed
+    conditions = [c["name"] for c in config["conditions"]]
+    decoder_type = config.get("training", {}).get("decoder_type", "original")
+    logger.info(f"Decoder type: {decoder_type}")
+
+    for condition in conditions:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Training: {condition}")
+        logger.info(f"{'='*60}\n")
+        run_train(config_path, condition, max_epochs, device)
+
+
+def run_extract(
+    config_path: str,
+    condition: str,
+    device: str = "cuda",
+) -> None:
+    """Extract features for a condition."""
+    from .extract_features import main as extract_main
+
+    logger.info(f"Extracting features for: {condition}")
+    extract_main(config_path, condition, device)
+
+
+def run_extract_all(
+    config_path: str,
+    device: str = "cuda",
+) -> None:
+    """Extract features for all conditions."""
+    logger.info("=" * 60)
+    logger.info("STEP 3: Extracting Features")
+    logger.info("=" * 60)
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    conditions = [c["name"] for c in config["conditions"]]
+
+    for condition in conditions:
+        logger.info(f"\nExtracting: {condition}")
+        try:
+            run_extract(config_path, condition, device)
+        except Exception as e:
+            logger.warning(f"Failed to extract {condition}: {e}")
+
+
+def run_domain(
+    config_path: str,
+    condition: str,
+    n_glioma: int = 200,
+    n_meningioma: int = 200,
+    device: str = "cuda",
+) -> None:
+    """Extract domain features (Glioma + Meningioma) for a condition."""
+    logger.info(f"Extracting domain features for: {condition}")
+    extract_domain_features(
+        config_path=config_path,
+        condition_name=condition,
+        n_glioma=n_glioma,
+        n_meningioma=n_meningioma,
+        device=device,
+    )
+
+
+def run_domain_all(
+    config_path: str,
+    n_glioma: int = 200,
+    n_meningioma: int = 200,
+    device: str = "cuda",
+) -> None:
+    """Extract domain features for all conditions."""
+    logger.info("=" * 60)
+    logger.info("STEP 4: Extracting Domain Features (Glioma vs Meningioma)")
+    logger.info("=" * 60)
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    conditions = [c["name"] for c in config["conditions"]]
+
+    for condition in conditions:
+        logger.info(f"\nExtracting domain features: {condition}")
+        try:
+            run_domain(config_path, condition, n_glioma, n_meningioma, device)
+        except Exception as e:
+            logger.warning(f"Failed to extract domain features for {condition}: {e}")
+
+
+def run_probes(
+    config_path: str,
+    condition: str,
+    device: str = "cuda",
+) -> None:
+    """Evaluate probes for a condition."""
+    from .evaluate_probes import main as probes_main
+
+    logger.info(f"Evaluating probes for: {condition}")
+    probes_main(config_path, condition, device)
+
+
+def run_probes_all(
+    config_path: str,
+    device: str = "cuda",
+) -> None:
+    """Evaluate probes for all conditions."""
+    logger.info("=" * 60)
+    logger.info("STEP 5: Evaluating Probes")
+    logger.info("=" * 60)
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    conditions = [c["name"] for c in config["conditions"]]
+
+    for condition in conditions:
+        logger.info(f"\nEvaluating: {condition}")
+        try:
+            run_probes(config_path, condition, device)
+        except Exception as e:
+            logger.warning(f"Failed to evaluate {condition}: {e}")
+
+
+def run_visualize(config_path: str) -> None:
+    """Generate visualizations."""
+    logger.info("=" * 60)
+    logger.info("STEP 6: Generating Visualizations")
+    logger.info("=" * 60)
+
+    from .visualizations import main as viz_main
+    viz_main(config_path)
+
+
+def run_analysis(config_path: str, glioma_features_path: Optional[str] = None) -> None:
+    """Run statistical analysis."""
+    logger.info("=" * 60)
+    logger.info("STEP 7: Statistical Analysis")
+    logger.info("=" * 60)
+
+    from .analyze_results import analyze_results
+    analyze_results(config_path, glioma_features_path=glioma_features_path)
+
+
+def run_all(
+    config_path: str,
+    max_epochs: Optional[int] = None,
+    device: str = "cuda",
+    skip_training: bool = False,
+    domain_features: bool = False,
+    n_glioma: int = 200,
+    n_meningioma: int = 200,
+) -> None:
+    """Run complete ablation pipeline."""
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    decoder_type = config.get("training", {}).get("decoder_type", "original")
+
+    logger.info("=" * 60)
+    logger.info("LORA ABLATION PIPELINE")
+    logger.info("=" * 60)
+    logger.info("")
+    logger.info("Configuration:")
+    logger.info(f"  - Decoder type: {decoder_type}")
+    if decoder_type == "original":
+        logger.info("  - Original SwinUNETR decoder (pretrained)")
+        logger.info("  - Auxiliary semantic prediction losses")
+        logger.info("  - MLP probes for nonlinear analysis")
+        logger.info("  - Multi-scale feature extraction")
+    else:
+        logger.info("  - Lightweight SegmentationHead decoder")
+        logger.info("  - Linear probes only")
+        logger.info("  - Single-scale features")
+    if domain_features:
+        logger.info("  - Domain shift analysis (Glioma vs Meningioma)")
+    logger.info("")
+
     set_seed(config["experiment"]["seed"])
 
-    # Get output directory
-    output_dir = Path(config["experiment"]["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Step 1: Generate splits
+    run_splits(config_path)
 
-    # Step 1: Generate/load data splits
-    logger.info("\n" + "=" * 60)
-    logger.info("Step 1: Data Splits")
-    logger.info("=" * 60)
-
-    splits = generate_splits(config_path, force=False)
-
-    # Determine which conditions to run
-    all_conditions = [c["name"] for c in config["conditions"]]
-    if conditions is None:
-        conditions = all_conditions
+    # Step 2: Train all conditions
+    if not skip_training:
+        run_train_all(config_path, max_epochs, device)
     else:
-        # Validate conditions
-        for c in conditions:
-            if c not in all_conditions:
-                raise ValueError(
-                    f"Unknown condition: {c}. Available: {all_conditions}"
-                )
+        logger.info("Skipping training (--skip-training)")
 
-    logger.info(f"Running conditions: {conditions}")
+    # Step 3: Extract features
+    run_extract_all(config_path, device)
 
-    # Step 2: Run each condition
-    results = {}
-
-    for i, condition_name in enumerate(conditions):
-        logger.info("\n" + "=" * 60)
-        logger.info(f"Step 2.{i+1}: Condition '{condition_name}'")
-        logger.info("=" * 60)
-
-        condition_dir = output_dir / "conditions" / condition_name
-
-        # 2a: Training
-        if not skip_training:
-            logger.info(f"\n--- Training {condition_name} ---")
-            train_condition(
-                condition_name=condition_name,
-                config=config,
-                splits=splits,
-                max_epochs=max_epochs,
-                device=device,
-            )
-        else:
-            logger.info(f"Skipping training for {condition_name}")
-
-        # 2b: Feature extraction
-        if not skip_extraction:
-            logger.info(f"\n--- Extracting features for {condition_name} ---")
-            extract_features(
-                condition_name=condition_name,
-                config=config,
-                splits=splits,
-                device=device,
-            )
-        else:
-            logger.info(f"Skipping feature extraction for {condition_name}")
-
-        # 2c: Probe evaluation
-        logger.info(f"\n--- Evaluating probes for {condition_name} ---")
-        metrics = evaluate_probes(
-            condition_name=condition_name,
-            config=config,
-        )
-
-        # Load training summary (for training metadata only)
-        summary_path = condition_dir / "training_summary.yaml"
-        if summary_path.exists():
-            with open(summary_path) as f:
-                training_summary = yaml.safe_load(f)
-            metrics["best_epoch"] = training_summary.get("best_epoch", None)
-            # Note: test_dice_mean is already in metrics from evaluate_probes()
-
-        results[condition_name] = metrics
-
-    # Step 3: Generate comparison table
-    logger.info("\n" + "=" * 60)
-    logger.info("Step 3: Comparison Table")
-    logger.info("=" * 60)
-
-    comparison_df = create_comparison_table(results)
-    print("\n" + comparison_df.to_string() + "\n")
-
-    # Save comparison table
-    comparison_path = output_dir / "comparison_table.csv"
-    comparison_df.to_csv(comparison_path)
-    logger.info(f"Saved comparison table to {comparison_path}")
-
-    # Step 4: Generate recommendation
-    logger.info("\n" + "=" * 60)
-    logger.info("Step 4: Recommendation")
-    logger.info("=" * 60)
-
-    recommendation = generate_recommendation(results)
-    print(recommendation)
-
-    # Save recommendation
-    recommendation_path = output_dir / "recommendation.txt"
-    with open(recommendation_path, "w") as f:
-        f.write(recommendation)
-
-    return comparison_df
-
-
-def create_comparison_table(results: Dict[str, Dict]) -> pd.DataFrame:
-    """Create a comparison table from results.
-
-    Args:
-        results: Dict mapping condition names to metrics dicts.
-
-    Returns:
-        DataFrame with comparison.
-    """
-    rows = []
-    for condition_name, metrics in results.items():
-        row = {
-            "Condition": condition_name,
-            "R²_vol": metrics.get("r2_volume", None),
-            "R²_loc": metrics.get("r2_location", None),
-            "R²_shape": metrics.get("r2_shape", None),
-            "R²_mean": metrics.get("r2_mean", None),
-            "Test_Dice": metrics.get("test_dice_mean", None),
-            "Var_mean": metrics.get("variance_mean", None),
-        }
-        rows.append(row)
-
-    df = pd.DataFrame(rows)
-
-    # Format numeric columns
-    for col in ["R²_vol", "R²_loc", "R²_shape", "R²_mean", "Test_Dice", "Var_mean"]:
-        if col in df.columns:
-            df[col] = df[col].apply(lambda x: f"{x:.4f}" if x is not None else "N/A")
-
-    return df
-
-
-def generate_recommendation(results: Dict[str, Dict]) -> str:
-    """Generate a recommendation based on results.
-
-    Args:
-        results: Dict mapping condition names to metrics dicts.
-
-    Returns:
-        Recommendation text.
-    """
-    # Extract key metrics
-    baseline_metrics = results.get("baseline", {})
-    baseline_r2_vol = baseline_metrics.get("r2_volume", 0)
-    baseline_r2_mean = baseline_metrics.get("r2_mean", 0)
-
-    lines = [
-        "\n" + "=" * 60,
-        "RECOMMENDATION",
-        "=" * 60,
-        "",
-    ]
-
-    # Find best LoRA condition
-    best_lora = None
-    best_r2_mean = baseline_r2_mean
-    best_delta = 0
-
-    for condition_name, metrics in results.items():
-        if condition_name == "baseline":
-            continue
-
-        r2_mean = metrics.get("r2_mean", 0)
-        delta = r2_mean - baseline_r2_mean
-
-        if r2_mean > best_r2_mean:
-            best_lora = condition_name
-            best_r2_mean = r2_mean
-            best_delta = delta
-
-    # Generate recommendation based on decision matrix
-    lines.append(f"Baseline R²_vol: {baseline_r2_vol:.4f}")
-    lines.append(f"Baseline R²_mean: {baseline_r2_mean:.4f}")
-    lines.append("")
-
-    if best_lora is None:
-        lines.append("No LoRA condition outperformed baseline.")
-        lines.append("")
-        lines.append("DECISION: Skip LoRA adaptation")
-        lines.append("")
-        lines.append("The baseline encoder features are already well-suited for")
-        lines.append("meningioma semantic prediction. LoRA adaptation provides")
-        lines.append("no benefit and adds unnecessary complexity.")
+    # Step 4: Extract domain features (optional)
+    glioma_features_path = None
+    if domain_features:
+        run_domain_all(config_path, n_glioma, n_meningioma, device)
+        # Get path to glioma features from first condition with them
+        output_dir = Path(config["experiment"]["output_dir"])
+        for cond in config["conditions"]:
+            glioma_path = output_dir / "conditions" / cond["name"] / "features_glioma.pt"
+            if glioma_path.exists():
+                glioma_features_path = str(glioma_path)
+                break
     else:
-        lines.append(f"Best LoRA condition: {best_lora}")
-        lines.append(f"Best LoRA R²_mean: {best_r2_mean:.4f}")
-        lines.append(f"Improvement over baseline: {best_delta * 100:.1f}%")
-        lines.append("")
+        logger.info("Skipping domain features (use --domain-features to enable)")
 
-        # Decision based on improvement magnitude
-        if best_delta < 0.03:
-            lines.append("DECISION: Skip LoRA (marginal improvement)")
-            lines.append("")
-            lines.append(f"The improvement from {best_lora} ({best_delta * 100:.1f}%) is marginal.")
-            lines.append("The added complexity of LoRA adaptation is not justified.")
-        elif best_delta < 0.05:
-            lines.append(f"DECISION: Consider {best_lora} (moderate improvement)")
-            lines.append("")
-            lines.append(f"The improvement from {best_lora} ({best_delta * 100:.1f}%) is moderate.")
-            lines.append("Consider using LoRA if the improved semantic prediction")
-            lines.append("is critical for downstream growth modeling.")
-        else:
-            lines.append(f"DECISION: Use {best_lora} (significant improvement)")
-            lines.append("")
-            lines.append(f"The improvement from {best_lora} ({best_delta * 100:.1f}%) is significant.")
-            lines.append("LoRA adaptation provides meaningful enhancement of encoder")
-            lines.append("features for meningioma semantic prediction.")
+    # Step 5: Evaluate probes
+    run_probes_all(config_path, device)
 
-    lines.append("")
-    lines.append("=" * 60)
+    # Step 6: Generate visualizations
+    run_visualize(config_path)
 
-    return "\n".join(lines)
+    # Step 7: Statistical analysis
+    run_analysis(config_path, glioma_features_path)
+
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("PIPELINE COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"Results: {config['experiment']['output_dir']}")
 
 
 def main():
-    """Main entry point."""
+    """CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Run the complete LoRA ablation experiment"
+        description="LoRA ablation with configurable decoder"
     )
     parser.add_argument(
         "--config",
         type=str,
         default="experiments/lora_ablation/config/ablation.yaml",
-        help="Path to ablation configuration file",
+        help="Path to configuration file",
     )
-    parser.add_argument(
-        "--conditions",
-        type=str,
-        nargs="+",
-        default=None,
-        choices=["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"],
-        help="Conditions to run (default: all)",
+
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    # splits
+    subparsers.add_parser("splits", help="Generate data splits")
+
+    # train
+    train_parser = subparsers.add_parser("train", help="Train a condition")
+    train_parser.add_argument("--condition", type=str, required=True)
+    train_parser.add_argument("--max-epochs", type=int, default=None)
+    train_parser.add_argument("--device", type=str, default="cuda")
+
+    # train-all
+    train_all_parser = subparsers.add_parser("train-all", help="Train all conditions")
+    train_all_parser.add_argument("--max-epochs", type=int, default=None)
+    train_all_parser.add_argument("--device", type=str, default="cuda")
+
+    # extract
+    extract_parser = subparsers.add_parser("extract", help="Extract features")
+    extract_parser.add_argument("--condition", type=str, required=True)
+    extract_parser.add_argument("--device", type=str, default="cuda")
+
+    # extract-all
+    extract_all_parser = subparsers.add_parser("extract-all", help="Extract all")
+    extract_all_parser.add_argument("--device", type=str, default="cuda")
+
+    # probes
+    probes_parser = subparsers.add_parser("probes", help="Evaluate probes")
+    probes_parser.add_argument("--condition", type=str, required=True)
+    probes_parser.add_argument("--device", type=str, default="cuda")
+
+    # probes-all
+    probes_all_parser = subparsers.add_parser("probes-all", help="Evaluate all probes")
+    probes_all_parser.add_argument("--device", type=str, default="cuda")
+
+    # domain (extract domain features for one condition)
+    domain_parser = subparsers.add_parser(
+        "domain", help="Extract domain features (Glioma + Meningioma)"
     )
-    parser.add_argument(
-        "--skip-training",
-        action="store_true",
-        help="Skip training (use existing checkpoints)",
+    domain_parser.add_argument("--condition", type=str, required=True)
+    domain_parser.add_argument("--n-glioma", type=int, default=200,
+                               help="Number of glioma samples")
+    domain_parser.add_argument("--n-meningioma", type=int, default=200,
+                               help="Number of meningioma samples")
+    domain_parser.add_argument("--device", type=str, default="cuda")
+
+    # domain-all (extract domain features for all conditions)
+    domain_all_parser = subparsers.add_parser(
+        "domain-all", help="Extract domain features for all conditions"
     )
-    parser.add_argument(
-        "--skip-extraction",
-        action="store_true",
-        help="Skip feature extraction (use existing features)",
-    )
-    parser.add_argument(
-        "--max-epochs",
-        type=int,
-        default=None,
-        help="Override max epochs (for testing)",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda",
-        help="Device to use",
-    )
+    domain_all_parser.add_argument("--n-glioma", type=int, default=200)
+    domain_all_parser.add_argument("--n-meningioma", type=int, default=200)
+    domain_all_parser.add_argument("--device", type=str, default="cuda")
+
+    # visualize
+    subparsers.add_parser("visualize", help="Generate visualizations")
+
+    # analyze
+    analyze_parser = subparsers.add_parser("analyze", help="Run statistical analysis")
+    analyze_parser.add_argument("--glioma-features", type=str, default=None,
+                               help="Path to glioma features for domain shift")
+
+    # run-all
+    run_all_parser = subparsers.add_parser("run-all", help="Run complete pipeline")
+    run_all_parser.add_argument("--max-epochs", type=int, default=None)
+    run_all_parser.add_argument("--device", type=str, default="cuda")
+    run_all_parser.add_argument("--skip-training", action="store_true",
+                               help="Skip training (use existing checkpoints)")
+    run_all_parser.add_argument("--domain-features", action="store_true",
+                               help="Extract domain features for UMAP")
+    run_all_parser.add_argument("--n-glioma", type=int, default=200)
+    run_all_parser.add_argument("--n-meningioma", type=int, default=200)
 
     args = parser.parse_args()
 
-    import torch
-    if args.device == "cuda" and not torch.cuda.is_available():
-        logger.warning("CUDA not available, using CPU")
-        args.device = "cpu"
-
-    run_ablation(
-        config_path=args.config,
-        conditions=args.conditions,
-        skip_training=args.skip_training,
-        skip_extraction=args.skip_extraction,
-        max_epochs=args.max_epochs,
-        device=args.device,
-    )
+    if args.command == "splits":
+        run_splits(args.config)
+    elif args.command == "train":
+        run_train(args.config, args.condition, args.max_epochs, args.device)
+    elif args.command == "train-all":
+        run_train_all(args.config, args.max_epochs, args.device)
+    elif args.command == "extract":
+        run_extract(args.config, args.condition, args.device)
+    elif args.command == "extract-all":
+        run_extract_all(args.config, args.device)
+    elif args.command == "domain":
+        run_domain(args.config, args.condition, args.n_glioma,
+                  args.n_meningioma, args.device)
+    elif args.command == "domain-all":
+        run_domain_all(args.config, args.n_glioma, args.n_meningioma, args.device)
+    elif args.command == "probes":
+        run_probes(args.config, args.condition, args.device)
+    elif args.command == "probes-all":
+        run_probes_all(args.config, args.device)
+    elif args.command == "visualize":
+        run_visualize(args.config)
+    elif args.command == "analyze":
+        run_analysis(args.config, args.glioma_features)
+    elif args.command == "run-all":
+        run_all(
+            args.config, args.max_epochs, args.device, args.skip_training,
+            args.domain_features, args.n_glioma, args.n_meningioma
+        )
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

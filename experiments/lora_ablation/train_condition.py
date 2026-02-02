@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 # experiments/lora_ablation/train_condition.py
-"""Train a single experimental condition (baseline or LoRA).
+"""Unified training script for LoRA ablation with configurable decoder.
 
-This script trains either:
-- Baseline: Frozen encoder + trainable segmentation head
-- LoRA: Frozen encoder + LoRA adapters + trainable segmentation head
+Supports both decoder types via the `decoder_type` config parameter:
+- "lightweight": Custom SegmentationHead (~2M params) - v1 behavior
+- "original": Full SwinUNETR decoder (~30M params) - v2 behavior (recommended)
 
-Training uses Dice+CE loss for BraTS-style segmentation.
-Early stopping based on validation Dice score.
+Key features:
+1. Configurable decoder architecture via decoder_type
+2. Optional auxiliary semantic prediction losses during training
+3. Multi-scale feature extraction support
+4. Detailed logging and diagnostics
 
 Usage:
     python -m experiments.lora_ablation.train_condition \
@@ -28,8 +31,10 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
@@ -38,13 +43,12 @@ import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset, create_dataloaders
 from growth.losses.segmentation import SegmentationLoss, DiceMetric
-from growth.models.encoder.lora_adapter import LoRASwinViT, create_lora_encoder
-from growth.models.encoder.swin_loader import load_swin_encoder
-from growth.models.segmentation.seg_head import SegmentationHead, LoRASegmentationModel
+from growth.models.segmentation.semantic_heads import AuxiliarySemanticLoss
 from growth.utils.seed import set_seed
 from growth.utils.model_card import LoRAModelCardConfig, model_card_from_training
 
 from .data_splits import load_splits
+from .model_factory import create_ablation_model, get_condition_config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,115 +57,42 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class BaselineSegmentationModel(nn.Module):
-    """Frozen encoder with trainable segmentation head.
-
-    Used for baseline condition (no LoRA).
-
-    Note: BraTS has 4 classes (0=background, 1=NCR, 2=ED, 3=ET),
-    so out_channels must be 4 for proper one-hot encoding in the loss.
-    """
-
-    def __init__(self, encoder: nn.Module, out_channels: int = 4):
-        super().__init__()
-        self.encoder = encoder
-        # Freeze encoder
-        for param in self.encoder.parameters():
-            param.requires_grad = False
-        self.encoder.eval()
-
-        self.decoder = SegmentationHead(out_channels=out_channels)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            hidden_states = self.encoder.swinViT(x, self.encoder.normalize)
-        return self.decoder(hidden_states)
-
-    def get_hidden_states(self, x: torch.Tensor) -> List[torch.Tensor]:
-        """Get encoder hidden states (for feature extraction)."""
-        with torch.no_grad():
-            return self.encoder.swinViT(x, self.encoder.normalize)
-
-    def get_trainable_param_count(self) -> dict:
-        return {
-            "encoder": 0,
-            "decoder": self.decoder.get_param_count(),
-            "total": self.decoder.get_param_count(),
-        }
-
-
-def get_condition_config(config: dict, condition_name: str) -> dict:
-    """Get configuration for a specific condition."""
-    for cond in config["conditions"]:
-        if cond["name"] == condition_name:
-            return cond
-    raise ValueError(
-        f"Unknown condition: {condition_name}. "
-        f"Available: {[c['name'] for c in config['conditions']]}"
-    )
-
-
-def create_model(
-    condition_config: dict,
-    checkpoint_path: str,
-    device: str,
-) -> nn.Module:
-    """Create model based on condition configuration.
-
-    Args:
-        condition_config: Condition config dict with 'lora_rank' key.
-        checkpoint_path: Path to encoder checkpoint.
-        device: Device to load model to.
-
-    Returns:
-        Either BaselineSegmentationModel or LoRASegmentationModel.
-    """
-    lora_rank = condition_config.get("lora_rank")
-
-    if lora_rank is None:
-        # Baseline: frozen encoder
-        logger.info("Creating baseline model (frozen encoder)")
-        encoder = load_swin_encoder(
-            checkpoint_path,
-            freeze=True,
-            device=device,
-        )
-        model = BaselineSegmentationModel(encoder)
-    else:
-        # LoRA: frozen encoder + LoRA adapters
-        lora_alpha = condition_config.get("lora_alpha", lora_rank * 2)
-        logger.info(f"Creating LoRA model (rank={lora_rank}, alpha={lora_alpha})")
-        lora_encoder = create_lora_encoder(
-            checkpoint_path,
-            rank=lora_rank,
-            alpha=lora_alpha,
-            device=device,
-        )
-        model = LoRASegmentationModel(lora_encoder)
-
-    model = model.to(device)
-    return model
-
-
 def create_optimizer(
     model: nn.Module,
     config: dict,
     is_baseline: bool,
+    decoder_type: str,
 ) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-    """Create optimizer and scheduler.
+    """Create optimizer with separate param groups.
 
-    For baseline: only decoder params
-    For LoRA: encoder LoRA params (low lr) + decoder params (high lr)
+    Args:
+        model: The model to optimize.
+        config: Full experiment configuration.
+        is_baseline: Whether this is the baseline condition.
+        decoder_type: "lightweight" or "original".
+
+    Returns:
+        Tuple of (optimizer, scheduler).
     """
     training_config = config["training"]
 
     if is_baseline:
-        # Only decoder parameters
-        params = [{"params": model.decoder.parameters(), "lr": training_config["lr_decoder"]}]
+        # Only decoder parameters for baseline
+        if decoder_type == "lightweight":
+            params = [{"params": model.decoder.parameters(),
+                      "lr": training_config["lr_decoder"]}]
+        else:  # original
+            params = [{"params": model.model.decoder.parameters(),
+                      "lr": training_config["lr_decoder"]}]
     else:
-        # Separate param groups for LoRA and decoder
-        encoder_params = [p for p in model.encoder.model.parameters() if p.requires_grad]
-        decoder_params = list(model.decoder.parameters())
+        # Separate groups for LoRA and decoder
+        if decoder_type == "lightweight":
+            encoder_params = [p for p in model.encoder.model.parameters()
+                            if p.requires_grad]
+            decoder_params = list(model.decoder.parameters())
+        else:  # original
+            encoder_params = model.get_encoder_params()
+            decoder_params = model.get_decoder_params()
 
         params = [
             {"params": encoder_params, "lr": training_config["lr_encoder"]},
@@ -182,25 +113,64 @@ def create_optimizer(
     return optimizer, scheduler
 
 
+def compute_target_statistics(dataloader: DataLoader) -> Dict[str, torch.Tensor]:
+    """Compute mean and std of semantic targets for normalization."""
+    all_volumes = []
+    all_locations = []
+    all_shapes = []
+
+    for batch in dataloader:
+        if "semantic_features" in batch:
+            all_volumes.append(batch["semantic_features"]["volume"])
+            all_locations.append(batch["semantic_features"]["location"])
+            all_shapes.append(batch["semantic_features"]["shape"])
+
+    if not all_volumes:
+        return {}
+
+    volumes = torch.cat(all_volumes, dim=0)
+    locations = torch.cat(all_locations, dim=0)
+    shapes = torch.cat(all_shapes, dim=0)
+
+    return {
+        'volume_mean': volumes.mean(dim=0),
+        'volume_std': volumes.std(dim=0).clamp(min=1e-6),
+        'location_mean': locations.mean(dim=0),
+        'location_std': locations.std(dim=0).clamp(min=1e-6),
+        'shape_mean': shapes.mean(dim=0),
+        'shape_std': shapes.std(dim=0).clamp(min=1e-6),
+    }
+
+
 def train_epoch(
     model: nn.Module,
     dataloader: DataLoader,
-    loss_fn: nn.Module,
+    seg_loss_fn: nn.Module,
+    aux_loss_fn: Optional[nn.Module],
     optimizer: torch.optim.Optimizer,
     device: str,
     gradient_clip: float = 1.0,
-) -> float:
-    """Train for one epoch.
+    lambda_aux: float = 0.1,
+    use_semantic_heads: bool = False,
+    decoder_type: str = "original",
+) -> Dict[str, float]:
+    """Train for one epoch with optional auxiliary losses.
 
     Returns:
-        Average training loss.
+        Dict with loss components.
     """
     model.train()
 
     # For baseline, keep encoder in eval mode
-    if hasattr(model, "encoder") and not hasattr(model.encoder, "model"):
-        model.encoder.eval()
+    if decoder_type == "lightweight":
+        if hasattr(model, "encoder") and not hasattr(model.encoder, "model"):
+            model.encoder.eval()
+    else:  # original
+        if hasattr(model, 'model') and hasattr(model.model, 'encoder'):
+            model.model.encoder.eval()
 
+    total_seg_loss = 0.0
+    total_aux_loss = 0.0
     total_loss = 0.0
     num_batches = 0
 
@@ -211,10 +181,26 @@ def train_epoch(
         optimizer.zero_grad()
 
         # Forward pass
-        pred = model(images)
+        if use_semantic_heads and hasattr(model, 'forward_with_semantics'):
+            outputs = model.forward_with_semantics(images)
+            pred = outputs['logits']
+        else:
+            pred = model(images)
 
-        # Compute loss
-        loss = loss_fn(pred, segs)
+        # Segmentation loss
+        seg_loss = seg_loss_fn(pred, segs)
+        loss = seg_loss
+
+        # Auxiliary semantic loss (if enabled)
+        aux_loss = torch.tensor(0.0, device=device)
+        if use_semantic_heads and aux_loss_fn is not None and "semantic_features" in batch:
+            semantic_targets = {
+                'volume': batch["semantic_features"]["volume"].to(device),
+                'location': batch["semantic_features"]["location"].to(device),
+                'shape': batch["semantic_features"]["shape"].to(device),
+            }
+            aux_loss, _ = aux_loss_fn(outputs, semantic_targets)
+            loss = seg_loss + lambda_aux * aux_loss
 
         # Backward pass
         loss.backward()
@@ -228,17 +214,23 @@ def train_epoch(
 
         optimizer.step()
 
+        total_seg_loss += seg_loss.item()
+        total_aux_loss += aux_loss.item()
         total_loss += loss.item()
         num_batches += 1
 
-    return total_loss / num_batches
+    return {
+        "loss": total_loss / num_batches,
+        "seg_loss": total_seg_loss / num_batches,
+        "aux_loss": total_aux_loss / num_batches,
+    }
 
 
 @torch.no_grad()
 def validate(
     model: nn.Module,
     dataloader: DataLoader,
-    loss_fn: nn.Module,
+    seg_loss_fn: nn.Module,
     dice_metric: nn.Module,
     device: str,
 ) -> Dict[str, float]:
@@ -258,10 +250,14 @@ def validate(
         segs = batch["seg"].to(device)
 
         # Forward pass
-        pred = model(images)
+        if hasattr(model, 'forward_with_semantics'):
+            outputs = model.forward_with_semantics(images)
+            pred = outputs['logits']
+        else:
+            pred = model(images)
 
         # Compute loss
-        loss = loss_fn(pred, segs)
+        loss = seg_loss_fn(pred, segs)
         total_loss += loss.item()
 
         # Compute Dice per class
@@ -289,34 +285,51 @@ def save_checkpoint(
     is_baseline: bool,
     epoch: int,
     metrics: dict,
+    decoder_type: str = "original",
 ) -> None:
     """Save model checkpoint.
 
-    For baseline: saves full model state
-    For LoRA: saves only LoRA adapter
+    For baseline: saves decoder state dict
+    For LoRA: saves LoRA adapter + decoder state
     """
     condition_dir.mkdir(parents=True, exist_ok=True)
 
     if is_baseline:
         # Save decoder state dict
+        if decoder_type == "lightweight":
+            decoder_state = model.decoder.state_dict()
+        else:
+            decoder_state = model.model.decoder.state_dict()
+
         checkpoint = {
             "epoch": epoch,
-            "decoder_state_dict": model.decoder.state_dict(),
+            "decoder_state_dict": decoder_state,
             "metrics": metrics,
         }
         torch.save(checkpoint, condition_dir / "checkpoint.pt")
+        # Also save as best_model.pt for compatibility
+        torch.save(model.state_dict(), condition_dir / "best_model.pt")
     else:
         # Save LoRA adapter
         adapter_dir = condition_dir / "adapter"
-        model.encoder.save_lora(adapter_dir)
 
-        # Also save decoder and metadata
+        if decoder_type == "lightweight":
+            model.encoder.save_lora(adapter_dir)
+            decoder_state = model.decoder.state_dict()
+        else:
+            model.lora_encoder.save_lora(adapter_dir)
+            decoder_state = model.decoder.state_dict()
+
+        # Save decoder and metadata
         checkpoint = {
             "epoch": epoch,
-            "decoder_state_dict": model.decoder.state_dict(),
+            "decoder_state_dict": decoder_state,
             "metrics": metrics,
         }
         torch.save(checkpoint, condition_dir / "checkpoint.pt")
+
+        # Save full model state for evaluation
+        torch.save(model.state_dict(), condition_dir / "best_model.pt")
 
     logger.info(f"Saved checkpoint at epoch {epoch}")
 
@@ -347,43 +360,81 @@ def train_condition(
     logger.info(f"Training condition: {condition_name}")
     logger.info(f"Description: {condition_config.get('description', 'N/A')}")
 
+    # Get training options
+    training_config = config["training"]
+    decoder_type = training_config.get("decoder_type", "original")
+    use_semantic_heads = training_config.get("use_semantic_heads", False)
+    freeze_decoder = training_config.get("freeze_decoder", False)
+    lambda_aux = training_config.get("lambda_aux", 0.1)
+
+    logger.info(f"Decoder type: {decoder_type}")
+    logger.info(f"Use semantic heads: {use_semantic_heads}")
+    logger.info(f"Freeze decoder: {freeze_decoder}")
+    logger.info(f"Lambda aux: {lambda_aux}")
+
     # Set up output directory
     output_dir = Path(config["experiment"]["output_dir"])
     condition_dir = output_dir / "conditions" / condition_name
     condition_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create dataloaders
+    # Create dataloaders (with semantic features if using aux loss)
     logger.info("Creating dataloaders...")
     train_loader, val_loader = create_dataloaders(
         data_root=config["paths"]["data_root"],
         train_ids=splits["lora_train"],
         val_ids=splits["lora_val"],
-        batch_size=config["training"]["batch_size"],
-        num_workers=config["training"]["num_workers"],
-        compute_semantic=False,  # Not needed for segmentation training
+        batch_size=training_config["batch_size"],
+        num_workers=training_config["num_workers"],
+        compute_semantic=use_semantic_heads,
         augment_train=True,
     )
 
-    # Create model
-    logger.info("Creating model...")
-    model = create_model(condition_config, config["paths"]["checkpoint"], device)
+    # Create model using the unified factory
+    logger.info(f"Creating model with {decoder_type.upper()} decoder...")
+    model = create_ablation_model(
+        condition_config=condition_config,
+        training_config=training_config,
+        checkpoint_path=config["paths"]["checkpoint"],
+        device=device,
+    )
 
     # Log parameter counts
     param_counts = model.get_trainable_param_count()
     logger.info(f"Trainable parameters: {param_counts}")
 
     # Create optimizer and scheduler
-    optimizer, scheduler = create_optimizer(model, config, is_baseline)
+    optimizer, scheduler = create_optimizer(
+        model, config, is_baseline, decoder_type
+    )
 
-    # Create loss and metric
-    loss_fn = SegmentationLoss(
+    # Create losses
+    seg_loss_fn = SegmentationLoss(
         lambda_dice=config["loss"]["lambda_dice"],
         lambda_ce=config["loss"]["lambda_ce"],
     )
     dice_metric = DiceMetric()
 
+    # Auxiliary semantic loss (if enabled, only for original decoder with LoRA)
+    aux_loss_fn = None
+    if use_semantic_heads and decoder_type == "original" and not is_baseline:
+        aux_loss_fn = AuxiliarySemanticLoss(
+            lambda_volume=config["loss"].get("lambda_volume", 1.0),
+            lambda_location=config["loss"].get("lambda_location", 1.0),
+            lambda_shape=config["loss"].get("lambda_shape", 1.0),
+            normalize_targets=True,
+        )
+
+        # Compute target statistics for normalization
+        logger.info("Computing target statistics...")
+        stats = compute_target_statistics(train_loader)
+        if stats:
+            aux_loss_fn.update_statistics(
+                stats['volume_mean'].unsqueeze(0).expand(100, -1),
+                stats['location_mean'].unsqueeze(0).expand(100, -1),
+                stats['shape_mean'].unsqueeze(0).expand(100, -1),
+            )
+
     # Training configuration
-    training_config = config["training"]
     epochs = max_epochs or training_config["max_epochs"]
     patience = training_config["early_stopping_patience"]
     gradient_clip = training_config.get("gradient_clip", 1.0)
@@ -392,8 +443,9 @@ def train_condition(
     log_path = condition_dir / "training_log.csv"
     with open(log_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "val_loss", "val_dice_mean",
-                        "val_dice_0", "val_dice_1", "val_dice_2", "lr"])
+        writer.writerow(["epoch", "train_loss", "train_seg_loss", "train_aux_loss",
+                        "val_loss", "val_dice_mean", "val_dice_0", "val_dice_1",
+                        "val_dice_2", "lr"])
 
     # Training loop
     best_dice = 0.0
@@ -407,12 +459,15 @@ def train_condition(
         logger.info(f"\nEpoch {epoch + 1}/{epochs}")
 
         # Train
-        train_loss = train_epoch(
-            model, train_loader, loss_fn, optimizer, device, gradient_clip
+        train_metrics = train_epoch(
+            model, train_loader, seg_loss_fn, aux_loss_fn,
+            optimizer, device, gradient_clip, lambda_aux,
+            use_semantic_heads=use_semantic_heads and decoder_type == "original" and not is_baseline,
+            decoder_type=decoder_type,
         )
 
         # Validate
-        val_metrics = validate(model, val_loader, loss_fn, dice_metric, device)
+        val_metrics = validate(model, val_loader, seg_loss_fn, dice_metric, device)
 
         # Update scheduler
         scheduler.step()
@@ -420,7 +475,8 @@ def train_condition(
 
         # Log metrics
         logger.info(
-            f"  Train Loss: {train_loss:.4f} | "
+            f"  Train Loss: {train_metrics['loss']:.4f} "
+            f"(seg={train_metrics['seg_loss']:.4f}, aux={train_metrics['aux_loss']:.4f}) | "
             f"Val Loss: {val_metrics['loss']:.4f} | "
             f"Val Dice: {val_metrics['dice_mean']:.4f} | "
             f"LR: {current_lr:.2e}"
@@ -431,7 +487,9 @@ def train_condition(
             writer = csv.writer(f)
             writer.writerow([
                 epoch + 1,
-                train_loss,
+                train_metrics["loss"],
+                train_metrics["seg_loss"],
+                train_metrics["aux_loss"],
                 val_metrics["loss"],
                 val_metrics["dice_mean"],
                 val_metrics["dice_0"],
@@ -445,10 +503,13 @@ def train_condition(
             best_dice = val_metrics["dice_mean"]
             best_metrics = {
                 "epoch": epoch + 1,
-                "train_loss": train_loss,
+                "train_loss": train_metrics["loss"],
                 **val_metrics,
             }
-            save_checkpoint(model, condition_dir, is_baseline, epoch + 1, best_metrics)
+            save_checkpoint(
+                model, condition_dir, is_baseline, epoch + 1,
+                best_metrics, decoder_type
+            )
             patience_counter = 0
             logger.info(f"  New best! Dice: {best_dice:.4f}")
         else:
@@ -485,11 +546,13 @@ def train_condition(
             condition_name=condition_name,
         )
         # Re-save adapter with model card
-        model.encoder.save_lora(adapter_dir, model_card_config=model_card_cfg)
+        if decoder_type == "lightweight":
+            model.encoder.save_lora(adapter_dir, model_card_config=model_card_cfg)
+        else:
+            model.lora_encoder.save_lora(adapter_dir, model_card_config=model_card_cfg)
         logger.info("Model card generated for LoRA adapter")
 
-    # Save final metrics
-    final_metrics_path = condition_dir / "training_summary.yaml"
+    # Save final summary
     summary = {
         "condition": condition_name,
         "is_baseline": is_baseline,
@@ -498,8 +561,11 @@ def train_condition(
         "best_val_dice": best_dice,
         "total_epochs": epoch + 1,
         "training_time_minutes": total_time / 60,
+        "decoder_type": decoder_type,
+        "use_semantic_heads": use_semantic_heads,
+        "freeze_decoder": freeze_decoder,
     }
-    with open(final_metrics_path, "w") as f:
+    with open(condition_dir / "training_summary.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False)
 
     return best_metrics

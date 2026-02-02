@@ -1,12 +1,10 @@
 #!/usr/bin/env python
 # experiments/lora_ablation/extract_features.py
-"""Extract 768-dim encoder features for all subjects in probe_train + test splits.
+"""Feature extraction with multi-scale support.
 
-For each trained condition, this script:
-1. Loads the encoder (with merged LoRA weights if applicable)
-2. Extracts features from probe_train and test subjects
-3. Also extracts semantic targets from segmentation masks
-4. Saves features and targets as .pt files
+Supports both feature levels via config:
+- "encoder10": Single-scale 768-dim features (v1 behavior)
+- "multi_scale": Layers 2+3+4 concatenated (192+384+768=1344-dim, recommended)
 
 Usage:
     python -m experiments.lora_ablation.extract_features \
@@ -17,7 +15,7 @@ Usage:
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -28,7 +26,6 @@ import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset
 from growth.data.transforms import get_val_transforms
-from growth.models.encoder.feature_extractor import FeatureExtractor
 from growth.models.encoder.lora_adapter import LoRASwinViT
 from growth.models.encoder.swin_loader import load_swin_encoder
 from growth.utils.seed import set_seed
@@ -42,23 +39,92 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class MultiScaleFeatureExtractor:
+    """Extract features at multiple scales from SwinUNETR.
+
+    Extracts GAP features from:
+    - layers2: 192-dim
+    - layers3: 384-dim
+    - layers4: 768-dim
+    - encoder10: 768-dim (bottleneck)
+
+    The multi-scale representation (1344-dim) captures both
+    local and global information.
+    """
+
+    def __init__(
+        self,
+        encoder: torch.nn.Module,
+        device: str = "cuda",
+    ):
+        self.encoder = encoder
+        self.device = device
+        self.encoder.eval()
+
+    @torch.no_grad()
+    def extract(
+        self,
+        x: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Extract multi-scale features.
+
+        Args:
+            x: Input tensor [B, 4, 96, 96, 96].
+
+        Returns:
+            Dict with 'layers2', 'layers3', 'layers4', 'encoder10', 'multi_scale'.
+        """
+        # Get hidden states from swinViT
+        hidden_states = self.encoder.swinViT(x, self.encoder.normalize)
+
+        features = {}
+
+        # Stage outputs with GAP
+        # hidden_states[2]: layers2 output [B, 192, 12, 12, 12]
+        features['layers2'] = F.adaptive_avg_pool3d(
+            hidden_states[2], 1
+        ).flatten(1)  # [B, 192]
+
+        # hidden_states[3]: layers3 output [B, 384, 6, 6, 6]
+        features['layers3'] = F.adaptive_avg_pool3d(
+            hidden_states[3], 1
+        ).flatten(1)  # [B, 384]
+
+        # hidden_states[4]: layers4 output [B, 768, 3, 3, 3]
+        features['layers4'] = F.adaptive_avg_pool3d(
+            hidden_states[4], 1
+        ).flatten(1)  # [B, 768]
+
+        # encoder10: bottleneck [B, 768, 3, 3, 3]
+        enc10 = self.encoder.encoder10(hidden_states[4])
+        features['encoder10'] = F.adaptive_avg_pool3d(
+            enc10, 1
+        ).flatten(1)  # [B, 768]
+
+        # Multi-scale concatenation
+        features['multi_scale'] = torch.cat([
+            features['layers2'],
+            features['layers3'],
+            features['layers4'],
+        ], dim=1)  # [B, 1344]
+
+        return features
+
+
 def load_encoder_for_condition(
     condition_name: str,
     config: dict,
     device: str,
 ) -> torch.nn.Module:
-    """Load encoder for a trained condition.
-
-    For baseline: loads the checkpoint directly
-    For LoRA: loads base encoder, loads LoRA adapter, and merges weights
+    """Load encoder for a condition with proper weight merging.
 
     Returns:
-        Encoder model with merged weights (if LoRA) in eval mode.
+        SwinUNETR encoder in eval mode.
     """
     output_dir = Path(config["experiment"]["output_dir"])
     condition_dir = output_dir / "conditions" / condition_name
 
-    # Check condition type
+    # Get condition config
     condition_config = None
     for cond in config["conditions"]:
         if cond["name"] == condition_name:
@@ -78,21 +144,17 @@ def load_encoder_for_condition(
     )
 
     if is_baseline:
-        logger.info(f"Loaded baseline encoder (no LoRA)")
+        logger.info("Loaded baseline encoder (no LoRA)")
         encoder = base_encoder
     else:
         # Load LoRA adapter and merge
         adapter_path = condition_dir / "adapter"
         if not adapter_path.exists():
-            raise FileNotFoundError(
-                f"LoRA adapter not found at {adapter_path}. "
-                "Train the condition first."
-            )
+            raise FileNotFoundError(f"LoRA adapter not found: {adapter_path}")
 
         logger.info(f"Loading LoRA adapter from {adapter_path}")
 
-        # Create LoRA model and load adapter
-        # We need to recreate the LoRA wrapper with the right rank
+        # Load LoRA model
         lora_encoder = LoRASwinViT.load_lora(
             base_encoder,
             adapter_path,
@@ -100,7 +162,7 @@ def load_encoder_for_condition(
             trainable=False,
         )
 
-        # Merge LoRA weights into base model for efficient inference
+        # Merge LoRA weights for efficient inference
         encoder = lora_encoder.merge_lora()
         logger.info("Merged LoRA weights into base encoder")
 
@@ -116,24 +178,22 @@ def extract_features_for_split(
     device: str,
     batch_size: int = 8,
     num_workers: int = 4,
-) -> Tuple[np.ndarray, Dict[str, np.ndarray], List[str]]:
+    feature_level: str = "multi_scale",
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], List[str]]:
     """Extract features and semantic targets for a split.
 
     Args:
         encoder: SwinUNETR encoder.
-        subject_ids: List of subject IDs to process.
-        data_root: Path to BraTS-MEN data.
+        subject_ids: Subject IDs to process.
+        data_root: Path to data.
         device: Device to use.
-        batch_size: Batch size for inference.
-        num_workers: Number of data loading workers.
+        batch_size: Batch size.
+        num_workers: Data loading workers.
+        feature_level: 'encoder10', 'multi_scale', or 'all'.
 
     Returns:
-        Tuple of:
-        - features: [N, 768] numpy array
-        - targets: dict with 'volume', 'location', 'shape', 'all' arrays
-        - ordered_ids: List of subject IDs in order of features
+        Tuple of (features_dict, targets_dict, subject_ids).
     """
-    # Create dataset with semantic features
     dataset = BraTSMENDataset(
         data_root=data_root,
         subject_ids=subject_ids,
@@ -150,11 +210,16 @@ def extract_features_for_split(
         pin_memory=True,
     )
 
-    # Create feature extractor
-    feature_extractor = FeatureExtractor(encoder, level="encoder10")
+    extractor = MultiScaleFeatureExtractor(encoder, device)
 
-    # Extract features
-    all_features = []
+    # Storage
+    all_features = {
+        'encoder10': [],
+        'multi_scale': [],
+        'layers2': [],
+        'layers3': [],
+        'layers4': [],
+    }
     all_volumes = []
     all_locations = []
     all_shapes = []
@@ -163,73 +228,77 @@ def extract_features_for_split(
     for batch in tqdm(dataloader, desc="Extracting features"):
         images = batch["image"].to(device)
 
-        # Extract features using global average pooling
-        features = feature_extractor(images)
-        all_features.append(features.cpu().numpy())
+        # Extract multi-scale features
+        features = extractor.extract(images)
 
-        # Collect semantic targets
+        for key in all_features:
+            all_features[key].append(features[key].cpu().numpy())
+
+        # Semantic targets
         all_volumes.append(batch["semantic_features"]["volume"].numpy())
         all_locations.append(batch["semantic_features"]["location"].numpy())
         all_shapes.append(batch["semantic_features"]["shape"].numpy())
 
-        # Track subject IDs (handle both list and tuple batch results)
+        # Subject IDs
         ids = batch["subject_id"]
         if isinstance(ids, torch.Tensor):
             ids = ids.tolist()
         all_ids.extend(ids)
 
-    # Concatenate all batches
-    features = np.concatenate(all_features, axis=0)
-    targets = {
+    # Concatenate
+    features_dict = {
+        key: np.concatenate(vals, axis=0)
+        for key, vals in all_features.items()
+    }
+
+    targets_dict = {
         "volume": np.concatenate(all_volumes, axis=0),
         "location": np.concatenate(all_locations, axis=0),
         "shape": np.concatenate(all_shapes, axis=0),
     }
-    # Concatenate all targets for convenience
-    targets["all"] = np.concatenate([
-        targets["volume"],
-        targets["location"],
-        targets["shape"],
-    ], axis=1)
 
-    logger.info(f"Extracted features shape: {features.shape}")
-    logger.info(f"Targets shapes: volume={targets['volume'].shape}, "
-                f"location={targets['location'].shape}, shape={targets['shape'].shape}")
+    # Log shapes
+    logger.info("Feature shapes:")
+    for key, arr in features_dict.items():
+        logger.info(f"  {key}: {arr.shape}")
+    logger.info("Target shapes:")
+    for key, arr in targets_dict.items():
+        logger.info(f"  {key}: {arr.shape}")
 
-    return features, targets, all_ids
+    return features_dict, targets_dict, all_ids
 
 
 def save_features(
-    features: np.ndarray,
-    targets: Dict[str, np.ndarray],
+    features_dict: Dict[str, np.ndarray],
+    targets_dict: Dict[str, np.ndarray],
     subject_ids: List[str],
     save_dir: Path,
     split_name: str,
 ) -> None:
-    """Save features and targets to files.
-
-    Saves:
-    - features_{split_name}.pt
-    - targets_{split_name}.pt
-    - subject_ids_{split_name}.txt
-    """
+    """Save features and targets."""
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save features
-    features_path = save_dir / f"features_{split_name}.pt"
-    torch.save(torch.from_numpy(features), features_path)
-    logger.info(f"Saved features to {features_path}")
+    # Save each feature type
+    for key, arr in features_dict.items():
+        path = save_dir / f"features_{split_name}_{key}.pt"
+        torch.save(torch.from_numpy(arr), path)
+        logger.info(f"Saved {key} features to {path}")
+
+    # Save primary features (for backwards compatibility)
+    torch.save(
+        torch.from_numpy(features_dict['encoder10']),
+        save_dir / f"features_{split_name}.pt"
+    )
 
     # Save targets
     targets_path = save_dir / f"targets_{split_name}.pt"
-    torch.save({k: torch.from_numpy(v) for k, v in targets.items()}, targets_path)
+    torch.save({k: torch.from_numpy(v) for k, v in targets_dict.items()}, targets_path)
     logger.info(f"Saved targets to {targets_path}")
 
-    # Save subject IDs for reference
+    # Save subject IDs
     ids_path = save_dir / f"subject_ids_{split_name}.txt"
     with open(ids_path, "w") as f:
         f.write("\n".join(subject_ids))
-    logger.info(f"Saved subject IDs to {ids_path}")
 
 
 def extract_features(
@@ -238,32 +307,22 @@ def extract_features(
     splits: dict,
     device: str = "cuda",
 ) -> Dict[str, Path]:
-    """Extract features for probe_train and test splits.
-
-    Args:
-        condition_name: Name of the trained condition.
-        config: Full experiment configuration.
-        splits: Data splits dictionary.
-        device: Device to use.
-
-    Returns:
-        Dict mapping split names to feature file paths.
-    """
+    """Extract features for a condition."""
     logger.info(f"Extracting features for condition: {condition_name}")
 
-    # Set up output directory
     output_dir = Path(config["experiment"]["output_dir"])
     condition_dir = output_dir / "conditions" / condition_name
 
     # Load encoder
     encoder = load_encoder_for_condition(condition_name, config, device)
 
-    # Feature extraction config
+    # Config
     fe_config = config.get("feature_extraction", {})
     batch_size = fe_config.get("batch_size", 8)
     num_workers = config["training"].get("num_workers", 4)
+    feature_level = fe_config.get("level", "multi_scale")
 
-    # Extract features for probe_train split
+    # Extract for probe_train split
     logger.info(f"\nExtracting probe_train features ({len(splits['probe_train'])} subjects)")
     probe_features, probe_targets, probe_ids = extract_features_for_split(
         encoder=encoder,
@@ -272,10 +331,11 @@ def extract_features(
         device=device,
         batch_size=batch_size,
         num_workers=num_workers,
+        feature_level=feature_level,
     )
     save_features(probe_features, probe_targets, probe_ids, condition_dir, "probe")
 
-    # Extract features for test split
+    # Extract for test split
     logger.info(f"\nExtracting test features ({len(splits['test'])} subjects)")
     test_features, test_targets, test_ids = extract_features_for_split(
         encoder=encoder,
@@ -284,46 +344,28 @@ def extract_features(
         device=device,
         batch_size=batch_size,
         num_workers=num_workers,
+        feature_level=feature_level,
     )
     save_features(test_features, test_targets, test_ids, condition_dir, "test")
 
-    # Return paths
     return {
         "probe_features": condition_dir / "features_probe.pt",
-        "probe_targets": condition_dir / "targets_probe.pt",
         "test_features": condition_dir / "features_test.pt",
-        "test_targets": condition_dir / "targets_test.pt",
     }
 
 
-def main(
-    config_path: str,
-    condition: str,
-    device: str = "cuda",
-) -> None:
-    """Main entry point for feature extraction.
-
-    Args:
-        config_path: Path to ablation.yaml.
-        condition: Condition name.
-        device: Device to use.
-    """
-    # Load configuration
+def main(config_path: str, condition: str, device: str = "cuda") -> None:
+    """Main entry point."""
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    # Set seed
     set_seed(config["experiment"]["seed"])
-
-    # Load splits
     splits = load_splits(config_path)
 
-    # Check CUDA availability
     if device == "cuda" and not torch.cuda.is_available():
         logger.warning("CUDA not available, using CPU")
         device = "cpu"
 
-    # Extract features
     extract_features(
         condition_name=condition,
         config=config,
@@ -333,28 +375,10 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Extract features for a trained condition"
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="experiments/lora_ablation/config/ablation.yaml",
-        help="Path to ablation configuration file",
-    )
-    parser.add_argument(
-        "--condition",
-        type=str,
-        required=True,
-        choices=["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"],
-        help="Condition to extract features for",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda",
-        help="Device to use",
-    )
+    parser = argparse.ArgumentParser(description="Extract multi-scale features")
+    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--condition", type=str, required=True)
+    parser.add_argument("--device", type=str, default="cuda")
 
     args = parser.parse_args()
     main(args.config, args.condition, args.device)

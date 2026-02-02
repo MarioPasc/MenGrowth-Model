@@ -1,18 +1,17 @@
 #!/usr/bin/env python
 # experiments/lora_ablation/visualizations.py
-"""Publication-quality visualizations for LoRA ablation study.
+"""Visualizations for LoRA ablation analysis.
 
-Generates IEEE-compliant figures for thesis:
-1. R² comparison with confidence intervals
-2. Dice score comparison across conditions
-3. Latent space UMAP (Glioma vs Meningioma domain shift)
-4. Training curves comparison
-5. Effect size forest plot
+Features:
+- UMAP colored by semantic features (volume, location)
+- Variance per dimension plots
+- Prediction vs ground truth scatter plots
+- Linear vs MLP R² comparison
+- Publication-quality figures
 
 Usage:
     python -m experiments.lora_ablation.visualizations \
-        --config experiments/lora_ablation/config/ablation.yaml \
-        --all
+        --config experiments/lora_ablation/config/ablation.yaml
 """
 
 import argparse
@@ -22,828 +21,437 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.lines import Line2D
+import torch
 import yaml
 
-from experiments.utils.settings import (
-    apply_ieee_style,
-    get_figure_size,
-    get_significance_stars,
-    CONDITION_COLORS,
-    CONDITION_LABELS,
-    CONDITION_MARKERS,
-    SEMANTIC_COLORS,
-    SEMANTIC_LABELS_SHORT,
-    DICE_COLORS,
-    DOMAIN_COLORS,
-    DOMAIN_MARKERS,
-    DOMAIN_LABELS,
-    PLOT_SETTINGS,
-)
-from .statistical_analysis import (
-    bootstrap_ci,
-    run_statistical_analysis,
-)
+try:
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.colors import Normalize
+    import seaborn as sns
+    HAS_PLOTTING = True
+except ImportError:
+    HAS_PLOTTING = False
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+try:
+    from umap import UMAP
+    HAS_UMAP = True
+except ImportError:
+    HAS_UMAP = False
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def setup_style():
-    """Apply IEEE style settings."""
-    apply_ieee_style()
-
-
-def save_figure(fig, output_dir: Path, name: str, formats: List[str] = ["pdf", "png"]):
-    """Save figure in multiple formats."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for fmt in formats:
-        path = output_dir / f"{name}.{fmt}"
-        fig.savefig(path, dpi=PLOT_SETTINGS["dpi_print"], bbox_inches="tight")
-        logger.info(f"Saved {path}")
-
-
-def add_significance_bracket(
-    ax,
-    x1: float,
-    x2: float,
-    y: float,
-    h: float,
-    text: str,
-):
-    """Add significance bracket with stars above bars."""
-    ax.plot([x1, x1, x2, x2], [y, y + h, y + h, y],
-            lw=PLOT_SETTINGS["significance_bracket_linewidth"], c="0.3")
-    ax.text((x1 + x2) / 2, y + h, text, ha="center", va="bottom",
-            fontsize=PLOT_SETTINGS["significance_text_fontsize"])
-
-
-# =============================================================================
-# Figure 1: R² Comparison Bar Plot
-# =============================================================================
-
-def plot_r2_comparison(
-    config: dict,
-    output_dir: Path,
-    show_ci: bool = True,
-    include_mlp: bool = False,
-) -> plt.Figure:
-    """Create R² comparison bar plot with confidence intervals.
-
-    This is the PRIMARY figure showing linear probe R² for each condition.
-
-    Args:
-        config: Experiment configuration.
-        output_dir: Output directory.
-        show_ci: Whether to show confidence intervals.
-        include_mlp: Whether to include MLP probe results alongside linear.
-    """
-    setup_style()
-
-    # Load metrics for all conditions
-    conditions = [c["name"] for c in config["conditions"]]
-    metrics = {}
-
-    for cond in conditions:
-        metrics_path = output_dir / "conditions" / cond / "metrics.json"
-        if metrics_path.exists():
-            with open(metrics_path) as f:
-                metrics[cond] = json.load(f)
-
-    if not metrics:
-        logger.warning("No metrics found for R² plot")
-        return None
-
-    # Prepare data
-    semantic_features = ["volume", "location", "shape"]
-    n_conditions = len(metrics)
-    n_features = len(semantic_features)
-
-    # Check if MLP data is available
-    has_mlp_data = include_mlp and any(
-        f"r2_{feat}_mlp" in m for m in metrics.values() for feat in semantic_features
-    )
-
-    if include_mlp and has_mlp_data:
-        # Create figure with subplots for Linear vs MLP comparison
-        fig, axes = plt.subplots(1, 2, figsize=get_figure_size("double", 0.6))
-
-        for ax_idx, (ax, probe_type) in enumerate(zip(axes, ["Linear", "MLP"])):
-            suffix = "" if probe_type == "Linear" else "_mlp"
-
-            # Bar positions
-            x = np.arange(n_features)
-            bar_width = PLOT_SETTINGS["bar_width"]
-            offsets = np.linspace(-(n_conditions - 1) / 2, (n_conditions - 1) / 2, n_conditions) * bar_width * 1.2
-
-            # Plot bars for each condition
-            for i, cond in enumerate(conditions):
-                if cond not in metrics:
-                    continue
-
-                values = [metrics[cond].get(f"r2_{feat}{suffix}", 0) for feat in semantic_features]
-
-                bars = ax.bar(
-                    x + offsets[i],
-                    values,
-                    bar_width,
-                    label=CONDITION_LABELS.get(cond, cond),
-                    color=CONDITION_COLORS.get(cond, f"C{i}"),
-                    alpha=PLOT_SETTINGS["bar_alpha"],
-                    edgecolor="white",
-                    linewidth=0.5,
-                )
-
-            # Customize axes
-            ax.set_xlabel("Semantic Feature", fontsize=PLOT_SETTINGS["axes_labelsize"])
-            ax.set_ylabel(rf"{probe_type} Probe $R^2$", fontsize=PLOT_SETTINGS["axes_labelsize"])
-            ax.set_xticks(x)
-            ax.set_xticklabels([SEMANTIC_LABELS_SHORT[f] for f in semantic_features])
-            ax.set_ylim(-0.5, 1.0)
-            ax.axhline(y=0, color="0.5", linestyle="-", linewidth=0.5)
-            ax.set_title(f"({chr(97 + ax_idx)}) {probe_type} Probe", fontsize=PLOT_SETTINGS["axes_titlesize"])
-
-            # Legend only on first subplot
-            if ax_idx == 0:
-                ax.legend(
-                    loc="lower right",
-                    fontsize=PLOT_SETTINGS["legend_fontsize"] - 1,
-                    frameon=False,
-                    ncol=1,
-                )
-
-        plt.tight_layout()
-        save_figure(fig, output_dir / "figures", "r2_comparison_linear_mlp")
-    else:
-        # Original single-panel plot for linear probes only
-        fig, ax = plt.subplots(figsize=get_figure_size("double", 0.5))
-
-        # Bar positions
-        x = np.arange(n_features)
-        bar_width = PLOT_SETTINGS["bar_width"]
-        offsets = np.linspace(-(n_conditions - 1) / 2, (n_conditions - 1) / 2, n_conditions) * bar_width * 1.2
-
-        # Plot bars for each condition
-        for i, cond in enumerate(conditions):
-            if cond not in metrics:
-                continue
-
-            values = [metrics[cond].get(f"r2_{feat}", 0) for feat in semantic_features]
-
-            # Get per-dimension values for error bars if available
-            errors = None
-            if show_ci:
-                per_dim = [metrics[cond].get(f"r2_{feat}_per_dim", None) for feat in semantic_features]
-                if all(p is not None for p in per_dim):
-                    # Use std of per-dimension R² as error estimate
-                    errors = [np.std(p) for p in per_dim]
-
-            bars = ax.bar(
-                x + offsets[i],
-                values,
-                bar_width,
-                label=CONDITION_LABELS.get(cond, cond),
-                color=CONDITION_COLORS.get(cond, f"C{i}"),
-                alpha=PLOT_SETTINGS["bar_alpha"],
-                edgecolor="white",
-                linewidth=0.5,
-                yerr=errors if errors else None,
-                capsize=PLOT_SETTINGS["errorbar_capsize"] if errors else 0,
-            )
-
-        # Customize axes
-        ax.set_xlabel("Semantic Feature", fontsize=PLOT_SETTINGS["axes_labelsize"])
-        ax.set_ylabel(r"Linear Probe $R^2$", fontsize=PLOT_SETTINGS["axes_labelsize"])
-        ax.set_xticks(x)
-        ax.set_xticklabels([SEMANTIC_LABELS_SHORT[f] for f in semantic_features])
-        ax.set_ylim(0, 1.0)
-        ax.axhline(y=0.9, color="0.7", linestyle="--", linewidth=0.5, label="Target (0.9)")
-
-        # Legend
-        ax.legend(
-            loc="upper right",
-            fontsize=PLOT_SETTINGS["legend_fontsize"],
-            frameon=False,
-            ncol=2,
-        )
-
-        # Add mean R² as text annotation
-        for i, cond in enumerate(metrics.keys()):
-            mean_r2 = metrics[cond].get("r2_mean", 0)
-            ax.annotate(
-                f"Mean: {mean_r2:.3f}",
-                xy=(0.02, 0.98 - i * 0.06),
-                xycoords="axes fraction",
-                fontsize=PLOT_SETTINGS["annotation_fontsize"],
-                color=CONDITION_COLORS.get(cond, f"C{i}"),
-                va="top",
-            )
-
-        plt.tight_layout()
-        save_figure(fig, output_dir / "figures", "r2_comparison")
-
-    return fig
-
-
-# =============================================================================
-# Figure 2: Dice Score Comparison
-# =============================================================================
-
-def plot_dice_comparison(
-    config: dict,
-    output_dir: Path,
-) -> plt.Figure:
-    """Create TEST Dice score comparison plot.
-
-    Uses test_dice_* metrics from metrics.json (computed by evaluate_probes.py).
-    This ensures we report TEST set performance, not validation.
-    """
-    setup_style()
-
-    conditions = [c["name"] for c in config["conditions"]]
-    dice_data = {}
-
-    for cond in conditions:
-        # Load TEST Dice from metrics.json (NOT validation from training_summary)
-        metrics_path = output_dir / "conditions" / cond / "metrics.json"
-
-        if metrics_path.exists():
-            with open(metrics_path) as f:
-                metrics = json.load(f)
-
-            # Check if test Dice metrics are available
-            if "test_dice_mean" in metrics:
-                dice_data[cond] = {
-                    "mean": metrics.get("test_dice_mean", 0),
-                    "per_class": [
-                        metrics.get("test_dice_NCR", 0),
-                        metrics.get("test_dice_ED", 0),
-                        metrics.get("test_dice_ET", 0),
-                    ],
-                }
-            else:
-                logger.warning(f"No test Dice in metrics.json for {cond}. "
-                             "Run 'probes' command to compute test Dice.")
-
-    if not dice_data:
-        logger.warning("No test Dice data found. Skipping Dice comparison plot.")
-        return None
-
-    fig, ax = plt.subplots(figsize=get_figure_size("single", 0.8))
-
-    # Bar plot of mean test dice
-    conds = list(dice_data.keys())
-    values = [dice_data[c]["mean"] for c in conds]
-    colors = [CONDITION_COLORS.get(c, "gray") for c in conds]
-
-    bars = ax.bar(
-        range(len(conds)),
-        values,
-        color=colors,
-        alpha=PLOT_SETTINGS["bar_alpha"],
-        edgecolor="white",
-    )
-
-    # Add value labels on bars
-    for bar, val in zip(bars, values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.01,
-            f"{val:.3f}",
-            ha="center",
-            va="bottom",
-            fontsize=PLOT_SETTINGS["annotation_fontsize"],
-        )
-
-    ax.set_xlabel("Condition", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    ax.set_ylabel("Test Dice Score", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    ax.set_xticks(range(len(conds)))
-    ax.set_xticklabels([CONDITION_LABELS.get(c, c) for c in conds], rotation=15, ha="right")
-    ax.set_ylim(0, 1.0)
-
-    plt.tight_layout()
-    save_figure(fig, output_dir / "figures", "dice_comparison")
-    return fig
-
-
-# =============================================================================
-# Figure 3: Training Curves
-# =============================================================================
-
-def plot_training_curves(
-    config: dict,
-    output_dir: Path,
-) -> plt.Figure:
-    """Plot training curves for all conditions."""
-    setup_style()
-
-    conditions = [c["name"] for c in config["conditions"]]
-    fig, axes = plt.subplots(1, 2, figsize=get_figure_size("double", 0.45))
-
-    for cond in conditions:
-        log_path = output_dir / "conditions" / cond / "training_log.csv"
-        if not log_path.exists():
-            continue
-
-        df = pd.read_csv(log_path)
-        color = CONDITION_COLORS.get(cond, "gray")
-        label = CONDITION_LABELS.get(cond, cond)
-        linestyle = "-" if cond != "baseline" else "--"
-
-        # Training loss
-        axes[0].plot(
-            df["epoch"],
-            df["train_loss"],
-            color=color,
-            linestyle=linestyle,
-            linewidth=PLOT_SETTINGS["line_width"],
-            label=label,
-        )
-
-        # Validation Dice
-        axes[1].plot(
-            df["epoch"],
-            df["val_dice_mean"],
-            color=color,
-            linestyle=linestyle,
-            linewidth=PLOT_SETTINGS["line_width"],
-            label=label,
-        )
-
-    # Customize axes
-    axes[0].set_xlabel("Epoch", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    axes[0].set_ylabel("Training Loss", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    axes[0].set_title("(a) Training Loss", fontsize=PLOT_SETTINGS["axes_titlesize"])
-
-    axes[1].set_xlabel("Epoch", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    axes[1].set_ylabel("Validation Dice", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    axes[1].set_title("(b) Validation Dice", fontsize=PLOT_SETTINGS["axes_titlesize"])
-    axes[1].legend(
-        loc="lower right",
-        fontsize=PLOT_SETTINGS["legend_fontsize"] - 1,
-        frameon=False,
-    )
-
-    plt.tight_layout()
-    save_figure(fig, output_dir / "figures", "training_curves")
-    return fig
-
-
-# =============================================================================
-# Figure 4: Latent Space UMAP (Domain Shift Visualization)
-# =============================================================================
-
-def plot_latent_space_umap(
-    config: dict,
-    output_dir: Path,
-    glioma_features_path: Optional[Path] = None,
-    n_samples: int = 500,
-) -> plt.Figure:
-    """Plot UMAP of latent space showing Glioma vs Meningioma separation.
-
-    This visualization shows how LoRA adaptation affects the feature space
-    relative to the source domain (glioma).
-
-    Args:
-        config: Experiment configuration.
-        output_dir: Output directory.
-        glioma_features_path: Optional path to pre-extracted glioma features.
-            If None, only meningioma features are shown.
-        n_samples: Number of samples per condition for visualization.
-    """
-    setup_style()
-
-    try:
-        from umap import UMAP
-    except ImportError:
-        logger.warning("umap-learn not installed. Skipping UMAP visualization.")
-        logger.warning("Install with: pip install umap-learn")
-        return None
-
-    import torch
-
-    conditions = [c["name"] for c in config["conditions"]]
-
-    # Load meningioma features for each condition
-    all_features = []
-    all_labels = []
-    all_conditions = []
-
-    for cond in conditions:
-        feat_path = output_dir / "conditions" / cond / "features_test.pt"
-        if not feat_path.exists():
-            continue
-
-        features = torch.load(feat_path).numpy()
-
-        # Subsample if needed
-        if len(features) > n_samples:
-            indices = np.random.choice(len(features), n_samples, replace=False)
-            features = features[indices]
-
-        all_features.append(features)
-        all_labels.extend(["meningioma"] * len(features))
-        all_conditions.extend([cond] * len(features))
-
-    if not all_features:
-        logger.warning("No features found for UMAP")
-        return None
-
-    # Optionally add glioma features
-    if glioma_features_path and glioma_features_path.exists():
-        glioma_data = torch.load(glioma_features_path)
-        glioma_features = glioma_data["features"].numpy()
-        if len(glioma_features) > n_samples:
-            indices = np.random.choice(len(glioma_features), n_samples, replace=False)
-            glioma_features = glioma_features[indices]
-        all_features.append(glioma_features)
-        all_labels.extend(["glioma"] * len(glioma_features))
-        all_conditions.extend(["glioma"] * len(glioma_features))
-
-    # Concatenate and fit UMAP
-    features_concat = np.vstack(all_features)
-    labels = np.array(all_labels)
-    conditions_arr = np.array(all_conditions)
-
-    logger.info(f"Fitting UMAP on {len(features_concat)} samples...")
-    reducer = UMAP(n_neighbors=30, min_dist=0.3, random_state=42)
-    embedding = reducer.fit_transform(features_concat)
-
-    # Create figure
-    n_cols = min(len(conditions), 4)
-    n_rows = (len(conditions) + n_cols - 1) // n_cols
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(PLOT_SETTINGS["figure_width_double"],
-                 PLOT_SETTINGS["figure_width_double"] * 0.3 * n_rows),
-        squeeze=False,
-    )
-    axes = axes.flatten()
-
-    # Plot each condition separately
-    for idx, cond in enumerate(conditions):
-        ax = axes[idx]
-
-        # Plot glioma points (if available) as background
-        if "glioma" in labels:
-            glioma_mask = labels == "glioma"
-            ax.scatter(
-                embedding[glioma_mask, 0],
-                embedding[glioma_mask, 1],
-                c=DOMAIN_COLORS["glioma"],
-                marker=DOMAIN_MARKERS["glioma"],
-                s=PLOT_SETTINGS["scatter_size"],
-                alpha=PLOT_SETTINGS["scatter_alpha"] * 0.5,
-                label="Glioma (Source)",
-                edgecolors="none",
-            )
-
-        # Plot meningioma points for this condition
-        cond_mask = conditions_arr == cond
-        ax.scatter(
-            embedding[cond_mask, 0],
-            embedding[cond_mask, 1],
-            c=CONDITION_COLORS.get(cond, "blue"),
-            marker=DOMAIN_MARKERS["meningioma"],
-            s=PLOT_SETTINGS["scatter_size"],
-            alpha=PLOT_SETTINGS["scatter_alpha"],
-            label="Meningioma",
-            edgecolors="white",
-            linewidths=PLOT_SETTINGS["scatter_edgewidth"],
-        )
-
-        ax.set_title(CONDITION_LABELS.get(cond, cond), fontsize=PLOT_SETTINGS["axes_titlesize"])
-        ax.set_xlabel("UMAP 1", fontsize=PLOT_SETTINGS["tick_labelsize"])
-        ax.set_ylabel("UMAP 2", fontsize=PLOT_SETTINGS["tick_labelsize"])
-        ax.tick_params(labelsize=PLOT_SETTINGS["tick_labelsize"] - 1)
-
-        # Remove ticks for cleaner look
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-    # Hide unused axes
-    for idx in range(len(conditions), len(axes)):
-        axes[idx].set_visible(False)
-
-    # Add legend to last visible axis
-    if "glioma" in labels:
-        legend_elements = [
-            Line2D([0], [0], marker=DOMAIN_MARKERS["glioma"], color="w",
-                   markerfacecolor=DOMAIN_COLORS["glioma"], markersize=8, label="Glioma (Source)"),
-            Line2D([0], [0], marker=DOMAIN_MARKERS["meningioma"], color="w",
-                   markerfacecolor=DOMAIN_COLORS["meningioma"], markersize=8, label="Meningioma (Target)"),
-        ]
-        fig.legend(
-            handles=legend_elements,
-            loc="upper center",
-            bbox_to_anchor=(0.5, 0.02),
-            ncol=2,
-            fontsize=PLOT_SETTINGS["legend_fontsize"],
-            frameon=False,
-        )
-
-    plt.tight_layout()
-    save_figure(fig, output_dir / "figures", "latent_umap")
-    return fig
-
-
-# =============================================================================
-# Figure 5: Effect Size Forest Plot
-# =============================================================================
-
-def plot_effect_size_forest(
-    config: dict,
-    output_dir: Path,
-) -> plt.Figure:
-    """Create forest plot of effect sizes with confidence intervals.
-
-    This plot clearly shows the magnitude and uncertainty of improvements.
-    """
-    setup_style()
-
-    # Load statistical analysis results
-    stats_path = output_dir / "statistical_comparisons.json"
-    if not stats_path.exists():
-        logger.warning("Statistical comparisons not found. Run statistical_analysis.py first.")
-        return None
-
-    with open(stats_path) as f:
-        comparisons = json.load(f)
-
-    if not comparisons:
-        return None
-
-    # Prepare data for forest plot
-    conditions = list(comparisons.keys())
-    metrics = ["volume_neg_mse", "location_neg_mse", "shape_neg_mse"]
-    metric_labels = [r"$R^2_\mathrm{vol}$", r"$R^2_\mathrm{loc}$", r"$R^2_\mathrm{shape}$"]
-
-    fig, ax = plt.subplots(figsize=get_figure_size("single", 1.2))
-
-    y_positions = []
-    y_labels = []
-    y_pos = 0
-
-    for cond in conditions:
-        if cond not in comparisons:
-            continue
-
-        for metric, label in zip(metrics, metric_labels):
-            if metric not in comparisons[cond]:
-                continue
-
-            comp = comparisons[cond][metric]
-
-            # Extract effect size and CI
-            effect = comp.get("effect_size", 0)
-            delta_ci = comp.get("delta_ci", [0, 0])
-
-            # Plot point and error bar
-            ax.errorbar(
-                effect,
-                y_pos,
-                xerr=[[effect - delta_ci[0]], [delta_ci[1] - effect]],
-                fmt="o",
-                color=CONDITION_COLORS.get(cond, "gray"),
-                markersize=PLOT_SETTINGS["marker_size"],
-                capsize=PLOT_SETTINGS["errorbar_capsize"],
-                capthick=PLOT_SETTINGS["errorbar_capthick"],
-                linewidth=PLOT_SETTINGS["errorbar_linewidth"],
-            )
-
-            # Add significance marker
-            p_value = comp.get("p_corrected", comp.get("p_value", 1))
-            if p_value < 0.05:
-                marker = "*" * (3 if p_value < 0.001 else 2 if p_value < 0.01 else 1)
-                ax.text(
-                    effect + 0.05,
-                    y_pos,
-                    marker,
-                    va="center",
-                    fontsize=PLOT_SETTINGS["significance_text_fontsize"],
-                )
-
-            y_labels.append(f"{CONDITION_LABELS.get(cond, cond)}\n{label}")
-            y_positions.append(y_pos)
-            y_pos += 1
-
-        # Add spacing between conditions
-        y_pos += 0.5
-
-    # Reference line at 0
-    ax.axvline(x=0, color="0.5", linestyle="--", linewidth=0.8)
-
-    # Shade regions
-    ax.axvspan(-0.2, 0.2, alpha=0.1, color="gray", label="Negligible")
-    ax.axvspan(0.2, 0.5, alpha=0.1, color="green", label="Small")
-    ax.axvspan(0.5, 0.8, alpha=0.15, color="green", label="Medium")
-
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(y_labels, fontsize=PLOT_SETTINGS["tick_labelsize"] - 1)
-    ax.set_xlabel("Cohen's d (Effect Size)", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    ax.set_title("Effect Size Forest Plot", fontsize=PLOT_SETTINGS["axes_titlesize"])
-
-    # Invert y-axis so first condition is at top
-    ax.invert_yaxis()
-
-    plt.tight_layout()
-    save_figure(fig, output_dir / "figures", "effect_size_forest")
-    return fig
-
-
-# =============================================================================
-# Figure 6: Delta R² Summary Plot
-# =============================================================================
-
-def plot_delta_r2_summary(
-    config: dict,
-    output_dir: Path,
-) -> plt.Figure:
-    """Create summary plot showing improvement over baseline."""
-    setup_style()
-
-    conditions = [c["name"] for c in config["conditions"] if c["name"] != "baseline"]
+# Publication-quality settings
+plt.rcParams.update({
+    'font.size': 10,
+    'axes.labelsize': 11,
+    'axes.titlesize': 12,
+    'xtick.labelsize': 9,
+    'ytick.labelsize': 9,
+    'legend.fontsize': 9,
+    'figure.dpi': 150,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight',
+    'savefig.pad_inches': 0.1,
+})
+
+# Color palette for conditions
+CONDITION_COLORS = {
+    'baseline': '#808080',  # Gray
+    'lora_r2': '#a6cee3',   # Light blue
+    'lora_r4': '#1f78b4',   # Blue
+    'lora_r8': '#33a02c',   # Green
+    'lora_r16': '#ff7f00',  # Orange
+    'lora_r32': '#e31a1c',  # Red
+}
+
+
+def load_condition_data(
+    condition_dir: Path,
+    feature_level: str = "encoder10",
+) -> Dict:
+    """Load all data for a condition."""
+    data = {}
+
+    # Load features
+    feat_path = condition_dir / f"features_test_{feature_level}.pt"
+    if not feat_path.exists():
+        feat_path = condition_dir / "features_test.pt"
+    if feat_path.exists():
+        data['features'] = torch.load(feat_path).numpy()
+
+    # Load targets
+    tgt_path = condition_dir / "targets_test.pt"
+    if tgt_path.exists():
+        targets = torch.load(tgt_path)
+        data['targets'] = {k: v.numpy() for k, v in targets.items() if k != 'all'}
 
     # Load metrics
-    baseline_metrics_path = output_dir / "conditions" / "baseline" / "metrics.json"
-    if not baseline_metrics_path.exists():
-        return None
+    metrics_path = condition_dir / "metrics_enhanced.json"
+    if not metrics_path.exists():
+        metrics_path = condition_dir / "metrics.json"
+    if metrics_path.exists():
+        with open(metrics_path) as f:
+            data['metrics'] = json.load(f)
 
-    with open(baseline_metrics_path) as f:
-        baseline_metrics = json.load(f)
+    # Load predictions
+    pred_path = condition_dir / "predictions_enhanced.json"
+    if pred_path.exists():
+        with open(pred_path) as f:
+            data['predictions'] = json.load(f)
 
-    baseline_r2 = baseline_metrics.get("r2_mean", 0)
+    return data
 
-    deltas = {}
-    for cond in conditions:
-        metrics_path = output_dir / "conditions" / cond / "metrics.json"
-        if metrics_path.exists():
-            with open(metrics_path) as f:
-                metrics = json.load(f)
-            deltas[cond] = {
-                "r2_vol": metrics.get("r2_volume", 0) - baseline_metrics.get("r2_volume", 0),
-                "r2_loc": metrics.get("r2_location", 0) - baseline_metrics.get("r2_location", 0),
-                "r2_shape": metrics.get("r2_shape", 0) - baseline_metrics.get("r2_shape", 0),
-                "r2_mean": metrics.get("r2_mean", 0) - baseline_r2,
-            }
 
-    if not deltas:
-        return None
+def plot_r2_comparison_enhanced(
+    metrics_by_condition: Dict[str, Dict],
+    output_dir: Path,
+) -> None:
+    """Plot R² comparison with both linear and MLP probes."""
+    conditions = list(metrics_by_condition.keys())
 
-    fig, ax = plt.subplots(figsize=get_figure_size("single", 0.8))
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
 
-    # Plot delta R² mean for each condition
-    x = np.arange(len(deltas))
-    conds = list(deltas.keys())
-    values = [deltas[c]["r2_mean"] * 100 for c in conds]  # Convert to percentage
-    colors = [CONDITION_COLORS.get(c, "gray") for c in conds]
+    feature_types = ['volume', 'location', 'shape']
+    titles = ['Volume R²', 'Location R²', 'Shape R²']
 
-    bars = ax.bar(x, values, color=colors, alpha=PLOT_SETTINGS["bar_alpha"])
+    for ax, feat, title in zip(axes, feature_types, titles):
+        linear_r2 = []
+        mlp_r2 = []
 
-    # Color bars by improvement direction
-    for bar, val in zip(bars, values):
-        if val < 0:
-            bar.set_color("#EE6677")  # Red for worse
-        bar.set_edgecolor("white")
+        for cond in conditions:
+            m = metrics_by_condition[cond]
+            linear_r2.append(m.get(f'r2_{feat}_linear', m.get(f'r2_{feat}', 0)))
+            mlp_r2.append(m.get(f'r2_{feat}_mlp', 0))
 
-    # Add value labels
-    for i, (bar, val) in enumerate(zip(bars, values)):
-        sign = "+" if val >= 0 else ""
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + (0.2 if val >= 0 else -0.5),
-            f"{sign}{val:.1f}%",
-            ha="center",
-            va="bottom" if val >= 0 else "top",
-            fontsize=PLOT_SETTINGS["annotation_fontsize"],
-        )
+        x = np.arange(len(conditions))
+        width = 0.35
 
-    ax.axhline(y=0, color="0.3", linewidth=0.8)
-    ax.set_xlabel("LoRA Condition", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    ax.set_ylabel(r"$\Delta R^2_\mathrm{mean}$ (%)", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    ax.set_xticks(x)
-    ax.set_xticklabels([CONDITION_LABELS.get(c, c) for c in conds])
+        bars1 = ax.bar(x - width/2, linear_r2, width, label='Linear',
+                      color='steelblue', alpha=0.8)
+        bars2 = ax.bar(x + width/2, mlp_r2, width, label='MLP',
+                      color='darkorange', alpha=0.8)
 
-    # Add baseline reference annotation
-    ax.annotate(
-        f"Baseline: {baseline_r2:.3f}",
-        xy=(0.98, 0.98),
-        xycoords="axes fraction",
-        ha="right",
-        va="top",
-        fontsize=PLOT_SETTINGS["annotation_fontsize"],
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="0.7"),
-    )
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+        ax.set_ylabel('R²')
+        ax.set_title(title)
+        ax.set_xticks(x)
+        ax.set_xticklabels([c.replace('lora_', 'r=').replace('baseline', 'base')
+                          for c in conditions], rotation=45, ha='right')
+        ax.legend()
+
+        # Add value labels
+        for bar in bars1:
+            height = bar.get_height()
+            if abs(height) < 10:
+                ax.annotate(f'{height:.2f}',
+                           xy=(bar.get_x() + bar.get_width() / 2, height),
+                           xytext=(0, 3 if height > 0 else -10),
+                           textcoords="offset points",
+                           ha='center', va='bottom' if height > 0 else 'top',
+                           fontsize=7)
 
     plt.tight_layout()
-    save_figure(fig, output_dir / "figures", "delta_r2_summary")
-    return fig
+
+    for ext in ['pdf', 'png']:
+        path = output_dir / f"r2_comparison_enhanced.{ext}"
+        plt.savefig(path)
+        logger.info(f"Saved {path}")
+
+    plt.close()
 
 
-# =============================================================================
-# Main Entry Point
-# =============================================================================
+def plot_umap_by_semantic(
+    data_by_condition: Dict[str, Dict],
+    output_dir: Path,
+    n_neighbors: int = 15,
+    min_dist: float = 0.1,
+) -> None:
+    """Plot UMAP colored by semantic features."""
+    if not HAS_UMAP:
+        logger.warning("UMAP not available. Skipping UMAP visualization.")
+        return
 
-def generate_all_figures(config_path: str, glioma_features_path: Optional[str] = None):
-    """Generate all publication figures."""
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+    # Select conditions to show
+    conditions_to_show = ['baseline', 'lora_r4', 'lora_r8', 'lora_r16']
+    conditions_to_show = [c for c in conditions_to_show if c in data_by_condition]
+
+    if not conditions_to_show:
+        logger.warning("No conditions with data for UMAP")
+        return
+
+    # Prepare data
+    all_features = []
+    all_volumes = []
+    all_condition_labels = []
+
+    for cond in conditions_to_show:
+        data = data_by_condition[cond]
+        if 'features' not in data or 'targets' not in data:
+            continue
+
+        features = data['features'][:100]  # Subsample
+        volumes = data['targets']['volume'][:100, 0]  # Total volume
+
+        all_features.append(features)
+        all_volumes.append(volumes)
+        all_condition_labels.extend([cond] * len(features))
+
+    if not all_features:
+        return
+
+    all_features = np.vstack(all_features)
+    all_volumes = np.concatenate(all_volumes)
+
+    # Fit UMAP
+    logger.info(f"Fitting UMAP on {len(all_features)} samples...")
+    umap = UMAP(n_neighbors=n_neighbors, min_dist=min_dist, random_state=42)
+    embedding = umap.fit_transform(all_features)
+
+    # Plot: by condition
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Left: colored by condition
+    ax = axes[0]
+    for cond in conditions_to_show:
+        mask = np.array(all_condition_labels) == cond
+        ax.scatter(embedding[mask, 0], embedding[mask, 1],
+                  c=CONDITION_COLORS.get(cond, 'gray'),
+                  label=cond, s=10, alpha=0.6)
+    ax.set_xlabel('UMAP 1')
+    ax.set_ylabel('UMAP 2')
+    ax.set_title('Latent Space by Condition')
+    ax.legend(markerscale=2)
+
+    # Right: colored by volume
+    ax = axes[1]
+    scatter = ax.scatter(embedding[:, 0], embedding[:, 1],
+                        c=all_volumes, cmap='viridis', s=10, alpha=0.6)
+    ax.set_xlabel('UMAP 1')
+    ax.set_ylabel('UMAP 2')
+    ax.set_title('Latent Space by Tumor Volume')
+    plt.colorbar(scatter, ax=ax, label='log(Volume+1)')
+
+    plt.tight_layout()
+
+    for ext in ['pdf', 'png']:
+        path = output_dir / f"umap_semantic.{ext}"
+        plt.savefig(path)
+        logger.info(f"Saved {path}")
+
+    plt.close()
+
+
+def plot_variance_per_dim(
+    data_by_condition: Dict[str, Dict],
+    output_dir: Path,
+) -> None:
+    """Plot feature variance per dimension."""
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    for cond, data in data_by_condition.items():
+        if 'features' not in data:
+            continue
+
+        variance = data['features'].var(axis=0)
+        ax.plot(np.sort(variance)[::-1], label=cond,
+               color=CONDITION_COLORS.get(cond, 'gray'), alpha=0.8)
+
+    ax.set_xlabel('Dimension (sorted by variance)')
+    ax.set_ylabel('Variance')
+    ax.set_title('Feature Variance per Dimension')
+    ax.set_yscale('log')
+    ax.axhline(y=0.01, color='red', linestyle='--', alpha=0.5,
+              label='Low variance threshold')
+    ax.legend()
+
+    plt.tight_layout()
+
+    for ext in ['pdf', 'png']:
+        path = output_dir / f"variance_per_dim.{ext}"
+        plt.savefig(path)
+        logger.info(f"Saved {path}")
+
+    plt.close()
+
+
+def plot_predictions_scatter(
+    data_by_condition: Dict[str, Dict],
+    output_dir: Path,
+    condition: str = "lora_r8",
+) -> None:
+    """Plot predictions vs ground truth scatter plots."""
+    if condition not in data_by_condition:
+        logger.warning(f"Condition {condition} not found")
+        return
+
+    data = data_by_condition[condition]
+    if 'predictions' not in data:
+        logger.warning(f"No predictions for {condition}")
+        return
+
+    preds = data['predictions']
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+
+    feature_types = ['volume', 'location', 'shape']
+    dim_labels = {
+        'volume': ['Total', 'NCR', 'ED', 'ET'],
+        'location': ['X', 'Y', 'Z'],
+        'shape': ['Sphericity', 'Surface', 'Solidity', 'AR_dh', 'AR_dw', 'AR_hw'],
+    }
+
+    for col, feat in enumerate(feature_types):
+        gt = np.array(preds[feat]['ground_truth'])
+        linear_pred = np.array(preds[feat]['linear'])
+        mlp_pred = np.array(preds[feat]['mlp'])
+
+        # Use first dimension for visualization
+        dim_idx = 0
+
+        # Linear
+        ax = axes[0, col]
+        ax.scatter(gt[:, dim_idx], linear_pred[:, dim_idx], alpha=0.3, s=10)
+        lims = [min(gt[:, dim_idx].min(), linear_pred[:, dim_idx].min()),
+               max(gt[:, dim_idx].max(), linear_pred[:, dim_idx].max())]
+        ax.plot(lims, lims, 'r--', alpha=0.5)
+        ax.set_xlabel(f'Ground Truth ({dim_labels[feat][dim_idx]})')
+        ax.set_ylabel('Linear Prediction')
+        ax.set_title(f'{feat.capitalize()} - Linear')
+
+        # MLP
+        ax = axes[1, col]
+        ax.scatter(gt[:, dim_idx], mlp_pred[:, dim_idx], alpha=0.3, s=10,
+                  color='darkorange')
+        ax.plot(lims, lims, 'r--', alpha=0.5)
+        ax.set_xlabel(f'Ground Truth ({dim_labels[feat][dim_idx]})')
+        ax.set_ylabel('MLP Prediction')
+        ax.set_title(f'{feat.capitalize()} - MLP')
+
+    plt.suptitle(f'Predictions vs Ground Truth ({condition})', y=1.02)
+    plt.tight_layout()
+
+    for ext in ['pdf', 'png']:
+        path = output_dir / f"scatter_{condition}.{ext}"
+        plt.savefig(path)
+        logger.info(f"Saved {path}")
+
+    plt.close()
+
+
+def plot_nonlinearity_gap(
+    metrics_by_condition: Dict[str, Dict],
+    output_dir: Path,
+) -> None:
+    """Plot the nonlinearity gap (MLP R² - Linear R²)."""
+    conditions = list(metrics_by_condition.keys())
+
+    feature_types = ['volume', 'location', 'shape']
+    gaps = {feat: [] for feat in feature_types}
+
+    for cond in conditions:
+        m = metrics_by_condition[cond]
+        for feat in feature_types:
+            linear = m.get(f'r2_{feat}_linear', m.get(f'r2_{feat}', 0))
+            mlp = m.get(f'r2_{feat}_mlp', 0)
+            gaps[feat].append(mlp - linear)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    x = np.arange(len(conditions))
+    width = 0.25
+
+    for i, feat in enumerate(feature_types):
+        ax.bar(x + i * width, gaps[feat], width, label=feat.capitalize())
+
+    ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+    ax.set_ylabel('Nonlinearity Gap (MLP R² - Linear R²)')
+    ax.set_xlabel('Condition')
+    ax.set_title('How Much Information is Nonlinearly Encoded?')
+    ax.set_xticks(x + width)
+    ax.set_xticklabels([c.replace('lora_', 'r=').replace('baseline', 'base')
+                       for c in conditions], rotation=45, ha='right')
+    ax.legend()
+
+    plt.tight_layout()
+
+    for ext in ['pdf', 'png']:
+        path = output_dir / f"nonlinearity_gap.{ext}"
+        plt.savefig(path)
+        logger.info(f"Saved {path}")
+
+    plt.close()
+
+
+def generate_all_figures(config: dict) -> None:
+    """Generate all enhanced visualizations."""
+    if not HAS_PLOTTING:
+        logger.error("Matplotlib not available")
+        return
 
     output_dir = Path(config["experiment"]["output_dir"])
     figures_dir = output_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Generating publication figures...")
+    # Load data for all conditions
+    conditions = [c["name"] for c in config["conditions"]]
+    data_by_condition = {}
+    metrics_by_condition = {}
 
-    # Figure 1: R² Comparison (Linear only)
-    logger.info("Figure 1: R² Comparison (Linear)")
-    plot_r2_comparison(config, output_dir, include_mlp=False)
+    feature_level = config.get("feature_extraction", {}).get("level", "encoder10")
 
-    # Figure 1b: R² Comparison (Linear + MLP side-by-side)
-    logger.info("Figure 1b: R² Comparison (Linear + MLP)")
-    plot_r2_comparison(config, output_dir, include_mlp=True)
+    for cond in conditions:
+        cond_dir = output_dir / "conditions" / cond
+        if not cond_dir.exists():
+            continue
 
-    # Figure 2: Dice Comparison
-    logger.info("Figure 2: Dice Comparison")
-    plot_dice_comparison(config, output_dir)
+        data = load_condition_data(cond_dir, feature_level)
+        if data:
+            data_by_condition[cond] = data
+            if 'metrics' in data:
+                metrics_by_condition[cond] = data['metrics']
 
-    # Figure 3: Training Curves
-    logger.info("Figure 3: Training Curves")
-    plot_training_curves(config, output_dir)
+    if not metrics_by_condition:
+        logger.warning("No metrics found. Run evaluation first.")
+        return
 
-    # Figure 4: Latent Space UMAP
-    logger.info("Figure 4: Latent Space UMAP")
-    glioma_path = Path(glioma_features_path) if glioma_features_path else None
-    plot_latent_space_umap(config, output_dir, glioma_path)
+    logger.info(f"Generating figures for {len(data_by_condition)} conditions...")
 
-    # Figure 5: Effect Size Forest Plot
-    logger.info("Figure 5: Effect Size Forest Plot")
-    plot_effect_size_forest(config, output_dir)
+    # Generate figures
+    plot_r2_comparison_enhanced(metrics_by_condition, figures_dir)
+    plot_variance_per_dim(data_by_condition, figures_dir)
+    plot_nonlinearity_gap(metrics_by_condition, figures_dir)
 
-    # Figure 6: Delta R² Summary
-    logger.info("Figure 6: Delta R² Summary")
-    plot_delta_r2_summary(config, output_dir)
+    # UMAP (if available)
+    viz_config = config.get("visualization", {})
+    if viz_config.get("color_by_semantic", True):
+        plot_umap_by_semantic(
+            data_by_condition, figures_dir,
+            n_neighbors=viz_config.get("umap_n_neighbors", 15),
+            min_dist=viz_config.get("umap_min_dist", 0.1),
+        )
+
+    # Scatter plots
+    if viz_config.get("show_scatter_plots", True):
+        for cond in ['baseline', 'lora_r8', 'lora_r16']:
+            if cond in data_by_condition:
+                plot_predictions_scatter(data_by_condition, figures_dir, cond)
 
     logger.info(f"All figures saved to {figures_dir}")
 
 
-def main():
+def main(config_path: str) -> None:
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Generate publication figures for LoRA ablation"
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="experiments/lora_ablation/config/ablation.yaml",
-        help="Path to ablation configuration file",
-    )
-    parser.add_argument(
-        "--glioma-features",
-        type=str,
-        default=None,
-        help="Optional path to pre-extracted glioma features for UMAP",
-    )
-    parser.add_argument(
-        "--figure",
-        type=str,
-        choices=["r2", "dice", "curves", "umap", "forest", "delta", "all"],
-        default="all",
-        help="Which figure to generate",
-    )
-
-    args = parser.parse_args()
-
-    with open(args.config) as f:
+    with open(config_path) as f:
         config = yaml.safe_load(f)
-    output_dir = Path(config["experiment"]["output_dir"])
 
-    if args.figure == "all":
-        generate_all_figures(args.config, args.glioma_features)
-    elif args.figure == "r2":
-        plot_r2_comparison(config, output_dir)
-    elif args.figure == "dice":
-        plot_dice_comparison(config, output_dir)
-    elif args.figure == "curves":
-        plot_training_curves(config, output_dir)
-    elif args.figure == "umap":
-        glioma_path = Path(args.glioma_features) if args.glioma_features else None
-        plot_latent_space_umap(config, output_dir, glioma_path)
-    elif args.figure == "forest":
-        plot_effect_size_forest(config, output_dir)
-    elif args.figure == "delta":
-        plot_delta_r2_summary(config, output_dir)
+    generate_all_figures(config)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Generate enhanced visualizations")
+    parser.add_argument("--config", type=str, required=True)
+
+    args = parser.parse_args()
+    main(args.config)
