@@ -77,12 +77,12 @@ def create_optimizer(
     training_config = config["training"]
 
     if is_baseline:
-        # Only decoder parameters for baseline
+        # Only decoder parameters for baseline (includes semantic heads if enabled)
         if decoder_type == "lightweight":
             params = [{"params": model.decoder.parameters(),
                       "lr": training_config["lr_decoder"]}]
-        else:  # original
-            params = [{"params": model.model.decoder.parameters(),
+        else:  # original - use get_decoder_params() to include semantic heads
+            params = [{"params": model.get_decoder_params(),
                       "lr": training_config["lr_decoder"]}]
     else:
         # Separate groups for LoRA and decoder
@@ -414,9 +414,9 @@ def train_condition(
     )
     dice_metric = DiceMetric()
 
-    # Auxiliary semantic loss (if enabled, only for original decoder with LoRA)
+    # Auxiliary semantic loss (if enabled, for original decoder - both baseline and LoRA)
     aux_loss_fn = None
-    if use_semantic_heads and decoder_type == "original" and not is_baseline:
+    if use_semantic_heads and decoder_type == "original":
         aux_loss_fn = AuxiliarySemanticLoss(
             lambda_volume=config["loss"].get("lambda_volume", 1.0),
             lambda_location=config["loss"].get("lambda_location", 1.0),
@@ -462,7 +462,7 @@ def train_condition(
         train_metrics = train_epoch(
             model, train_loader, seg_loss_fn, aux_loss_fn,
             optimizer, device, gradient_clip, lambda_aux,
-            use_semantic_heads=use_semantic_heads and decoder_type == "original" and not is_baseline,
+            use_semantic_heads=use_semantic_heads and decoder_type == "original",
             decoder_type=decoder_type,
         )
 

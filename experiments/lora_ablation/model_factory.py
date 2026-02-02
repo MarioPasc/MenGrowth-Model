@@ -22,7 +22,7 @@ Usage:
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -91,10 +91,21 @@ class BaselineOriginalDecoderModel(nn.Module):
     This is the v2 approach with ~30M trainable parameters in the decoder.
 
     IMPORTANT: Uses load_full_swinunetr to load pretrained decoder weights.
+
+    Args:
+        full_model: Full SwinUNETR model with pretrained weights.
+        out_channels: Number of segmentation classes.
+        use_semantic_heads: If True, add auxiliary semantic prediction heads.
     """
 
-    def __init__(self, full_model: nn.Module, out_channels: int = 4):
+    def __init__(
+        self,
+        full_model: nn.Module,
+        out_channels: int = 4,
+        use_semantic_heads: bool = False,
+    ):
         super().__init__()
+        self.use_semantic_heads = use_semantic_heads
 
         # full_model already has pretrained decoder weights from load_full_swinunetr
         # Wrap in OriginalDecoderSegmentationModel
@@ -104,14 +115,69 @@ class BaselineOriginalDecoderModel(nn.Module):
             out_channels=out_channels,
         )
 
+        # Optional semantic prediction heads (same as LoRAOriginalDecoderModel)
+        if use_semantic_heads:
+            from growth.models.segmentation.semantic_heads import AuxiliarySemanticHeads
+            self.semantic_heads = AuxiliarySemanticHeads(
+                input_dim=768,
+                volume_dim=4,
+                location_dim=3,
+                shape_dim=6,
+            )
+            logger.info("Baseline model: semantic heads enabled")
+        else:
+            self.semantic_heads = None
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
+
+    def forward_with_semantics(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Forward pass with semantic predictions.
+
+        Args:
+            x: Input tensor [B, 4, 96, 96, 96].
+
+        Returns:
+            Dict with:
+                - 'logits': Segmentation logits [B, 4, 96, 96, 96]
+                - 'features': Bottleneck features [B, 768]
+                - 'pred_volume': Volume predictions [B, 4] (if semantic_heads)
+                - 'pred_location': Location predictions [B, 3] (if semantic_heads)
+                - 'pred_shape': Shape predictions [B, 6] (if semantic_heads)
+        """
+        # Get logits and bottleneck features
+        logits = self.model(x)
+        features = self.model.get_bottleneck_features(x)
+
+        result = {
+            'logits': logits,
+            'features': features,
+        }
+
+        # Semantic predictions
+        if self.semantic_heads is not None:
+            semantic_preds = self.semantic_heads(features)
+            result.update(semantic_preds)
+
+        return result
 
     def get_hidden_states(self, x: torch.Tensor) -> List[torch.Tensor]:
         return self.model.get_hidden_states(x)
 
+    def get_decoder_params(self):
+        """Get decoder parameters for optimizer (includes semantic heads)."""
+        params = list(self.model.decoder.parameters())
+        if self.semantic_heads is not None:
+            params.extend(self.semantic_heads.parameters())
+        return [p for p in params if p.requires_grad]
+
     def get_trainable_param_count(self) -> dict:
-        return self.model.get_trainable_param_count()
+        counts = self.model.get_trainable_param_count()
+        if self.semantic_heads is not None:
+            sem_params = sum(p.numel() for p in self.semantic_heads.parameters())
+            counts["semantic_heads"] = sem_params
+            counts["total"] += sem_params
+        return counts
 
 
 # =============================================================================
@@ -251,7 +317,10 @@ def _create_original_decoder_model(
 
     if lora_rank is None:
         # Baseline: frozen encoder + trainable original decoder (pretrained)
-        logger.info("Creating baseline model with ORIGINAL decoder (pretrained weights)")
+        logger.info(
+            f"Creating baseline model with ORIGINAL decoder "
+            f"(pretrained weights, semantic_heads={use_semantic_heads})"
+        )
         full_model = load_full_swinunetr(
             checkpoint_path,
             freeze_encoder=True,   # Freeze swinViT
@@ -259,7 +328,11 @@ def _create_original_decoder_model(
             out_channels=4,
             device=device,
         )
-        model = BaselineOriginalDecoderModel(full_model, out_channels=4)
+        model = BaselineOriginalDecoderModel(
+            full_model,
+            out_channels=4,
+            use_semantic_heads=use_semantic_heads,
+        )
     else:
         # LoRA: frozen encoder + LoRA adapters + pretrained original decoder
         lora_alpha = condition_config.get("lora_alpha", lora_rank * 2)
