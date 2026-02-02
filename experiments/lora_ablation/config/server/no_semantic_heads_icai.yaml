@@ -1,9 +1,9 @@
-# experiments/lora_ablation/config/server/ablation_icai.yaml
-# Unified LoRA Ablation Experiment Configuration - ICAI Server
+# experiments/lora_ablation/config/server/no_semantic_heads_icai.yaml
+# LoRA Ablation Experiment Configuration - WITHOUT Semantic Heads
 #
-# This unified config supports both decoder types via decoder_type parameter:
-# - "lightweight": Custom SegmentationHead (~2M params), v1 behavior
-# - "original": Full SwinUNETR decoder (~30M params), v2 behavior (recommended)
+# This config disables auxiliary semantic prediction losses.
+# Training uses only segmentation loss (Dice + CE).
+# This is the control experiment for measuring the effect of semantic heads.
 
 experiment:
   name: lora_ablation_no_semantic_heads
@@ -66,42 +66,44 @@ training:
   lora_dropout: 0.1
   gradient_clip: 1.0
 
-  # KEY CONFIGURATION: Decoder type
-  # - "lightweight": Custom SegmentationHead (~2M params), faster, v1 behavior
-  # - "original": Full SwinUNETR decoder (~30M params), better gradients (recommended)
-  decoder_type: "original"
+  # Decoder configuration
+  decoder_type: "original"   # "lightweight" | "original"
+  freeze_decoder: false      # Train decoder (for better gradients)
 
-  # Only used if decoder_type: "original"
-  freeze_decoder: false        # Train decoder (for better gradients)
-  use_semantic_heads: false     # Add auxiliary semantic prediction
-  lambda_aux: 0.1              # Weight for auxiliary loss
+  # Semantic heads configuration
+  use_semantic_heads: false  # DISABLED - no auxiliary semantic prediction
+  lambda_aux: 0.0            # Not used when use_semantic_heads: false
+
+  # Warmup not needed when semantic heads disabled
+  aux_warmup_epochs: 0
+  aux_warmup_duration: 0
+
+  # Gradient monitoring (optional, for diagnostics)
+  enable_gradient_monitoring: false  # Less relevant without semantic heads
+  gradient_monitor_freq: 50
 
 # Segmentation loss
 loss:
   lambda_dice: 1.0
   lambda_ce: 1.0
-  # Auxiliary semantic loss weights (if use_semantic_heads: true)
+
+  # These are not used when use_semantic_heads: false, but kept for reference
   lambda_volume: 1.0
   lambda_location: 1.0
-  lambda_shape: 1.0
+  lambda_shape: 0.5
 
 # Probe evaluation
 probe:
-  # For both decoder types
   alpha_linear: 1.0           # Ridge regularization
-
-  # Additional options when decoder_type: "original"
-  use_mlp_probes: true        # Enable MLP probes (set false for v1 behavior)
+  use_mlp_probes: true        # Enable MLP probes
   alpha_mlp: 1.0e-4           # MLP L2 regularization
   hidden_sizes: [256, 128]    # MLP hidden layers
   normalize_features: true
-  normalize_targets: true     # KEY: normalize targets for stable training
+  normalize_targets: true     # Normalize targets for stable training
 
 # Feature extraction
 feature_extraction:
-  # - "encoder10": Single-scale 768-dim (v1 behavior)
-  # - "multi_scale": layers2+3+4 (192+384+768=1344-dim, recommended)
-  level: multi_scale
+  level: multi_scale          # layers2+3+4 (1344-dim)
   batch_size: 8
 
 # Domain analysis (glioma vs meningioma)
@@ -127,21 +129,24 @@ model_card:
   enabled: true
 
 # =============================================================================
-# BACKWARD COMPATIBILITY NOTES
+# EXPERIMENT NOTES
 # =============================================================================
 #
-# To reproduce v1 results (lightweight decoder):
-#   training:
-#     decoder_type: "lightweight"
-#   probe:
-#     use_mlp_probes: false
-#   feature_extraction:
-#     level: encoder10
+# This is the CONTROL experiment without semantic heads.
 #
-# To reproduce v2 results (original decoder, default):
-#   training:
-#     decoder_type: "original"
-#   probe:
-#     use_mlp_probes: true
-#   feature_extraction:
-#     level: multi_scale
+# Compare results with semantic_heads_icai.yaml to measure the effect of
+# auxiliary semantic prediction on:
+#
+# 1. SEGMENTATION QUALITY
+#    Does the auxiliary loss improve or hurt Dice scores?
+#
+# 2. REPRESENTATION QUALITY
+#    Are semantic features more linearly decodable with auxiliary supervision?
+#    Compare linear probe R² between experiments.
+#
+# 3. NONLINEARITY GAP
+#    Does auxiliary supervision reduce the gap between linear and MLP probes?
+#    A smaller gap suggests more linearly organized representations.
+#
+# The key question: Does "teaching to the test" (auxiliary semantic loss)
+# improve or bias the learned representations?

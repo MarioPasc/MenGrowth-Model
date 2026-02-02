@@ -9,8 +9,10 @@ Supports both decoder types via the `decoder_type` config parameter:
 Key features:
 1. Configurable decoder architecture via decoder_type
 2. Optional auxiliary semantic prediction losses during training
-3. Multi-scale feature extraction support
-4. Detailed logging and diagnostics
+3. Auxiliary loss warmup for stable multi-task learning
+4. Per-component loss logging for monitoring
+5. Optional gradient diagnostics (magnitude and conflict detection)
+6. Multi-scale feature extraction support
 
 Usage:
     python -m experiments.lora_ablation.train_condition \
@@ -56,6 +58,154 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# Auxiliary Loss Warmup
+# =============================================================================
+
+def compute_lambda_aux_effective(
+    epoch: int,
+    lambda_aux: float,
+    warmup_start: int,
+    warmup_duration: int,
+) -> float:
+    """Compute effective lambda_aux with warmup schedule.
+
+    The auxiliary loss is:
+    - 0 for epochs < warmup_start
+    - Linearly ramped from 0 to lambda_aux over warmup_duration epochs
+    - lambda_aux after warmup completes
+
+    Args:
+        epoch: Current epoch (0-indexed).
+        lambda_aux: Target lambda_aux value.
+        warmup_start: Epoch to start auxiliary loss (0-indexed).
+        warmup_duration: Number of epochs to ramp from 0 to lambda_aux.
+
+    Returns:
+        Effective lambda_aux for this epoch.
+    """
+    if epoch < warmup_start:
+        return 0.0
+
+    epochs_since_start = epoch - warmup_start
+    if warmup_duration <= 0:
+        return lambda_aux
+
+    ramp_factor = min(1.0, epochs_since_start / warmup_duration)
+    return lambda_aux * ramp_factor
+
+
+# =============================================================================
+# Gradient Diagnostics
+# =============================================================================
+
+def compute_gradient_norms(
+    model: nn.Module,
+    decoder_type: str,
+    is_baseline: bool,
+) -> Dict[str, float]:
+    """Compute gradient norms for different parameter groups.
+
+    Args:
+        model: The model after backward pass.
+        decoder_type: "lightweight" or "original".
+        is_baseline: Whether this is baseline condition.
+
+    Returns:
+        Dict with gradient norms for encoder, decoder, semantic heads.
+    """
+    norms = {}
+
+    # Collect gradients by group
+    encoder_grads = []
+    decoder_grads = []
+    semantic_grads = []
+
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_flat = param.grad.flatten()
+
+            if 'semantic_heads' in name or 'volume_head' in name or 'location_head' in name or 'shape_head' in name:
+                semantic_grads.append(grad_flat)
+            elif 'decoder' in name:
+                decoder_grads.append(grad_flat)
+            elif 'lora' in name.lower() or 'encoder' in name:
+                encoder_grads.append(grad_flat)
+
+    # Compute norms
+    if encoder_grads:
+        norms['encoder_grad_norm'] = torch.norm(torch.cat(encoder_grads)).item()
+    else:
+        norms['encoder_grad_norm'] = 0.0
+
+    if decoder_grads:
+        norms['decoder_grad_norm'] = torch.norm(torch.cat(decoder_grads)).item()
+    else:
+        norms['decoder_grad_norm'] = 0.0
+
+    if semantic_grads:
+        norms['semantic_grad_norm'] = torch.norm(torch.cat(semantic_grads)).item()
+    else:
+        norms['semantic_grad_norm'] = 0.0
+
+    return norms
+
+
+def compute_gradient_conflict(
+    model: nn.Module,
+    seg_loss: torch.Tensor,
+    aux_loss: torch.Tensor,
+    device: str,
+) -> float:
+    """Compute cosine similarity between segmentation and auxiliary gradients.
+
+    A negative value indicates conflicting gradients (tasks pulling in opposite directions).
+
+    Args:
+        model: The model.
+        seg_loss: Segmentation loss tensor (requires grad).
+        aux_loss: Auxiliary loss tensor (requires grad).
+        device: Device.
+
+    Returns:
+        Cosine similarity between gradients (-1 to 1).
+    """
+    # This is expensive, so only call periodically
+    # Get parameters that are affected by both losses
+    params = [p for p in model.parameters() if p.requires_grad]
+
+    # Compute gradients for each loss separately
+    seg_grads = torch.autograd.grad(
+        seg_loss, params, retain_graph=True, allow_unused=True
+    )
+    aux_grads = torch.autograd.grad(
+        aux_loss, params, retain_graph=True, allow_unused=True
+    )
+
+    # Flatten and concatenate
+    seg_flat = []
+    aux_flat = []
+    for sg, ag in zip(seg_grads, aux_grads):
+        if sg is not None and ag is not None:
+            seg_flat.append(sg.flatten())
+            aux_flat.append(ag.flatten())
+
+    if not seg_flat:
+        return 0.0
+
+    seg_vec = torch.cat(seg_flat)
+    aux_vec = torch.cat(aux_flat)
+
+    # Cosine similarity
+    cos_sim = F.cosine_similarity(seg_vec.unsqueeze(0), aux_vec.unsqueeze(0)).item()
+
+    return cos_sim
+
+
+# =============================================================================
+# Optimizer Creation
+# =============================================================================
 
 def create_optimizer(
     model: nn.Module,
@@ -113,6 +263,10 @@ def create_optimizer(
     return optimizer, scheduler
 
 
+# =============================================================================
+# Target Statistics
+# =============================================================================
+
 def compute_target_statistics(dataloader: DataLoader) -> Dict[str, torch.Tensor]:
     """Compute mean and std of semantic targets for normalization."""
     all_volumes = []
@@ -142,6 +296,10 @@ def compute_target_statistics(dataloader: DataLoader) -> Dict[str, torch.Tensor]
     }
 
 
+# =============================================================================
+# Training Epoch
+# =============================================================================
+
 def train_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -153,11 +311,29 @@ def train_epoch(
     lambda_aux: float = 0.1,
     use_semantic_heads: bool = False,
     decoder_type: str = "original",
+    is_baseline: bool = False,
+    enable_gradient_monitoring: bool = False,
+    gradient_monitor_freq: int = 50,
 ) -> Dict[str, float]:
     """Train for one epoch with optional auxiliary losses.
 
+    Args:
+        model: Model to train.
+        dataloader: Training data loader.
+        seg_loss_fn: Segmentation loss function.
+        aux_loss_fn: Auxiliary semantic loss function (optional).
+        optimizer: Optimizer.
+        device: Device to train on.
+        gradient_clip: Gradient clipping value.
+        lambda_aux: Weight for auxiliary loss (already adjusted for warmup).
+        use_semantic_heads: Whether to use semantic heads.
+        decoder_type: "lightweight" or "original".
+        is_baseline: Whether this is baseline condition.
+        enable_gradient_monitoring: Whether to compute gradient diagnostics.
+        gradient_monitor_freq: How often to compute gradient diagnostics (batches).
+
     Returns:
-        Dict with loss components.
+        Dict with loss components and optional gradient diagnostics.
     """
     model.train()
 
@@ -169,12 +345,21 @@ def train_epoch(
         if hasattr(model, 'model') and hasattr(model.model, 'encoder'):
             model.model.encoder.eval()
 
+    # Accumulators
     total_seg_loss = 0.0
     total_aux_loss = 0.0
+    total_vol_loss = 0.0
+    total_loc_loss = 0.0
+    total_shape_loss = 0.0
     total_loss = 0.0
     num_batches = 0
 
-    for batch in tqdm(dataloader, desc="Training", leave=False):
+    # Gradient monitoring accumulators
+    grad_norms_sum = {'encoder_grad_norm': 0.0, 'decoder_grad_norm': 0.0, 'semantic_grad_norm': 0.0}
+    grad_conflict_sum = 0.0
+    grad_monitor_count = 0
+
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training", leave=False)):
         images = batch["image"].to(device)
         segs = batch["seg"].to(device)
 
@@ -193,17 +378,33 @@ def train_epoch(
 
         # Auxiliary semantic loss (if enabled)
         aux_loss = torch.tensor(0.0, device=device)
-        if use_semantic_heads and aux_loss_fn is not None and "semantic_features" in batch:
+        vol_loss = 0.0
+        loc_loss = 0.0
+        shape_loss = 0.0
+
+        if use_semantic_heads and aux_loss_fn is not None and "semantic_features" in batch and lambda_aux > 0:
             semantic_targets = {
                 'volume': batch["semantic_features"]["volume"].to(device),
                 'location': batch["semantic_features"]["location"].to(device),
                 'shape': batch["semantic_features"]["shape"].to(device),
             }
-            aux_loss, _ = aux_loss_fn(outputs, semantic_targets)
+            aux_loss, aux_components = aux_loss_fn(outputs, semantic_targets)
             loss = seg_loss + lambda_aux * aux_loss
+
+            # Extract individual components
+            vol_loss = aux_components.get('vol_loss', 0.0)
+            loc_loss = aux_components.get('loc_loss', 0.0)
+            shape_loss = aux_components.get('shape_loss', 0.0)
 
         # Backward pass
         loss.backward()
+
+        # Gradient monitoring (periodic)
+        if enable_gradient_monitoring and (batch_idx + 1) % gradient_monitor_freq == 0:
+            grad_norms = compute_gradient_norms(model, decoder_type, is_baseline)
+            for key in grad_norms_sum:
+                grad_norms_sum[key] += grad_norms.get(key, 0.0)
+            grad_monitor_count += 1
 
         # Gradient clipping
         if gradient_clip > 0:
@@ -215,16 +416,35 @@ def train_epoch(
         optimizer.step()
 
         total_seg_loss += seg_loss.item()
-        total_aux_loss += aux_loss.item()
+        total_aux_loss += aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
+        total_vol_loss += vol_loss
+        total_loc_loss += loc_loss
+        total_shape_loss += shape_loss
         total_loss += loss.item()
         num_batches += 1
 
-    return {
+    # Compute averages
+    metrics = {
         "loss": total_loss / num_batches,
         "seg_loss": total_seg_loss / num_batches,
         "aux_loss": total_aux_loss / num_batches,
+        "vol_loss": total_vol_loss / num_batches,
+        "loc_loss": total_loc_loss / num_batches,
+        "shape_loss": total_shape_loss / num_batches,
     }
 
+    # Add gradient monitoring results
+    if enable_gradient_monitoring and grad_monitor_count > 0:
+        metrics["encoder_grad_norm"] = grad_norms_sum['encoder_grad_norm'] / grad_monitor_count
+        metrics["decoder_grad_norm"] = grad_norms_sum['decoder_grad_norm'] / grad_monitor_count
+        metrics["semantic_grad_norm"] = grad_norms_sum['semantic_grad_norm'] / grad_monitor_count
+
+    return metrics
+
+
+# =============================================================================
+# Validation
+# =============================================================================
 
 @torch.no_grad()
 def validate(
@@ -278,6 +498,10 @@ def validate(
         "dice_2": dice_tensor[2].item(),  # ET
     }
 
+
+# =============================================================================
+# Checkpoint Saving
+# =============================================================================
 
 def save_checkpoint(
     model: nn.Module,
@@ -334,6 +558,10 @@ def save_checkpoint(
     logger.info(f"Saved checkpoint at epoch {epoch}")
 
 
+# =============================================================================
+# Main Training Function
+# =============================================================================
+
 def train_condition(
     condition_name: str,
     config: dict,
@@ -367,10 +595,22 @@ def train_condition(
     freeze_decoder = training_config.get("freeze_decoder", False)
     lambda_aux = training_config.get("lambda_aux", 0.1)
 
+    # Auxiliary loss warmup parameters
+    aux_warmup_start = training_config.get("aux_warmup_epochs", 0)
+    aux_warmup_duration = training_config.get("aux_warmup_duration", 10)
+
+    # Gradient monitoring options
+    enable_gradient_monitoring = training_config.get("enable_gradient_monitoring", False)
+    gradient_monitor_freq = training_config.get("gradient_monitor_freq", 50)
+
     logger.info(f"Decoder type: {decoder_type}")
     logger.info(f"Use semantic heads: {use_semantic_heads}")
     logger.info(f"Freeze decoder: {freeze_decoder}")
     logger.info(f"Lambda aux: {lambda_aux}")
+    if use_semantic_heads:
+        logger.info(f"Aux warmup: start={aux_warmup_start}, duration={aux_warmup_duration}")
+    if enable_gradient_monitoring:
+        logger.info(f"Gradient monitoring enabled (freq={gradient_monitor_freq})")
 
     # Set up output directory
     output_dir = Path(config["experiment"]["output_dir"])
@@ -420,7 +660,7 @@ def train_condition(
         aux_loss_fn = AuxiliarySemanticLoss(
             lambda_volume=config["loss"].get("lambda_volume", 1.0),
             lambda_location=config["loss"].get("lambda_location", 1.0),
-            lambda_shape=config["loss"].get("lambda_shape", 1.0),
+            lambda_shape=config["loss"].get("lambda_shape", 0.5),  # Reduced for harder task
             normalize_targets=True,
         )
 
@@ -428,10 +668,19 @@ def train_condition(
         logger.info("Computing target statistics...")
         stats = compute_target_statistics(train_loader)
         if stats:
-            aux_loss_fn.update_statistics(
-                stats['volume_mean'].unsqueeze(0).expand(100, -1),
-                stats['location_mean'].unsqueeze(0).expand(100, -1),
-                stats['shape_mean'].unsqueeze(0).expand(100, -1),
+            # Directly set the precomputed mean and std buffers
+            aux_loss_fn.volume_mean = stats['volume_mean']
+            aux_loss_fn.volume_std = stats['volume_std']
+            aux_loss_fn.location_mean = stats['location_mean']
+            aux_loss_fn.location_std = stats['location_std']
+            aux_loss_fn.shape_mean = stats['shape_mean']
+            aux_loss_fn.shape_std = stats['shape_std']
+            aux_loss_fn._stats_initialized = True
+            logger.info(
+                f"Target normalization stats: "
+                f"vol_std={stats['volume_std'].mean():.2f}, "
+                f"loc_std={stats['location_std'].mean():.2f}, "
+                f"shape_std={stats['shape_std'].mean():.2f}"
             )
 
     # Training configuration
@@ -439,13 +688,20 @@ def train_condition(
     patience = training_config["early_stopping_patience"]
     gradient_clip = training_config.get("gradient_clip", 1.0)
 
-    # Training log
+    # Training log with extended columns
     log_path = condition_dir / "training_log.csv"
+    csv_columns = [
+        "epoch", "train_loss", "train_seg_loss", "train_aux_loss",
+        "train_vol_loss", "train_loc_loss", "train_shape_loss",
+        "val_loss", "val_dice_mean", "val_dice_0", "val_dice_1", "val_dice_2",
+        "lr", "lambda_aux_eff"
+    ]
+    if enable_gradient_monitoring:
+        csv_columns.extend(["encoder_grad_norm", "decoder_grad_norm", "semantic_grad_norm"])
+
     with open(log_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "train_seg_loss", "train_aux_loss",
-                        "val_loss", "val_dice_mean", "val_dice_0", "val_dice_1",
-                        "val_dice_2", "lr"])
+        writer.writerow(csv_columns)
 
     # Training loop
     best_dice = 0.0
@@ -458,12 +714,23 @@ def train_condition(
     for epoch in range(epochs):
         logger.info(f"\nEpoch {epoch + 1}/{epochs}")
 
+        # Compute effective lambda_aux with warmup
+        lambda_aux_eff = compute_lambda_aux_effective(
+            epoch, lambda_aux, aux_warmup_start, aux_warmup_duration
+        )
+
+        if use_semantic_heads and epoch < aux_warmup_start + aux_warmup_duration:
+            logger.info(f"  Aux loss warmup: lambda_aux_eff = {lambda_aux_eff:.4f}")
+
         # Train
         train_metrics = train_epoch(
             model, train_loader, seg_loss_fn, aux_loss_fn,
-            optimizer, device, gradient_clip, lambda_aux,
+            optimizer, device, gradient_clip, lambda_aux_eff,
             use_semantic_heads=use_semantic_heads and decoder_type == "original",
             decoder_type=decoder_type,
+            is_baseline=is_baseline,
+            enable_gradient_monitoring=enable_gradient_monitoring,
+            gradient_monitor_freq=gradient_monitor_freq,
         )
 
         # Validate
@@ -473,32 +740,61 @@ def train_condition(
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
 
-        # Log metrics
-        logger.info(
+        # Log metrics with per-component losses
+        log_msg = (
             f"  Train Loss: {train_metrics['loss']:.4f} "
-            f"(seg={train_metrics['seg_loss']:.4f}, aux={train_metrics['aux_loss']:.4f}) | "
-            f"Val Loss: {val_metrics['loss']:.4f} | "
+            f"(seg={train_metrics['seg_loss']:.4f}, aux={train_metrics['aux_loss']:.4f}"
+        )
+        if use_semantic_heads and train_metrics['aux_loss'] > 0:
+            log_msg += (
+                f" [vol={train_metrics['vol_loss']:.4f}, "
+                f"loc={train_metrics['loc_loss']:.4f}, "
+                f"shape={train_metrics['shape_loss']:.4f}]"
+            )
+        log_msg += (
+            f") | Val Loss: {val_metrics['loss']:.4f} | "
             f"Val Dice: {val_metrics['dice_mean']:.4f} | "
             f"LR: {current_lr:.2e}"
         )
+        logger.info(log_msg)
+
+        # Log gradient norms if monitoring
+        if enable_gradient_monitoring and 'encoder_grad_norm' in train_metrics:
+            logger.info(
+                f"  Grad norms: encoder={train_metrics['encoder_grad_norm']:.2e}, "
+                f"decoder={train_metrics['decoder_grad_norm']:.2e}, "
+                f"semantic={train_metrics['semantic_grad_norm']:.2e}"
+            )
 
         # Save to CSV
-        with open(log_path, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                epoch + 1,
-                train_metrics["loss"],
-                train_metrics["seg_loss"],
-                train_metrics["aux_loss"],
-                val_metrics["loss"],
-                val_metrics["dice_mean"],
-                val_metrics["dice_0"],
-                val_metrics["dice_1"],
-                val_metrics["dice_2"],
-                current_lr,
+        csv_row = [
+            epoch + 1,
+            train_metrics["loss"],
+            train_metrics["seg_loss"],
+            train_metrics["aux_loss"],
+            train_metrics["vol_loss"],
+            train_metrics["loc_loss"],
+            train_metrics["shape_loss"],
+            val_metrics["loss"],
+            val_metrics["dice_mean"],
+            val_metrics["dice_0"],
+            val_metrics["dice_1"],
+            val_metrics["dice_2"],
+            current_lr,
+            lambda_aux_eff,
+        ]
+        if enable_gradient_monitoring:
+            csv_row.extend([
+                train_metrics.get("encoder_grad_norm", 0.0),
+                train_metrics.get("decoder_grad_norm", 0.0),
+                train_metrics.get("semantic_grad_norm", 0.0),
             ])
 
-        # Early stopping check
+        with open(log_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(csv_row)
+
+        # Early stopping check (based on Dice, not total loss)
         if val_metrics["dice_mean"] > best_dice:
             best_dice = val_metrics["dice_mean"]
             best_metrics = {
@@ -564,12 +860,18 @@ def train_condition(
         "decoder_type": decoder_type,
         "use_semantic_heads": use_semantic_heads,
         "freeze_decoder": freeze_decoder,
+        "aux_warmup_start": aux_warmup_start,
+        "aux_warmup_duration": aux_warmup_duration,
     }
     with open(condition_dir / "training_summary.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False)
 
     return best_metrics
 
+
+# =============================================================================
+# Entry Point
+# =============================================================================
 
 def main(
     config_path: str,

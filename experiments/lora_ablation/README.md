@@ -37,6 +37,57 @@ When `training.use_semantic_heads: true`, auxiliary prediction heads are added t
 
 The auxiliary semantic loss is controlled by `training.lambda_aux` and individual lambdas in the `loss` section.
 
+## Multi-Task Learning Best Practices
+
+This implementation incorporates several methodological best practices for stable multi-task learning:
+
+### 1. Target Normalization
+
+Semantic targets are normalized to zero mean and unit variance before computing MSE loss. This prevents scale mismatch between loss components that can cause gradient dominance (Kendall et al., 2018).
+
+### 2. Auxiliary Loss Warmup
+
+The auxiliary loss can be delayed and ramped to prevent destabilizing early training:
+
+```yaml
+training:
+  aux_warmup_epochs: 5       # Start aux loss at epoch 5
+  aux_warmup_duration: 10    # Ramp lambda_aux from 0 to target over 10 epochs
+```
+
+This allows the encoder to learn basic features before semantic pressure is applied.
+
+### 3. Per-Feature Weighting
+
+Shape features are inherently harder to predict (R² ~0.25) than volume (R² ~0.70) or location (R² ~0.85). The implementation uses reduced weight for shape:
+
+```yaml
+loss:
+  lambda_volume: 1.0
+  lambda_location: 1.0
+  lambda_shape: 0.5          # Reduced for harder task
+```
+
+### 4. Gradient Monitoring
+
+Optional gradient norm logging helps detect imbalanced learning:
+
+```yaml
+training:
+  enable_gradient_monitoring: true
+  gradient_monitor_freq: 50   # Log every N batches
+```
+
+The training log includes `encoder_grad_norm`, `decoder_grad_norm`, and `semantic_grad_norm` columns.
+
+### 5. Per-Component Loss Logging
+
+The training log (`training_log.csv`) now includes individual loss components:
+- `train_vol_loss`, `train_loc_loss`, `train_shape_loss`
+- `lambda_aux_eff` (effective lambda after warmup)
+
+This enables post-hoc analysis of loss balance.
+
 ## Experimental Conditions
 
 | Condition | LoRA Rank | LoRA Alpha | Trainable Encoder Params |
@@ -88,16 +139,32 @@ training:
   decoder_type: "original"    # "original" | "lightweight"
   use_semantic_heads: false   # Enable auxiliary semantic loss during training
   freeze_decoder: false       # Whether to freeze decoder weights
-  lambda_aux: 0.1            # Weight for auxiliary semantic loss
+  lambda_aux: 0.1             # Weight for auxiliary semantic loss
   max_epochs: 100
   batch_size: 2
-  lr_encoder: 1e-4           # Learning rate for LoRA parameters
-  lr_decoder: 1e-4           # Learning rate for decoder parameters
+  lr_encoder: 1e-4            # Learning rate for LoRA parameters
+  lr_decoder: 1e-4            # Learning rate for decoder parameters
+
+  # Auxiliary loss warmup (prevents gradient dominance in early epochs)
+  aux_warmup_epochs: 5        # Epoch to start auxiliary loss
+  aux_warmup_duration: 10     # Epochs to ramp lambda_aux from 0 to target
+
+  # Gradient monitoring (optional diagnostics)
+  enable_gradient_monitoring: false
+  gradient_monitor_freq: 50
+
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  # Per-feature weights for auxiliary loss
+  lambda_volume: 1.0
+  lambda_location: 1.0
+  lambda_shape: 0.5           # Reduced for harder task
 
 probe:
-  use_mlp_probes: true       # Enable MLP probes (in addition to linear)
-  alpha_linear: 1.0          # Ridge regression regularization
-  alpha_mlp: 1e-4            # MLP weight decay
+  use_mlp_probes: true        # Enable MLP probes (in addition to linear)
+  alpha_linear: 1.0           # Ridge regression regularization
+  alpha_mlp: 1e-4             # MLP weight decay
   mlp_hidden_dim: 256
   mlp_epochs: 100
 

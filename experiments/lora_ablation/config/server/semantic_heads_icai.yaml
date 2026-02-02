@@ -1,9 +1,8 @@
-# experiments/lora_ablation/config/server/ablation_icai.yaml
-# Unified LoRA Ablation Experiment Configuration - ICAI Server
+# experiments/lora_ablation/config/server/semantic_heads_icai.yaml
+# LoRA Ablation Experiment Configuration - WITH Semantic Heads
 #
-# This unified config supports both decoder types via decoder_type parameter:
-# - "lightweight": Custom SegmentationHead (~2M params), v1 behavior
-# - "original": Full SwinUNETR decoder (~30M params), v2 behavior (recommended)
+# This config enables auxiliary semantic prediction losses during training.
+# The semantic heads predict volume, location, and shape from bottleneck features.
 
 experiment:
   name: lora_ablation_semantic_heads
@@ -66,42 +65,47 @@ training:
   lora_dropout: 0.1
   gradient_clip: 1.0
 
-  # KEY CONFIGURATION: Decoder type
-  # - "lightweight": Custom SegmentationHead (~2M params), faster, v1 behavior
-  # - "original": Full SwinUNETR decoder (~30M params), better gradients (recommended)
-  decoder_type: "original"
+  # Decoder configuration
+  decoder_type: "original"   # "lightweight" | "original"
+  freeze_decoder: false      # Train decoder (for better gradients)
 
-  # Only used if decoder_type: "original"
-  freeze_decoder: false        # Train decoder (for better gradients)
-  use_semantic_heads: true     # Add auxiliary semantic prediction
-  lambda_aux: 0.1              # Weight for auxiliary loss
+  # Semantic heads configuration
+  use_semantic_heads: true   # Enable auxiliary semantic prediction
+  lambda_aux: 0.1            # Weight for auxiliary loss
+
+  # Auxiliary loss warmup (prevents destabilizing early training)
+  # - aux_warmup_epochs: Epoch to START auxiliary loss (0 = immediate)
+  # - aux_warmup_duration: Epochs to ramp lambda_aux from 0 to target
+  aux_warmup_epochs: 5       # Start aux loss at epoch 5
+  aux_warmup_duration: 10    # Ramp over 10 epochs (full at epoch 15)
+
+  # Gradient monitoring (optional, for diagnostics)
+  enable_gradient_monitoring: true   # Log gradient norms per group
+  gradient_monitor_freq: 50          # Log every N batches
 
 # Segmentation loss
 loss:
   lambda_dice: 1.0
   lambda_ce: 1.0
-  # Auxiliary semantic loss weights (if use_semantic_heads: true)
-  lambda_volume: 1.0
-  lambda_location: 1.0
-  lambda_shape: 1.0
+
+  # Auxiliary semantic loss weights (per-feature)
+  # Note: Shape is harder to predict (R² ~0.25), so reduced weight
+  lambda_volume: 1.0         # Volume prediction weight
+  lambda_location: 1.0       # Location prediction weight
+  lambda_shape: 0.5          # Shape prediction weight (reduced for harder task)
 
 # Probe evaluation
 probe:
-  # For both decoder types
   alpha_linear: 1.0           # Ridge regularization
-
-  # Additional options when decoder_type: "original"
-  use_mlp_probes: true        # Enable MLP probes (set false for v1 behavior)
+  use_mlp_probes: true        # Enable MLP probes
   alpha_mlp: 1.0e-4           # MLP L2 regularization
   hidden_sizes: [256, 128]    # MLP hidden layers
   normalize_features: true
-  normalize_targets: true     # KEY: normalize targets for stable training
+  normalize_targets: true     # Normalize targets for stable training
 
 # Feature extraction
 feature_extraction:
-  # - "encoder10": Single-scale 768-dim (v1 behavior)
-  # - "multi_scale": layers2+3+4 (192+384+768=1344-dim, recommended)
-  level: multi_scale
+  level: multi_scale          # layers2+3+4 (1344-dim)
   batch_size: 8
 
 # Domain analysis (glioma vs meningioma)
@@ -127,21 +131,32 @@ model_card:
   enabled: true
 
 # =============================================================================
-# BACKWARD COMPATIBILITY NOTES
+# METHODOLOGICAL NOTES
 # =============================================================================
 #
-# To reproduce v1 results (lightweight decoder):
-#   training:
-#     decoder_type: "lightweight"
-#   probe:
-#     use_mlp_probes: false
-#   feature_extraction:
-#     level: encoder10
+# This configuration implements several best practices for multi-task learning:
 #
-# To reproduce v2 results (original decoder, default):
-#   training:
-#     decoder_type: "original"
-#   probe:
-#     use_mlp_probes: true
-#   feature_extraction:
-#     level: multi_scale
+# 1. TARGET NORMALIZATION
+#    Semantic targets are normalized to zero mean, unit variance to prevent
+#    scale mismatch between loss components (Kendall et al., 2018).
+#
+# 2. AUXILIARY LOSS WARMUP
+#    The auxiliary loss starts at epoch 5 and ramps over 10 epochs.
+#    This allows the encoder to learn basic features before semantic pressure.
+#
+# 3. PER-FEATURE WEIGHTING
+#    Shape features are harder to predict (R² ~0.25 vs ~0.70 for volume).
+#    Reduced lambda_shape to 0.5 prevents the harder task from dominating.
+#
+# 4. GRADIENT MONITORING
+#    Gradient norms are logged per parameter group to detect imbalances.
+#    Check training_log.csv for encoder/decoder/semantic gradient norms.
+#
+# 5. EARLY STOPPING ON DICE
+#    Early stopping uses validation Dice (primary metric), not total loss.
+#    This prevents auxiliary loss improvements from masking segmentation degradation.
+#
+# References:
+# - Kendall et al. (2018): Multi-Task Learning Using Uncertainty to Weigh Losses
+# - Chen et al. (2018): GradNorm for gradient balancing
+# - Liu et al. (2019): Dynamic Weight Average (DWA)
