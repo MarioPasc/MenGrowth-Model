@@ -445,8 +445,16 @@ class LoRAOriginalDecoderModel(nn.Module):
         return self.lora_encoder.get_hidden_states(x)
 
     def get_encoder_params(self):
-        """Get encoder (LoRA) parameters for separate optimizer group."""
-        return [p for p in self.lora_encoder.model.parameters() if p.requires_grad]
+        """Get encoder (LoRA) parameters for separate optimizer group.
+
+        Returns only LoRA adapter parameters (lora_A, lora_B), not all
+        trainable parameters in the model (which would include unfrozen decoder).
+        """
+        lora_params = []
+        for name, param in self.lora_encoder.model.named_parameters():
+            if "lora_" in name.lower() and param.requires_grad:
+                lora_params.append(param)
+        return lora_params
 
     def get_decoder_params(self):
         """Get decoder parameters for separate optimizer group."""
@@ -456,23 +464,35 @@ class LoRAOriginalDecoderModel(nn.Module):
         return [p for p in params if p.requires_grad]
 
     def get_trainable_param_count(self) -> Dict[str, int]:
-        """Count trainable parameters by component."""
-        enc_trainable = sum(
-            p.numel() for p in self.lora_encoder.model.parameters() if p.requires_grad
+        """Count trainable parameters by component.
+
+        For LoRA model:
+        - encoder_lora: Only LoRA adapter parameters (lora_A, lora_B)
+        - decoder: encoder1-4, encoder10, decoder1-5, out (if unfrozen)
+        - semantic_heads: Auxiliary prediction heads (if enabled)
+        """
+        # Count only LoRA parameters for encoder
+        lora_trainable = sum(
+            p.numel() for name, p in self.lora_encoder.model.named_parameters()
+            if "lora_" in name.lower() and p.requires_grad
         )
+
+        # Count decoder parameters (excludes LoRA params which are in swinViT)
         dec_trainable = sum(
             p.numel() for p in self.decoder.parameters() if p.requires_grad
         )
+
         sem_trainable = 0
         if self.semantic_heads is not None:
             sem_trainable = sum(
                 p.numel() for p in self.semantic_heads.parameters() if p.requires_grad
             )
+
         return {
-            "encoder_lora": enc_trainable,
+            "encoder_lora": lora_trainable,
             "decoder": dec_trainable,
             "semantic_heads": sem_trainable,
-            "total": enc_trainable + dec_trainable + sem_trainable,
+            "total": lora_trainable + dec_trainable + sem_trainable,
         }
 
 
