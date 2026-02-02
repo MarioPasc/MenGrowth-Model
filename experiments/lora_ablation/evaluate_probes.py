@@ -102,17 +102,40 @@ def load_segmentation_model(
             lora_alpha=lora_alpha,
         )
 
-    # Load checkpoint
+    # Load checkpoint (with fallback for different naming conventions)
     checkpoint_path = condition_dir / "best_model.pt"
     if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        checkpoint_path = condition_dir / "checkpoint.pt"
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint not found in {condition_dir}. "
+            "Expected 'best_model.pt' or 'checkpoint.pt'."
+        )
 
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    # Handle checkpoint format: train_condition.py saves {"decoder_state_dict": ..., "epoch": ..., "metrics": ...}
+    if isinstance(checkpoint, dict) and "decoder_state_dict" in checkpoint:
+        # Load decoder state
+        model.decoder.load_state_dict(checkpoint["decoder_state_dict"])
+        logger.info(f"Loaded decoder from {checkpoint_path} (epoch {checkpoint.get('epoch', '?')})")
+
+        # Load LoRA adapter if applicable
+        if lora_rank is not None:
+            adapter_dir = condition_dir / "adapter"
+            if adapter_dir.exists():
+                model.encoder.load_lora(adapter_dir)
+                logger.info(f"Loaded LoRA adapter from {adapter_dir}")
+            else:
+                logger.warning(f"LoRA adapter directory not found: {adapter_dir}")
+    else:
+        # Legacy format: raw state dict
+        model.load_state_dict(checkpoint)
+        logger.info(f"Loaded model from {checkpoint_path} (legacy format)")
+
     model.to(device)
     model.eval()
 
-    logger.info(f"Loaded model from {checkpoint_path}")
     return model
 
 

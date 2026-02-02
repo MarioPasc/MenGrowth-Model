@@ -96,10 +96,17 @@ def plot_r2_comparison(
     config: dict,
     output_dir: Path,
     show_ci: bool = True,
+    include_mlp: bool = False,
 ) -> plt.Figure:
     """Create R² comparison bar plot with confidence intervals.
 
     This is the PRIMARY figure showing linear probe R² for each condition.
+
+    Args:
+        config: Experiment configuration.
+        output_dir: Output directory.
+        show_ci: Whether to show confidence intervals.
+        include_mlp: Whether to include MLP probe results alongside linear.
     """
     setup_style()
 
@@ -122,71 +129,129 @@ def plot_r2_comparison(
     n_conditions = len(metrics)
     n_features = len(semantic_features)
 
-    fig, ax = plt.subplots(figsize=get_figure_size("double", 0.5))
-
-    # Bar positions
-    x = np.arange(n_features)
-    bar_width = PLOT_SETTINGS["bar_width"]
-    offsets = np.linspace(-(n_conditions - 1) / 2, (n_conditions - 1) / 2, n_conditions) * bar_width * 1.2
-
-    # Plot bars for each condition
-    for i, cond in enumerate(conditions):
-        if cond not in metrics:
-            continue
-
-        values = [metrics[cond].get(f"r2_{feat}", 0) for feat in semantic_features]
-
-        # Get per-dimension values for error bars if available
-        errors = None
-        if show_ci:
-            per_dim = [metrics[cond].get(f"r2_{feat}_per_dim", None) for feat in semantic_features]
-            if all(p is not None for p in per_dim):
-                # Use std of per-dimension R² as error estimate
-                errors = [np.std(p) for p in per_dim]
-
-        bars = ax.bar(
-            x + offsets[i],
-            values,
-            bar_width,
-            label=CONDITION_LABELS.get(cond, cond),
-            color=CONDITION_COLORS.get(cond, f"C{i}"),
-            alpha=PLOT_SETTINGS["bar_alpha"],
-            edgecolor="white",
-            linewidth=0.5,
-            yerr=errors if errors else None,
-            capsize=PLOT_SETTINGS["errorbar_capsize"] if errors else 0,
-        )
-
-    # Customize axes
-    ax.set_xlabel("Semantic Feature", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    ax.set_ylabel(r"Linear Probe $R^2$", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    ax.set_xticks(x)
-    ax.set_xticklabels([SEMANTIC_LABELS_SHORT[f] for f in semantic_features])
-    ax.set_ylim(0, 1.0)
-    ax.axhline(y=0.9, color="0.7", linestyle="--", linewidth=0.5, label="Target (0.9)")
-
-    # Legend
-    ax.legend(
-        loc="upper right",
-        fontsize=PLOT_SETTINGS["legend_fontsize"],
-        frameon=False,
-        ncol=2,
+    # Check if MLP data is available
+    has_mlp_data = include_mlp and any(
+        f"r2_{feat}_mlp" in m for m in metrics.values() for feat in semantic_features
     )
 
-    # Add mean R² as text annotation
-    for i, cond in enumerate(metrics.keys()):
-        mean_r2 = metrics[cond].get("r2_mean", 0)
-        ax.annotate(
-            f"Mean: {mean_r2:.3f}",
-            xy=(0.02, 0.98 - i * 0.06),
-            xycoords="axes fraction",
-            fontsize=PLOT_SETTINGS["annotation_fontsize"],
-            color=CONDITION_COLORS.get(cond, f"C{i}"),
-            va="top",
+    if include_mlp and has_mlp_data:
+        # Create figure with subplots for Linear vs MLP comparison
+        fig, axes = plt.subplots(1, 2, figsize=get_figure_size("double", 0.6))
+
+        for ax_idx, (ax, probe_type) in enumerate(zip(axes, ["Linear", "MLP"])):
+            suffix = "" if probe_type == "Linear" else "_mlp"
+
+            # Bar positions
+            x = np.arange(n_features)
+            bar_width = PLOT_SETTINGS["bar_width"]
+            offsets = np.linspace(-(n_conditions - 1) / 2, (n_conditions - 1) / 2, n_conditions) * bar_width * 1.2
+
+            # Plot bars for each condition
+            for i, cond in enumerate(conditions):
+                if cond not in metrics:
+                    continue
+
+                values = [metrics[cond].get(f"r2_{feat}{suffix}", 0) for feat in semantic_features]
+
+                bars = ax.bar(
+                    x + offsets[i],
+                    values,
+                    bar_width,
+                    label=CONDITION_LABELS.get(cond, cond),
+                    color=CONDITION_COLORS.get(cond, f"C{i}"),
+                    alpha=PLOT_SETTINGS["bar_alpha"],
+                    edgecolor="white",
+                    linewidth=0.5,
+                )
+
+            # Customize axes
+            ax.set_xlabel("Semantic Feature", fontsize=PLOT_SETTINGS["axes_labelsize"])
+            ax.set_ylabel(rf"{probe_type} Probe $R^2$", fontsize=PLOT_SETTINGS["axes_labelsize"])
+            ax.set_xticks(x)
+            ax.set_xticklabels([SEMANTIC_LABELS_SHORT[f] for f in semantic_features])
+            ax.set_ylim(-0.5, 1.0)
+            ax.axhline(y=0, color="0.5", linestyle="-", linewidth=0.5)
+            ax.set_title(f"({chr(97 + ax_idx)}) {probe_type} Probe", fontsize=PLOT_SETTINGS["axes_titlesize"])
+
+            # Legend only on first subplot
+            if ax_idx == 0:
+                ax.legend(
+                    loc="lower right",
+                    fontsize=PLOT_SETTINGS["legend_fontsize"] - 1,
+                    frameon=False,
+                    ncol=1,
+                )
+
+        plt.tight_layout()
+        save_figure(fig, output_dir / "figures", "r2_comparison_linear_mlp")
+    else:
+        # Original single-panel plot for linear probes only
+        fig, ax = plt.subplots(figsize=get_figure_size("double", 0.5))
+
+        # Bar positions
+        x = np.arange(n_features)
+        bar_width = PLOT_SETTINGS["bar_width"]
+        offsets = np.linspace(-(n_conditions - 1) / 2, (n_conditions - 1) / 2, n_conditions) * bar_width * 1.2
+
+        # Plot bars for each condition
+        for i, cond in enumerate(conditions):
+            if cond not in metrics:
+                continue
+
+            values = [metrics[cond].get(f"r2_{feat}", 0) for feat in semantic_features]
+
+            # Get per-dimension values for error bars if available
+            errors = None
+            if show_ci:
+                per_dim = [metrics[cond].get(f"r2_{feat}_per_dim", None) for feat in semantic_features]
+                if all(p is not None for p in per_dim):
+                    # Use std of per-dimension R² as error estimate
+                    errors = [np.std(p) for p in per_dim]
+
+            bars = ax.bar(
+                x + offsets[i],
+                values,
+                bar_width,
+                label=CONDITION_LABELS.get(cond, cond),
+                color=CONDITION_COLORS.get(cond, f"C{i}"),
+                alpha=PLOT_SETTINGS["bar_alpha"],
+                edgecolor="white",
+                linewidth=0.5,
+                yerr=errors if errors else None,
+                capsize=PLOT_SETTINGS["errorbar_capsize"] if errors else 0,
+            )
+
+        # Customize axes
+        ax.set_xlabel("Semantic Feature", fontsize=PLOT_SETTINGS["axes_labelsize"])
+        ax.set_ylabel(r"Linear Probe $R^2$", fontsize=PLOT_SETTINGS["axes_labelsize"])
+        ax.set_xticks(x)
+        ax.set_xticklabels([SEMANTIC_LABELS_SHORT[f] for f in semantic_features])
+        ax.set_ylim(0, 1.0)
+        ax.axhline(y=0.9, color="0.7", linestyle="--", linewidth=0.5, label="Target (0.9)")
+
+        # Legend
+        ax.legend(
+            loc="upper right",
+            fontsize=PLOT_SETTINGS["legend_fontsize"],
+            frameon=False,
+            ncol=2,
         )
 
-    plt.tight_layout()
-    save_figure(fig, output_dir / "figures", "r2_comparison")
+        # Add mean R² as text annotation
+        for i, cond in enumerate(metrics.keys()):
+            mean_r2 = metrics[cond].get("r2_mean", 0)
+            ax.annotate(
+                f"Mean: {mean_r2:.3f}",
+                xy=(0.02, 0.98 - i * 0.06),
+                xycoords="axes fraction",
+                fontsize=PLOT_SETTINGS["annotation_fontsize"],
+                color=CONDITION_COLORS.get(cond, f"C{i}"),
+                va="top",
+            )
+
+        plt.tight_layout()
+        save_figure(fig, output_dir / "figures", "r2_comparison")
+
     return fig
 
 
@@ -700,9 +765,13 @@ def generate_all_figures(config_path: str, glioma_features_path: Optional[str] =
 
     logger.info("Generating publication figures...")
 
-    # Figure 1: R² Comparison
-    logger.info("Figure 1: R² Comparison")
-    plot_r2_comparison(config, output_dir)
+    # Figure 1: R² Comparison (Linear only)
+    logger.info("Figure 1: R² Comparison (Linear)")
+    plot_r2_comparison(config, output_dir, include_mlp=False)
+
+    # Figure 1b: R² Comparison (Linear + MLP side-by-side)
+    logger.info("Figure 1b: R² Comparison (Linear + MLP)")
+    plot_r2_comparison(config, output_dir, include_mlp=True)
 
     # Figure 2: Dice Comparison
     logger.info("Figure 2: Dice Comparison")

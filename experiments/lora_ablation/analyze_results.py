@@ -52,9 +52,8 @@ def validate_experiment_outputs(config: dict) -> Dict[str, Dict[str, bool]]:
     output_dir = Path(config["experiment"]["output_dir"])
     status = {}
 
-    expected_files = [
-        ("checkpoint", "best_model.pt"),
-        ("adapter", "adapter"),  # directory for LoRA
+    # Base expected files for all conditions
+    base_expected_files = [
         ("training_log", "training_log.csv"),
         ("training_summary", "training_summary.yaml"),
         ("features_probe", "features_probe.pt"),
@@ -73,7 +72,22 @@ def validate_experiment_outputs(config: dict) -> Dict[str, Dict[str, bool]]:
         cond_dir = output_dir / "conditions" / name
         status[name] = {}
 
+        # Build expected files list based on condition type
+        expected_files = list(base_expected_files)
+
+        # Checkpoint: accept either best_model.pt or checkpoint.pt
+        checkpoint_exists = (cond_dir / "best_model.pt").exists() or (cond_dir / "checkpoint.pt").exists()
+        status[name]["checkpoint"] = checkpoint_exists
+
+        # Adapter: only expected for LoRA conditions (lora_rank is not None)
+        lora_rank = cond.get("lora_rank")
+        if lora_rank is not None:
+            expected_files.append(("adapter", "adapter"))
+
         missing = []
+        if not checkpoint_exists:
+            missing.append("checkpoint")
+
         for file_type, filename in expected_files:
             path = cond_dir / filename
             exists = path.exists()
@@ -134,25 +148,56 @@ def generate_latex_table(
     metrics: Dict[str, Dict],
     config: dict,
     stats: Optional[AblationStatistics] = None,
+    include_mlp: bool = True,
 ) -> str:
     """Generate LaTeX table for thesis.
 
-    Returns publication-ready LaTeX code.
+    Args:
+        metrics: Dict of condition -> metrics.
+        config: Experiment configuration.
+        stats: Optional statistical analysis results.
+        include_mlp: Whether to include MLP probe results (creates wider table).
+
+    Returns:
+        Publication-ready LaTeX code.
     """
-    lines = [
-        r"\begin{table}[htbp]",
-        r"\centering",
-        r"\caption{Comparison of encoder adaptation strategies for meningioma feature learning. "
-        r"Linear probe $R^2$ scores measure semantic feature predictability from encoder features. "
-        r"$\Delta$ indicates improvement over baseline. Statistical significance tested with "
-        r"Wilcoxon signed-rank test (Holm-Bonferroni corrected).}",
-        r"\label{tab:lora_ablation}",
-        r"\begin{tabular}{lcccccc}",
-        r"\toprule",
-        r"Condition & $R^2_\mathrm{vol}$ & $R^2_\mathrm{loc}$ & $R^2_\mathrm{shape}$ & "
-        r"$R^2_\mathrm{mean}$ & Test Dice & Params \\",
-        r"\midrule",
-    ]
+    # Check if MLP data is available
+    has_mlp_data = include_mlp and any(
+        "r2_mean_mlp" in m for m in metrics.values()
+    )
+
+    if has_mlp_data:
+        # Extended table with both Linear and MLP probes
+        lines = [
+            r"\begin{table}[htbp]",
+            r"\centering",
+            r"\caption{Comparison of encoder adaptation strategies for meningioma feature learning. "
+            r"Both linear and MLP probe $R^2$ scores are reported. "
+            r"$\Delta$ indicates improvement over baseline.}",
+            r"\label{tab:lora_ablation}",
+            r"\resizebox{\textwidth}{!}{%",
+            r"\begin{tabular}{lccc|ccc|cc}",
+            r"\toprule",
+            r" & \multicolumn{3}{c|}{Linear Probe $R^2$} & \multicolumn{3}{c|}{MLP Probe $R^2$} & & \\",
+            r"Condition & Vol & Loc & Shape & Vol & Loc & Shape & $R^2_\mathrm{mean}$ (Lin) & Params \\",
+            r"\midrule",
+        ]
+    else:
+        # Original table without MLP
+        lines = [
+            r"\begin{table}[htbp]",
+            r"\centering",
+            r"\caption{Comparison of encoder adaptation strategies for meningioma feature learning. "
+            r"Linear probe $R^2$ scores measure semantic feature predictability from encoder features. "
+            r"$\Delta$ indicates improvement over baseline. Statistical significance tested with "
+            r"Wilcoxon signed-rank test (Holm-Bonferroni corrected).}",
+            r"\label{tab:lora_ablation}",
+            r"\begin{tabular}{lcccccc}",
+            r"\toprule",
+            r"Condition & $R^2_\mathrm{vol}$ & $R^2_\mathrm{loc}$ & $R^2_\mathrm{shape}$ & "
+            r"$R^2_\mathrm{mean}$ & Test Dice & Params \\",
+            r"\midrule",
+        ]
 
     baseline_r2 = metrics.get("baseline", {}).get("r2_mean", 0)
 
@@ -163,11 +208,12 @@ def generate_latex_table(
 
         m = metrics[name]
 
-        # Format values
+        # Format linear R² values
         r2_vol = f"{m.get('r2_volume', 0):.3f}"
         r2_loc = f"{m.get('r2_location', 0):.3f}"
         r2_shape = f"{m.get('r2_shape', 0):.3f}"
         r2_mean = f"{m.get('r2_mean', 0):.3f}"
+
         # Prefer test Dice, fall back to validation Dice
         test_dice = m.get('test_dice_mean') or m.get('val_dice')
         dice_str = f"{test_dice:.3f}" if test_dice else "---"
@@ -196,15 +242,34 @@ def generate_latex_table(
             rank = cond.get("lora_rank", "?")
             label = f"LoRA $r={rank}$"
 
-        lines.append(
-            f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & {r2_mean} & {dice_str} & {params_str} \\\\"
-        )
+        if has_mlp_data:
+            # Format MLP R² values
+            r2_vol_mlp = f"{m.get('r2_volume_mlp', 0):.3f}"
+            r2_loc_mlp = f"{m.get('r2_location_mlp', 0):.3f}"
+            r2_shape_mlp = f"{m.get('r2_shape_mlp', 0):.3f}"
 
-    lines.extend([
-        r"\bottomrule",
-        r"\end{tabular}",
-        r"\end{table}",
-    ])
+            lines.append(
+                f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & "
+                f"{r2_vol_mlp} & {r2_loc_mlp} & {r2_shape_mlp} & "
+                f"{r2_mean} & {params_str} \\\\"
+            )
+        else:
+            lines.append(
+                f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & {r2_mean} & {dice_str} & {params_str} \\\\"
+            )
+
+    if has_mlp_data:
+        lines.extend([
+            r"\bottomrule",
+            r"\end{tabular}}",
+            r"\end{table}",
+        ])
+    else:
+        lines.extend([
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\end{table}",
+        ])
 
     return "\n".join(lines)
 
@@ -278,9 +343,36 @@ def generate_markdown_report(
         else:
             d = m.get('r2_mean', 0) - baseline_r2
             sign = "+" if d >= 0 else ""
-            delta = f"{sign}{d:.4f} ({sign}{d/baseline_r2*100:.1f}%)"
+            delta = f"{sign}{d:.4f} ({sign}{d/abs(baseline_r2)*100:.1f}%)" if baseline_r2 != 0 else f"{sign}{d:.4f}"
 
         lines.append(f"| {name} | {r2_vol} | {r2_loc} | {r2_shape} | {r2_mean} | {delta} |")
+
+    # Check if MLP probe data is available
+    has_mlp_data = any("r2_mean_mlp" in m for m in metrics.values())
+
+    if has_mlp_data:
+        lines.extend([
+            "",
+            "### MLP Probe R² (Nonlinear)",
+            "",
+            "MLP probes capture nonlinear relationships in the feature space.",
+            "",
+            "| Condition | R²_vol (MLP) | R²_loc (MLP) | R²_shape (MLP) | R²_mean (MLP) |",
+            "|-----------|--------------|--------------|----------------|---------------|",
+        ])
+
+        for cond in config["conditions"]:
+            name = cond["name"]
+            if name not in metrics:
+                continue
+
+            m = metrics[name]
+            r2_vol_mlp = f"{m.get('r2_volume_mlp', 0):.4f}"
+            r2_loc_mlp = f"{m.get('r2_location_mlp', 0):.4f}"
+            r2_shape_mlp = f"{m.get('r2_shape_mlp', 0):.4f}"
+            r2_mean_mlp = f"{m.get('r2_mean_mlp', 0):.4f}"
+
+            lines.append(f"| {name} | {r2_vol_mlp} | {r2_loc_mlp} | {r2_shape_mlp} | {r2_mean_mlp} |")
 
     lines.extend([
         "",
@@ -513,10 +605,17 @@ def analyze_results(
             m = metrics[name]
             rows.append({
                 "condition": name,
+                # Linear probe R²
                 "r2_volume": m.get("r2_volume"),
                 "r2_location": m.get("r2_location"),
                 "r2_shape": m.get("r2_shape"),
                 "r2_mean": m.get("r2_mean"),
+                # MLP probe R² (if available)
+                "r2_volume_mlp": m.get("r2_volume_mlp"),
+                "r2_location_mlp": m.get("r2_location_mlp"),
+                "r2_shape_mlp": m.get("r2_shape_mlp"),
+                "r2_mean_mlp": m.get("r2_mean_mlp"),
+                # Test Dice
                 "test_dice_mean": m.get("test_dice_mean"),
                 "test_dice_NCR": m.get("test_dice_NCR"),
                 "test_dice_ED": m.get("test_dice_ED"),
