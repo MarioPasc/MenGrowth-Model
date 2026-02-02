@@ -268,15 +268,23 @@ class OriginalDecoderSegmentationModel(nn.Module):
         return self.decoder.get_bottleneck_features(hidden_states)
 
     def get_trainable_param_count(self) -> Dict[str, int]:
-        """Count trainable parameters by component."""
-        enc_trainable = sum(
-            p.numel() for p in self.encoder.parameters() if p.requires_grad
+        """Count trainable parameters by component.
+
+        Note: For baseline, encoder (swinViT) is frozen, so encoder count should be 0.
+        The decoder count includes encoder1-4, encoder10, decoder1-5, and out layers.
+        """
+        # Count only swinViT parameters for "encoder"
+        swinvit_trainable = sum(
+            p.numel() for p in self.encoder.swinViT.parameters() if p.requires_grad
         )
+
+        # Count decoder parameters (includes encoder processing blocks + decoder blocks)
         dec_trainable = self.decoder.get_param_count()
+
         return {
-            "encoder": enc_trainable,
+            "encoder": swinvit_trainable,
             "decoder": dec_trainable,
-            "total": enc_trainable + dec_trainable,
+            "total": swinvit_trainable + dec_trainable,
         }
 
 

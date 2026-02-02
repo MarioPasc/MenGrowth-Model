@@ -640,7 +640,22 @@ def train_condition(
 
     # Log parameter counts
     param_counts = model.get_trainable_param_count()
-    logger.info(f"Trainable parameters: {param_counts}")
+    if is_baseline:
+        logger.info(
+            f"Trainable parameters (baseline - encoder frozen): "
+            f"encoder={param_counts.get('encoder', 0):,}, "
+            f"decoder={param_counts.get('decoder', 0):,}, "
+            f"semantic_heads={param_counts.get('semantic_heads', 0):,}, "
+            f"total={param_counts.get('total', 0):,}"
+        )
+    else:
+        logger.info(
+            f"Trainable parameters (LoRA): "
+            f"encoder_lora={param_counts.get('encoder_lora', param_counts.get('encoder', 0)):,}, "
+            f"decoder={param_counts.get('decoder', 0):,}, "
+            f"semantic_heads={param_counts.get('semantic_heads', 0):,}, "
+            f"total={param_counts.get('total', 0):,}"
+        )
 
     # Create optimizer and scheduler
     optimizer, scheduler = create_optimizer(

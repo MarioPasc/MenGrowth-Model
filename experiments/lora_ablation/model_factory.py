@@ -172,6 +172,13 @@ class BaselineOriginalDecoderModel(nn.Module):
         return [p for p in params if p.requires_grad]
 
     def get_trainable_param_count(self) -> dict:
+        """Count trainable parameters by component.
+
+        For baseline with frozen encoder:
+        - encoder (swinViT): 0 (frozen)
+        - decoder: ~19.6M (encoder processing blocks + decoder blocks + out layer)
+        - semantic_heads: ~0.2M (if enabled)
+        """
         counts = self.model.get_trainable_param_count()
         if self.semantic_heads is not None:
             sem_params = sum(p.numel() for p in self.semantic_heads.parameters())
