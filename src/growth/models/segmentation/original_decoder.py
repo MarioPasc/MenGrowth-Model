@@ -324,7 +324,17 @@ class LoRAOriginalDecoderModel(nn.Module):
         base_model = lora_encoder.model
 
         # Create decoder wrapper
-        self.decoder = OriginalDecoderWrapper(base_model, freeze_decoder=freeze_decoder)
+        # NOTE: LoRASwinViT freezes ALL parameters including decoder.
+        # We need to explicitly unfreeze decoder params if freeze_decoder=False.
+        self.decoder = OriginalDecoderWrapper(base_model, freeze_decoder=False)
+
+        # Explicitly unfreeze or freeze decoder parameters
+        # This is necessary because LoRASwinViT freezes everything initially
+        if not freeze_decoder:
+            self._unfreeze_decoder()
+            logger.info("Decoder parameters unfrozen for training")
+        else:
+            logger.info("Decoder parameters kept frozen")
 
         # Replace output layer if needed
         current_in_ch, current_out_ch = _get_out_layer_channels(base_model.out)
@@ -407,6 +417,28 @@ class LoRAOriginalDecoderModel(nn.Module):
             result.update(semantic_preds)
 
         return result
+
+    def _unfreeze_decoder(self):
+        """Unfreeze all decoder parameters.
+
+        This is necessary because LoRASwinViT freezes ALL parameters of the
+        base model, including the decoder. We need to explicitly re-enable
+        gradients for decoder parameters.
+        """
+        decoder_modules = [
+            self.decoder.encoder1, self.decoder.encoder2,
+            self.decoder.encoder3, self.decoder.encoder4,
+            self.decoder.encoder10,
+            self.decoder.decoder5, self.decoder.decoder4,
+            self.decoder.decoder3, self.decoder.decoder2,
+            self.decoder.decoder1, self.decoder.out,
+        ]
+        unfrozen_count = 0
+        for module in decoder_modules:
+            for param in module.parameters():
+                param.requires_grad = True
+                unfrozen_count += param.numel()
+        logger.info(f"Unfroze {unfrozen_count:,} decoder parameters")
 
     def get_hidden_states(self, x: torch.Tensor) -> List[torch.Tensor]:
         """Get encoder hidden states."""
