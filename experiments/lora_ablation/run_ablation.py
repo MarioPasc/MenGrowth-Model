@@ -44,6 +44,14 @@ from growth.utils.seed import set_seed
 
 from .data_splits import main as generate_splits, load_splits
 from .extract_domain_features import extract_domain_features
+from .evaluate_dice import TestDiceEvaluator, generate_dice_summary, save_dice_results
+from .generate_tables import (
+    load_all_metrics as load_all_metrics_tables,
+    generate_comprehensive_csv,
+    generate_comprehensive_latex,
+    generate_simplified_latex,
+    generate_domain_shift_csv,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -210,17 +218,110 @@ def run_probes_all(
 def run_visualize(config_path: str) -> None:
     """Generate visualizations."""
     logger.info("=" * 60)
-    logger.info("STEP 6: Generating Visualizations")
+    logger.info("STEP 7: Generating Visualizations")
     logger.info("=" * 60)
 
     from .visualizations import main as viz_main
     viz_main(config_path)
 
 
+def run_test_dice(
+    config_path: str,
+    condition: str,
+    dataset: str = "men",
+    device: str = "cuda",
+) -> None:
+    """Evaluate test Dice for a single condition."""
+    from .evaluate_dice import main as evaluate_dice_main
+
+    logger.info(f"Evaluating test Dice for: {condition}")
+    evaluate_dice_main(config_path, condition, dataset, device=device)
+
+
+def run_test_dice_all(
+    config_path: str,
+    device: str = "cuda",
+    glioma_test_size: int = 200,
+) -> None:
+    """Evaluate test Dice for all conditions on both datasets."""
+    logger.info("=" * 60)
+    logger.info("STEP 6: Test Dice Evaluation")
+    logger.info("=" * 60)
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    output_dir = Path(config["experiment"]["output_dir"])
+    checkpoint_path = config["paths"]["checkpoint"]
+
+    evaluator = TestDiceEvaluator(
+        checkpoint_path=checkpoint_path,
+        device=device,
+        batch_size=config.get("feature_extraction", {}).get("batch_size", 4),
+        num_workers=config["training"]["num_workers"],
+    )
+
+    men_results, gli_results = evaluator.evaluate_all_conditions(
+        config,
+        include_glioma=True,
+        glioma_test_size=glioma_test_size,
+    )
+
+    # Save per-condition results
+    for cond in config["conditions"]:
+        name = cond["name"]
+        cond_dir = output_dir / "conditions" / name
+        cond_dir.mkdir(parents=True, exist_ok=True)
+
+        if name in men_results and "error" not in men_results[name]:
+            save_dice_results(men_results[name], cond_dir / "test_dice_men.json")
+
+        if name in gli_results and "error" not in gli_results[name]:
+            save_dice_results(gli_results[name], cond_dir / "test_dice_gli.json")
+
+    # Generate summary
+    summary_csv = generate_dice_summary(config, men_results, gli_results)
+    summary_path = output_dir / "test_dice_summary.csv"
+    with open(summary_path, "w") as f:
+        f.write(summary_csv)
+    logger.info(f"Saved Dice summary to {summary_path}")
+
+
+def run_generate_tables(config_path: str) -> None:
+    """Generate comprehensive result tables."""
+    logger.info("=" * 60)
+    logger.info("STEP 8: Generating Comprehensive Tables")
+    logger.info("=" * 60)
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    output_dir = Path(config["experiment"]["output_dir"])
+
+    # Load all metrics
+    metrics = load_all_metrics_tables(config)
+
+    if not metrics:
+        logger.warning("No metrics found for table generation")
+        return
+
+    # Generate all tables
+    generate_comprehensive_csv(metrics, config, output_dir / "comprehensive_results.csv")
+    generate_comprehensive_latex(metrics, config, output_dir / "comprehensive_table.tex")
+    generate_simplified_latex(metrics, config, output_dir / "simplified_table.tex")
+    generate_domain_shift_csv(metrics, config, output_dir / "domain_shift_analysis.csv")
+
+    logger.info("Generated comprehensive tables:")
+    logger.info("  - comprehensive_results.csv")
+    logger.info("  - comprehensive_table.tex")
+    logger.info("  - simplified_table.tex")
+    logger.info("  - domain_shift_analysis.csv")
+
+
 def run_analysis(config_path: str, glioma_features_path: Optional[str] = None) -> None:
     """Run statistical analysis."""
     logger.info("=" * 60)
-    logger.info("STEP 7: Statistical Analysis")
+    logger.info("STEP 9: Statistical Analysis")
     logger.info("=" * 60)
 
     from .analyze_results import analyze_results
@@ -235,8 +336,21 @@ def run_all(
     domain_features: bool = False,
     n_glioma: int = 200,
     n_meningioma: int = 200,
+    glioma_test_size: int = 200,
 ) -> None:
-    """Run complete ablation pipeline."""
+    """Run complete ablation pipeline.
+
+    Pipeline Steps:
+    1. Generate data splits
+    2. Train all conditions
+    3. Extract features
+    4. Extract domain features (optional)
+    5. Evaluate probes
+    6. Evaluate test Dice (BraTS-MEN + BraTS-GLI)
+    7. Generate visualizations
+    8. Generate comprehensive tables
+    9. Statistical analysis
+    """
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
@@ -259,6 +373,7 @@ def run_all(
         logger.info("  - Single-scale features")
     if domain_features:
         logger.info("  - Domain shift analysis (Glioma vs Meningioma)")
+    logger.info(f"  - Glioma test size: {glioma_test_size}")
     logger.info("")
 
     set_seed(config["experiment"]["seed"])
@@ -292,10 +407,16 @@ def run_all(
     # Step 5: Evaluate probes
     run_probes_all(config_path, device)
 
-    # Step 6: Generate visualizations
+    # Step 6: Evaluate test Dice (BraTS-MEN + BraTS-GLI)
+    run_test_dice_all(config_path, device, glioma_test_size)
+
+    # Step 7: Generate visualizations
     run_visualize(config_path)
 
-    # Step 7: Statistical analysis
+    # Step 8: Generate comprehensive tables
+    run_generate_tables(config_path)
+
+    # Step 9: Statistical analysis
     run_analysis(config_path, glioma_features_path)
 
     logger.info("")
@@ -303,6 +424,13 @@ def run_all(
     logger.info("PIPELINE COMPLETE")
     logger.info("=" * 60)
     logger.info(f"Results: {config['experiment']['output_dir']}")
+    logger.info("")
+    logger.info("Key output files:")
+    logger.info("  - comprehensive_results.csv (all metrics)")
+    logger.info("  - comprehensive_table.tex (LaTeX table)")
+    logger.info("  - test_dice_summary.csv (Dice scores)")
+    logger.info("  - domain_shift_analysis.csv (MEN vs GLI)")
+    logger.info("  - analysis_report.md (full report)")
 
 
 def main():
@@ -373,6 +501,21 @@ def main():
     # visualize
     subparsers.add_parser("visualize", help="Generate visualizations")
 
+    # test-dice
+    dice_parser = subparsers.add_parser("test-dice", help="Evaluate test Dice for one condition")
+    dice_parser.add_argument("--condition", type=str, required=True)
+    dice_parser.add_argument("--dataset", type=str, default="men", choices=["men", "gli"])
+    dice_parser.add_argument("--device", type=str, default="cuda")
+
+    # test-dice-all
+    dice_all_parser = subparsers.add_parser("test-dice-all", help="Evaluate test Dice for all conditions")
+    dice_all_parser.add_argument("--device", type=str, default="cuda")
+    dice_all_parser.add_argument("--glioma-test-size", type=int, default=200,
+                                 help="Number of glioma subjects for test")
+
+    # generate-tables
+    subparsers.add_parser("generate-tables", help="Generate comprehensive result tables")
+
     # analyze
     analyze_parser = subparsers.add_parser("analyze", help="Run statistical analysis")
     analyze_parser.add_argument("--glioma-features", type=str, default=None,
@@ -388,6 +531,8 @@ def main():
                                help="Extract domain features for UMAP")
     run_all_parser.add_argument("--n-glioma", type=int, default=200)
     run_all_parser.add_argument("--n-meningioma", type=int, default=200)
+    run_all_parser.add_argument("--glioma-test-size", type=int, default=200,
+                               help="Number of glioma subjects for test Dice")
 
     args = parser.parse_args()
 
@@ -412,12 +557,19 @@ def main():
         run_probes_all(args.config, args.device)
     elif args.command == "visualize":
         run_visualize(args.config)
+    elif args.command == "test-dice":
+        run_test_dice(args.config, args.condition, args.dataset, args.device)
+    elif args.command == "test-dice-all":
+        run_test_dice_all(args.config, args.device, args.glioma_test_size)
+    elif args.command == "generate-tables":
+        run_generate_tables(args.config)
     elif args.command == "analyze":
         run_analysis(args.config, args.glioma_features)
     elif args.command == "run-all":
         run_all(
             args.config, args.max_epochs, args.device, args.skip_training,
-            args.domain_features, args.n_glioma, args.n_meningioma
+            args.domain_features, args.n_glioma, args.n_meningioma,
+            args.glioma_test_size
         )
     else:
         parser.print_help()

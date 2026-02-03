@@ -102,11 +102,15 @@ class LoRASwinViT(nn.Module):
         alpha: LoRA alpha for scaling. Effective scale is alpha/rank.
         dropout: LoRA dropout rate.
         target_stages: Which stages to apply LoRA to (default: [3, 4]).
+        use_dora: If True, use DoRA (Weight-Decomposed LoRA) instead of
+            standard LoRA. DoRA decomposes weights into magnitude and
+            direction, often providing better performance. Default: False.
 
     Attributes:
         model: The PEFT-wrapped model.
         rank: LoRA rank.
         alpha: LoRA alpha.
+        use_dora: Whether DoRA is enabled.
         lora_config: The LoRA configuration.
 
     Example:
@@ -114,6 +118,13 @@ class LoRASwinViT(nn.Module):
         >>> lora_encoder = LoRASwinViT(base_encoder, rank=8, alpha=16)
         >>> print(f"Trainable params: {lora_encoder.get_trainable_params():,}")
         Trainable params: 150,528
+
+        >>> # Using DoRA for potentially better performance
+        >>> dora_encoder = LoRASwinViT(base_encoder, rank=8, use_dora=True)
+
+    References:
+        - DoRA: Liu et al. (2024). "DoRA: Weight-Decomposed Low-Rank Adaptation."
+          arXiv:2402.09353.
     """
 
     def __init__(
@@ -123,11 +134,13 @@ class LoRASwinViT(nn.Module):
         alpha: int = 16,
         dropout: float = 0.1,
         target_stages: List[int] = [3, 4],
+        use_dora: bool = False,
     ):
         super().__init__()
         self.rank = rank
         self.alpha = alpha
         self.target_stages = target_stages
+        self.use_dora = use_dora
 
         # Freeze all base parameters first
         for param in base_encoder.parameters():
@@ -143,7 +156,10 @@ class LoRASwinViT(nn.Module):
                 "Check model structure."
             )
 
-        # Create LoRA config
+        # Create LoRA config (with optional DoRA)
+        adapter_type = "DoRA" if use_dora else "LoRA"
+        logger.info(f"Using {adapter_type} with rank={rank}, alpha={alpha}")
+
         self.lora_config = LoraConfig(
             r=rank,
             lora_alpha=alpha,
@@ -151,6 +167,7 @@ class LoRASwinViT(nn.Module):
             lora_dropout=dropout,
             bias="none",
             modules_to_save=None,
+            use_dora=use_dora,
         )
 
         # Apply PEFT
@@ -304,12 +321,13 @@ def create_lora_encoder(
     dropout: float = 0.1,
     target_stages: List[int] = [3, 4],
     device: str = "cuda",
+    use_dora: bool = False,
 ) -> LoRASwinViT:
     """Factory function to create LoRA-adapted encoder.
 
     Convenience function that:
     1. Loads base encoder from checkpoint
-    2. Adds LoRA adapters
+    2. Adds LoRA (or DoRA) adapters
     3. Returns ready-to-train LoRASwinViT
 
     Args:
@@ -319,6 +337,8 @@ def create_lora_encoder(
         dropout: LoRA dropout.
         target_stages: Which stages to apply LoRA to.
         device: Device to load model to.
+        use_dora: If True, use DoRA (Weight-Decomposed LoRA) instead of
+            standard LoRA. DoRA often provides better performance.
 
     Returns:
         LoRASwinViT instance ready for training.
@@ -334,6 +354,14 @@ def create_lora_encoder(
         ...     [p for p in lora_encoder.parameters() if p.requires_grad],
         ...     lr=1e-4,
         ... )
+
+        >>> # Using DoRA
+        >>> dora_encoder = create_lora_encoder(
+        ...     checkpoint_path="checkpoints/fold_0.pt",
+        ...     rank=8,
+        ...     use_dora=True,
+        ...     device="cuda",
+        ... )
     """
     # Load base encoder (unfrozen initially, LoRASwinViT will freeze)
     base_encoder = load_swin_encoder(
@@ -348,6 +376,7 @@ def create_lora_encoder(
         alpha=alpha,
         dropout=dropout,
         target_stages=target_stages,
+        use_dora=use_dora,
     )
 
 

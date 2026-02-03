@@ -99,7 +99,7 @@ class AuxiliarySemanticHeads(nn.Module):
         input_dim: int = 768,
         volume_dim: int = 4,
         location_dim: int = 3,
-        shape_dim: int = 6,
+        shape_dim: int = 3,
         hidden_dim: int = 256,
         dropout: float = 0.1,
     ):
@@ -286,7 +286,7 @@ class MultiScaleSemanticHeads(nn.Module):
         stage_dims: Tuple[int, ...] = (192, 384, 768),  # layers2, 3, 4
         volume_dim: int = 4,
         location_dim: int = 3,
-        shape_dim: int = 6,
+        shape_dim: int = 3,
         hidden_dim: int = 256,
     ):
         super().__init__()

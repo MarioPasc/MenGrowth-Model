@@ -306,7 +306,7 @@ class EnhancedSemanticProbes:
     FEATURE_DIMS = {
         'volume': 4,
         'location': 3,
-        'shape': 6,
+        'shape': 3,  # Reduced from 6: only sphericity, surface_area_log, solidity
     }
 
     def __init__(

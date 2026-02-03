@@ -39,6 +39,70 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Completely Frozen Model (Original BrainSegFounder, test only)
+# =============================================================================
+
+class CompletelyFrozenModel(nn.Module):
+    """Original BrainSegFounder without ANY training.
+
+    This model loads the full SwinUNETR with pretrained weights and freezes
+    ALL parameters (encoder + decoder). It is set to eval mode permanently.
+
+    Used for the baseline_frozen condition to measure the original model's
+    performance on the test set without any adaptation.
+
+    Args:
+        full_model: Full SwinUNETR model with pretrained weights.
+        out_channels: Number of segmentation classes.
+
+    Example:
+        >>> from growth.models.encoder.swin_loader import load_full_swinunetr
+        >>> full_model = load_full_swinunetr(checkpoint_path, freeze_encoder=True,
+        ...                                   freeze_decoder=True)
+        >>> frozen = CompletelyFrozenModel(full_model)
+        >>> assert frozen.get_trainable_param_count()["total"] == 0
+    """
+
+    def __init__(self, full_model: nn.Module, out_channels: int = 4):
+        super().__init__()
+        self.model = full_model
+        self.out_channels = out_channels
+
+        # Freeze ALL parameters
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        # Set to eval mode permanently
+        self.model.eval()
+        self.eval()
+
+        logger.info("CompletelyFrozenModel: ALL parameters frozen, eval mode locked")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through frozen model."""
+        return self.model(x)
+
+    def get_hidden_states(self, x: torch.Tensor) -> List[torch.Tensor]:
+        """Get encoder hidden states (for feature extraction)."""
+        with torch.no_grad():
+            return self.model.swinViT(x, self.model.normalize)
+
+    def get_trainable_param_count(self) -> dict:
+        """Returns zero for all components (completely frozen)."""
+        return {
+            "encoder": 0,
+            "decoder": 0,
+            "semantic_heads": 0,
+            "total": 0,
+        }
+
+    def train(self, mode: bool = True) -> "CompletelyFrozenModel":
+        """Override train to keep model in eval mode."""
+        # Always stay in eval mode
+        return super().train(False)
+
+
+# =============================================================================
 # Lightweight Decoder Models (v1 approach)
 # =============================================================================
 
@@ -122,7 +186,7 @@ class BaselineOriginalDecoderModel(nn.Module):
                 input_dim=768,
                 volume_dim=4,
                 location_dim=3,
-                shape_dim=6,
+                shape_dim=3,
             )
             logger.info("Baseline model: semantic heads enabled")
         else:
@@ -143,7 +207,7 @@ class BaselineOriginalDecoderModel(nn.Module):
                 - 'features': Bottleneck features [B, 768]
                 - 'pred_volume': Volume predictions [B, 4] (if semantic_heads)
                 - 'pred_location': Location predictions [B, 3] (if semantic_heads)
-                - 'pred_shape': Shape predictions [B, 6] (if semantic_heads)
+                - 'pred_shape': Shape predictions [B, 3] (if semantic_heads)
         """
         # Get logits and bottleneck features
         logits = self.model(x)
@@ -205,6 +269,9 @@ def create_ablation_model(
 
     Args:
         condition_config: Condition config dict with 'lora_rank' and 'lora_alpha' keys.
+            Special keys:
+            - 'skip_training': If True, creates CompletelyFrozenModel for test-only.
+            - 'use_dora': If True, uses DoRA instead of standard LoRA.
         training_config: Training config with 'decoder_type', 'freeze_decoder',
                         'use_semantic_heads' keys.
         checkpoint_path: Path to encoder/model checkpoint.
@@ -225,9 +292,20 @@ def create_ablation_model(
         use_semantic_heads: bool (default: False)
             - Only applies to decoder_type="original" with LoRA
             - If True, adds auxiliary semantic prediction heads
+
+        skip_training: bool (default: False)
+            - If True, creates CompletelyFrozenModel (all params frozen, test only)
     """
     decoder_type = training_config.get("decoder_type", "original")
     lora_rank = condition_config.get("lora_rank")
+    skip_training = condition_config.get("skip_training", False)
+
+    # Special case: completely frozen model (skip_training=True)
+    if skip_training:
+        return _create_completely_frozen_model(
+            checkpoint_path=checkpoint_path,
+            device=device,
+        )
 
     if decoder_type == "lightweight":
         return _create_lightweight_model(
@@ -247,6 +325,37 @@ def create_ablation_model(
             f"Unknown decoder_type: {decoder_type}. "
             f"Must be 'lightweight' or 'original'."
         )
+
+
+def _create_completely_frozen_model(
+    checkpoint_path: str,
+    device: str,
+) -> nn.Module:
+    """Create completely frozen model (original BrainSegFounder, test only).
+
+    Args:
+        checkpoint_path: Path to BrainSegFounder checkpoint.
+        device: Device to load model to.
+
+    Returns:
+        CompletelyFrozenModel with all parameters frozen.
+    """
+    logger.info("Creating COMPLETELY FROZEN model (original BrainSegFounder)")
+    logger.info("  - ALL parameters frozen (encoder + decoder)")
+    logger.info("  - Locked to eval mode")
+    logger.info("  - Test/validation only (no training)")
+
+    full_model = load_full_swinunetr(
+        checkpoint_path,
+        freeze_encoder=True,
+        freeze_decoder=True,
+        out_channels=4,
+        device=device,
+    )
+
+    model = CompletelyFrozenModel(full_model, out_channels=4)
+    model = model.to(device)
+    return model
 
 
 def _create_lightweight_model(
@@ -341,29 +450,33 @@ def _create_original_decoder_model(
             use_semantic_heads=use_semantic_heads,
         )
     else:
-        # LoRA: frozen encoder + LoRA adapters + pretrained original decoder
+        # LoRA/DoRA: frozen encoder + adapters + pretrained original decoder
         lora_alpha = condition_config.get("lora_alpha", lora_rank * 2)
+        use_dora = condition_config.get("use_dora", False)
+        adapter_type = "DoRA" if use_dora else "LoRA"
+
         logger.info(
-            f"Creating LoRA model with ORIGINAL decoder "
+            f"Creating {adapter_type} model with ORIGINAL decoder "
             f"(rank={lora_rank}, pretrained weights)"
         )
 
         # Load full model with pretrained decoder weights
         full_model = load_full_swinunetr(
             checkpoint_path,
-            freeze_encoder=True,   # Will be unfrozen for LoRA layers
+            freeze_encoder=True,   # Will be unfrozen for LoRA/DoRA layers
             freeze_decoder=freeze_decoder,
             out_channels=4,
             device=device,
         )
 
-        # Wrap with LoRA adapters
+        # Wrap with LoRA/DoRA adapters
         lora_encoder = LoRASwinViT(
             full_model,
             rank=lora_rank,
             alpha=lora_alpha,
             dropout=0.1,
             target_stages=[3, 4],
+            use_dora=use_dora,
         )
 
         model = LoRAOriginalDecoderModel(

@@ -60,6 +60,124 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Skip Training (Validation Only)
+# =============================================================================
+
+def _run_validation_only(
+    condition_name: str,
+    config: dict,
+    splits: dict,
+    device: str,
+) -> Dict[str, float]:
+    """Run validation only for skip_training conditions.
+
+    This is used for completely frozen baselines that don't need training.
+    Simply loads the model, runs a single validation pass, and saves metrics.
+
+    Args:
+        condition_name: Name of condition.
+        config: Full experiment configuration.
+        splits: Data splits dictionary.
+        device: Device to run on.
+
+    Returns:
+        Dict with validation metrics.
+    """
+    condition_config = get_condition_config(config, condition_name)
+    training_config = config["training"]
+
+    logger.info("=" * 60)
+    logger.info(f"VALIDATION ONLY MODE (skip_training=True)")
+    logger.info("=" * 60)
+
+    # Set up output directory
+    output_dir = Path(config["experiment"]["output_dir"])
+    condition_dir = output_dir / "conditions" / condition_name
+    condition_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create validation dataloader
+    logger.info("Creating validation dataloader...")
+    _, val_loader = create_dataloaders(
+        data_root=config["paths"]["data_root"],
+        train_ids=splits["lora_train"][:10],  # Minimal train set (not used)
+        val_ids=splits["lora_val"],
+        batch_size=training_config["batch_size"],
+        num_workers=training_config["num_workers"],
+        compute_semantic=False,
+        augment_train=False,
+    )
+
+    # Create model (completely frozen)
+    logger.info("Creating completely frozen model...")
+    model = create_ablation_model(
+        condition_config=condition_config,
+        training_config=training_config,
+        checkpoint_path=config["paths"]["checkpoint"],
+        device=device,
+    )
+
+    # Log parameter counts (should all be 0)
+    param_counts = model.get_trainable_param_count()
+    logger.info(f"Trainable parameters: {param_counts}")
+
+    # Create losses for validation
+    seg_loss_fn = SegmentationLoss(
+        lambda_dice=config["loss"]["lambda_dice"],
+        lambda_ce=config["loss"]["lambda_ce"],
+    )
+    dice_metric = DiceMetric()
+
+    # Run single validation pass
+    logger.info("Running validation pass...")
+    val_metrics = validate(model, val_loader, seg_loss_fn, dice_metric, device)
+
+    logger.info(f"Validation Dice: {val_metrics['dice_mean']:.4f}")
+    logger.info(f"  NCR: {val_metrics['dice_0']:.4f}")
+    logger.info(f"  ED: {val_metrics['dice_1']:.4f}")
+    logger.info(f"  ET: {val_metrics['dice_2']:.4f}")
+
+    # Save summary
+    summary = {
+        "condition": condition_name,
+        "is_baseline": True,
+        "skip_training": True,
+        "param_counts": param_counts,
+        "best_epoch": 0,
+        "best_val_dice": val_metrics["dice_mean"],
+        "total_epochs": 0,
+        "training_time_minutes": 0.0,
+        "decoder_type": training_config.get("decoder_type", "original"),
+    }
+    with open(condition_dir / "training_summary.yaml", "w") as f:
+        yaml.dump(summary, f, default_flow_style=False)
+
+    # Save validation log (single entry)
+    log_path = condition_dir / "training_log.csv"
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "epoch", "train_loss", "train_seg_loss", "train_aux_loss",
+            "val_loss", "val_dice_mean", "val_dice_0", "val_dice_1", "val_dice_2",
+        ])
+        writer.writerow([
+            0, 0.0, 0.0, 0.0,
+            val_metrics["loss"],
+            val_metrics["dice_mean"],
+            val_metrics["dice_0"],
+            val_metrics["dice_1"],
+            val_metrics["dice_2"],
+        ])
+
+    logger.info(f"Saved validation results to {condition_dir}")
+
+    return {
+        "epoch": 0,
+        "train_loss": 0.0,
+        **val_metrics,
+    }
+
+
+# =============================================================================
 # Auxiliary Loss Warmup
 # =============================================================================
 
@@ -584,9 +702,14 @@ def train_condition(
     # Get condition-specific config
     condition_config = get_condition_config(config, condition_name)
     is_baseline = condition_config.get("lora_rank") is None
+    skip_training = condition_config.get("skip_training", False)
 
     logger.info(f"Training condition: {condition_name}")
     logger.info(f"Description: {condition_config.get('description', 'N/A')}")
+
+    # Handle skip_training conditions (completely frozen baseline)
+    if skip_training:
+        return _run_validation_only(condition_name, config, splits, device)
 
     # Get training options
     training_config = config["training"]
@@ -941,8 +1064,7 @@ if __name__ == "__main__":
         "--condition",
         type=str,
         required=True,
-        choices=["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"],
-        help="Condition to train",
+        help="Condition to train (e.g., baseline_frozen, baseline, lora_r2, lora_r4, lora_r8, lora_r16, lora_r32, dora_r4, dora_r8, dora_r16)",
     )
     parser.add_argument(
         "--max-epochs",

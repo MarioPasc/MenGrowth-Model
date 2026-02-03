@@ -349,13 +349,21 @@ def compute_shape_array(
 ) -> np.ndarray:
     """Compute shape features as array.
 
+    Returns the 3 most reliable shape features for regression:
+    - sphericity: Shape compactness (0-1)
+    - surface_area_log: Log-transformed surface area
+    - solidity: Ratio of volume to convex hull (0-1)
+
+    Aspect ratios (aspect_dh, aspect_dw, aspect_hw) are excluded as they
+    showed poor R^2 in ablation experiments due to noise from bounding
+    box estimation on segmentation masks.
+
     Args:
         mask: Segmentation mask [D, H, W]
         spacing: Voxel spacing in mm
 
     Returns:
-        Array of shape [6]: [sphericity, surface_area_log, solidity,
-                            aspect_dh, aspect_dw, aspect_hw]
+        Array of shape [3]: [sphericity, surface_area_log, solidity]
     """
     features = compute_shape_features(mask, spacing)
 
@@ -364,9 +372,6 @@ def compute_shape_array(
             features["sphericity"],
             features["surface_area_log"],
             features["solidity"],
-            features["aspect_dh"],
-            features["aspect_dw"],
-            features["aspect_hw"],
         ],
         dtype=np.float32,
     )
@@ -389,16 +394,18 @@ def extract_semantic_features(
         Dictionary with:
         - 'volume': [4] log-transformed volumes
         - 'location': [3] normalized centroid
-        - 'shape': [6] shape descriptors
-        - 'all': [13] concatenation of all features
+        - 'shape': [3] shape descriptors (sphericity, surface_area_log, solidity)
+        - 'all': [10] concatenation of all features
 
     Example:
         >>> mask = load_segmentation("patient_001.nii.gz")
         >>> features = extract_semantic_features(mask)
         >>> features['volume'].shape
         (4,)
+        >>> features['shape'].shape
+        (3,)
         >>> features['all'].shape
-        (13,)
+        (10,)
     """
     volume = compute_log_volumes(mask, spacing)
     location = compute_centroid(mask, spacing, normalize=True)

@@ -16,15 +16,25 @@ paths:
   # Optional: glioma data for domain shift analysis (required for --domain-features)
   glioma_root: /media/hddb/mario/data/BraTS-GLI-100
 
-# Conservative splits for robust evaluation
+# Updated splits (300/50/150/500)
 data_splits:
-  lora_train: 200      # Train LoRA adaptation
-  lora_val: 100        # Early stopping
-  probe_train: 200     # Train probes (separate from LoRA)
+  lora_train: 300      # Train LoRA adaptation
+  lora_val: 50         # Early stopping
+  probe_train: 150     # Train probes (separate from LoRA)
   test: 500            # Final evaluation
 
 # Experimental conditions
 conditions:
+  # Completely frozen baseline (original BrainSegFounder)
+  - name: baseline_frozen
+    lora_rank: null
+    skip_training: true
+    description: Original BrainSegFounder (completely frozen, test only)
+
+  - name: baseline
+    lora_rank: null
+    description: Frozen encoder + trainable decoder (no adaptation)
+
   - name: lora_r2
     lora_rank: 2
     lora_alpha: 4
@@ -49,10 +59,6 @@ conditions:
     lora_rank: 32
     lora_alpha: 64
     description: LoRA rank 32 (saturation test)
-  
-  - name: baseline
-    lora_rank: null
-    description: Frozen encoder + decoder (no adaptation)
 
 # Training hyperparameters
 training:
@@ -92,12 +98,12 @@ loss:
   lambda_location: 1.0
   lambda_shape: 0.5
 
-# Probe evaluation
+# Probe evaluation (simplified MLP)
 probe:
   alpha_linear: 1.0           # Ridge regularization
   use_mlp_probes: true        # Enable MLP probes
-  alpha_mlp: 1.0e-4           # MLP L2 regularization
-  hidden_sizes: [256, 128]    # MLP hidden layers
+  alpha_mlp: 0.001            # MLP L2 regularization (increased)
+  hidden_sizes: [128]         # Simplified from [256, 128]
   normalize_features: true
   normalize_targets: true     # Normalize targets for stable training
 
