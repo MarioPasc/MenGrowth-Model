@@ -57,6 +57,8 @@ DRY_RUN=false
 START_FROM=1
 GPU_FILTER=""  # Empty means run all, "0" or "1" to filter
 DOMAIN_FEATURES=true
+N_GLIOMA=200
+N_MENINGIOMA=200
 GLIOMA_TEST_SIZE=200
 
 # =============================================================================
@@ -85,6 +87,14 @@ while [[ $# -gt 0 ]]; do
             GLIOMA_TEST_SIZE="$2"
             shift 2
             ;;
+        --n-glioma)
+            N_GLIOMA="$2"
+            shift 2
+            ;;
+        --n-meningioma)
+            N_MENINGIOMA="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -95,7 +105,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --dry-run            Show commands without executing"
             echo "  --start-from N       Start from experiment N (1-4)"
             echo "  --no-domain-features Skip domain feature extraction"
-            echo "  --glioma-test-size N Number of glioma subjects for test (default: 200)"
+            echo "  --n-glioma N         Number of glioma samples for domain UMAP (default: 200)"
+            echo "  --n-meningioma N     Number of meningioma samples for domain UMAP (default: 200)"
+            echo "  --glioma-test-size N Number of glioma subjects for test Dice (default: 200)"
             echo "  -h, --help           Show this help message"
             echo ""
             echo "For parallel execution, open 2 terminals:"
@@ -145,7 +157,7 @@ run_experiment() {
 
     local domain_flag=""
     if [ "$DOMAIN_FEATURES" = true ]; then
-        domain_flag="--domain-features"
+        domain_flag="--domain-features --n-glioma $N_GLIOMA --n-meningioma $N_MENINGIOMA"
     fi
 
     log_header "EXPERIMENT $exp_num: $name (GPU $gpu)"
@@ -210,6 +222,10 @@ echo "Run configuration:"
 echo "  - GPU filter: ${GPU_FILTER:-all}"
 echo "  - Start from: experiment $START_FROM"
 echo "  - Domain features: $DOMAIN_FEATURES"
+if [ "$DOMAIN_FEATURES" = true ]; then
+    echo "    - n_glioma: $N_GLIOMA"
+    echo "    - n_meningioma: $N_MENINGIOMA"
+fi
 echo "  - Glioma test size: $GLIOMA_TEST_SIZE"
 echo "  - Dry run: $DRY_RUN"
 
