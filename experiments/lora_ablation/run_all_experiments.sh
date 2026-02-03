@@ -175,27 +175,50 @@ run_experiment_background() {
 
 log_info "Activating conda environment: $CONDA_ENV"
 
-# Initialize conda for bash
-if [ -f "/home/mariopascual/.conda/etc/profile.d/conda.sh" ]; then
-    source "/home/mariopascual/.conda/etc/profile.d/conda.sh"
-elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/miniconda3/etc/profile.d/conda.sh"
-elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+# Check if already in the correct conda environment
+if [[ "$CONDA_DEFAULT_ENV" == "$CONDA_ENV" ]]; then
+    echo "  [OK] Already in conda environment: $CONDA_ENV"
+elif [[ -n "$CONDA_DEFAULT_ENV" ]]; then
+    # Conda is active but wrong environment - try to switch
+    echo "  Current environment: $CONDA_DEFAULT_ENV"
+    echo "  Switching to: $CONDA_ENV"
+    conda activate "$CONDA_ENV" 2>/dev/null || {
+        echo "ERROR: Failed to activate conda environment: $CONDA_ENV"
+        echo "Please activate it manually: conda activate $CONDA_ENV"
+        exit 1
+    }
 else
-    echo "ERROR: Could not find conda.sh. Make sure conda is installed."
-    exit 1
+    # Conda not active - try to initialize and activate
+    # Try common conda.sh locations
+    for conda_sh in \
+        "/home/mariopascual/miniconda3/etc/profile.d/conda.sh" \
+        "/home/mariopascual/anaconda3/etc/profile.d/conda.sh" \
+        "$HOME/miniconda3/etc/profile.d/conda.sh" \
+        "$HOME/anaconda3/etc/profile.d/conda.sh" \
+        "/opt/conda/etc/profile.d/conda.sh"; do
+        if [ -f "$conda_sh" ]; then
+            source "$conda_sh"
+            break
+        fi
+    done
+
+    # Try to activate
+    if command -v conda &> /dev/null; then
+        conda activate "$CONDA_ENV" 2>/dev/null || {
+            echo "ERROR: Failed to activate conda environment: $CONDA_ENV"
+            echo "Please activate it manually before running this script:"
+            echo "  conda activate $CONDA_ENV"
+            exit 1
+        }
+    else
+        echo "ERROR: Conda not found. Please activate the environment manually:"
+        echo "  conda activate $CONDA_ENV"
+        exit 1
+    fi
 fi
 
-conda activate "$CONDA_ENV"
-
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to activate conda environment: $CONDA_ENV"
-    exit 1
-fi
-
-echo "  [OK] Conda environment activated: $(which python)"
-echo "  [OK] Python version: $(python --version)"
+echo "  [OK] Python: $(which python)"
+echo "  [OK] Version: $(python --version 2>&1)"
 
 # =============================================================================
 # Verify configurations exist
