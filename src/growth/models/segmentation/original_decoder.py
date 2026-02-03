@@ -350,7 +350,7 @@ class LoRAOriginalDecoderModel(nn.Module):
                 input_dim=768,
                 volume_dim=4,
                 location_dim=3,
-                shape_dim=3,
+                shape_dim=6,
             )
         else:
             self.semantic_heads = None
