@@ -45,6 +45,10 @@ CONFIG_LORA_NO_SEMANTIC="$SCRIPT_DIR/config/server/LoRA_no_semantic_heads_icai.y
 CONFIG_DORA_SEMANTIC="$SCRIPT_DIR/config/server/DoRA_semantic_heads_icai.yaml"
 CONFIG_DORA_NO_SEMANTIC="$SCRIPT_DIR/config/server/DoRA_no_semantic_heads_icai.yaml"
 
+# Conda environment
+CONDA_ENV="growth"
+CONDA_PATH="/home/mariopascual/.conda/envs/$CONDA_ENV"
+
 # Default options
 PARALLEL=false
 DRY_RUN=false
@@ -164,6 +168,34 @@ run_experiment_background() {
         echo 0
     fi
 }
+
+# =============================================================================
+# Activate conda environment
+# =============================================================================
+
+log_info "Activating conda environment: $CONDA_ENV"
+
+# Initialize conda for bash
+if [ -f "/home/mariopascual/.conda/etc/profile.d/conda.sh" ]; then
+    source "/home/mariopascual/.conda/etc/profile.d/conda.sh"
+elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+else
+    echo "ERROR: Could not find conda.sh. Make sure conda is installed."
+    exit 1
+fi
+
+conda activate "$CONDA_ENV"
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to activate conda environment: $CONDA_ENV"
+    exit 1
+fi
+
+echo "  [OK] Conda environment activated: $(which python)"
+echo "  [OK] Python version: $(python --version)"
 
 # =============================================================================
 # Verify configurations exist
