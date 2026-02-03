@@ -44,7 +44,7 @@ from tqdm import tqdm
 import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset, create_dataloaders
-from growth.losses.segmentation import SegmentationLoss, DiceMetric
+from growth.losses.segmentation import SegmentationLoss3Ch, DiceMetric3Ch
 from growth.models.segmentation.semantic_heads import AuxiliarySemanticLoss
 from growth.utils.seed import set_seed
 from growth.utils.model_card import LoRAModelCardConfig, model_card_from_training
@@ -121,11 +121,11 @@ def _run_validation_only(
     logger.info(f"Trainable parameters: {param_counts}")
 
     # Create losses for validation
-    seg_loss_fn = SegmentationLoss(
+    seg_loss_fn = SegmentationLoss3Ch(
         lambda_dice=config["loss"]["lambda_dice"],
-        lambda_ce=config["loss"]["lambda_ce"],
+        lambda_bce=config["loss"]["lambda_ce"],  # BCE for 3-channel sigmoid
     )
-    dice_metric = DiceMetric()
+    dice_metric = DiceMetric3Ch()
 
     # Run single validation pass
     logger.info("Running validation pass...")
@@ -786,11 +786,11 @@ def train_condition(
     )
 
     # Create losses
-    seg_loss_fn = SegmentationLoss(
+    seg_loss_fn = SegmentationLoss3Ch(
         lambda_dice=config["loss"]["lambda_dice"],
-        lambda_ce=config["loss"]["lambda_ce"],
+        lambda_bce=config["loss"]["lambda_ce"],  # BCE for 3-channel sigmoid
     )
-    dice_metric = DiceMetric()
+    dice_metric = DiceMetric3Ch()
 
     # Auxiliary semantic loss (if enabled, for original decoder - both baseline and LoRA)
     aux_loss_fn = None

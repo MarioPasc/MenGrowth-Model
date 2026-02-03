@@ -24,8 +24,9 @@ data_splits:
   test: 500            # Final evaluation
 
 # Experimental conditions
+# NOTE: Using 3-channel output with sigmoid activation preserves the FULL pretrained
+# decoder weights from BrainSegFounder, making baseline_frozen evaluation valid.
 conditions:
-  # Completely frozen baseline (original BrainSegFounder)
   - name: baseline_frozen
     lora_rank: null
     skip_training: true

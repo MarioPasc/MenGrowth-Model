@@ -32,7 +32,7 @@ from tqdm import tqdm
 import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset
-from growth.losses.segmentation import DiceMetric
+from growth.losses.segmentation import DiceMetric3Ch
 
 from .model_factory import create_ablation_model, get_condition_config
 
@@ -73,7 +73,7 @@ class TestDiceEvaluator:
         self.device = device
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.dice_metric = DiceMetric()
+        self.dice_metric = DiceMetric3Ch()
 
     def _load_model(
         self,

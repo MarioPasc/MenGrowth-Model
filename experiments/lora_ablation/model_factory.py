@@ -63,7 +63,7 @@ class CompletelyFrozenModel(nn.Module):
         >>> assert frozen.get_trainable_param_count()["total"] == 0
     """
 
-    def __init__(self, full_model: nn.Module, out_channels: int = 4):
+    def __init__(self, full_model: nn.Module, out_channels: int = 3):
         super().__init__()
         self.model = full_model
         self.out_channels = out_channels
@@ -116,7 +116,7 @@ class BaselineSegmentationModel(nn.Module):
     so out_channels must be 4 for proper one-hot encoding in the loss.
     """
 
-    def __init__(self, encoder: nn.Module, out_channels: int = 4):
+    def __init__(self, encoder: nn.Module, out_channels: int = 3):
         super().__init__()
         self.encoder = encoder
         # Freeze encoder
@@ -165,7 +165,7 @@ class BaselineOriginalDecoderModel(nn.Module):
     def __init__(
         self,
         full_model: nn.Module,
-        out_channels: int = 4,
+        out_channels: int = 3,
         use_semantic_heads: bool = False,
     ):
         super().__init__()
@@ -349,11 +349,11 @@ def _create_completely_frozen_model(
         checkpoint_path,
         freeze_encoder=True,
         freeze_decoder=True,
-        out_channels=4,
+        out_channels=3,
         device=device,
     )
 
-    model = CompletelyFrozenModel(full_model, out_channels=4)
+    model = CompletelyFrozenModel(full_model, out_channels=3)
     model = model.to(device)
     return model
 
@@ -441,12 +441,12 @@ def _create_original_decoder_model(
             checkpoint_path,
             freeze_encoder=True,   # Freeze swinViT
             freeze_decoder=False,  # Train decoder (fine-tune for meningiomas)
-            out_channels=4,
+            out_channels=3,
             device=device,
         )
         model = BaselineOriginalDecoderModel(
             full_model,
-            out_channels=4,
+            out_channels=3,
             use_semantic_heads=use_semantic_heads,
         )
     else:
@@ -465,7 +465,7 @@ def _create_original_decoder_model(
             checkpoint_path,
             freeze_encoder=True,   # Will be unfrozen for LoRA/DoRA layers
             freeze_decoder=freeze_decoder,
-            out_channels=4,
+            out_channels=3,
             device=device,
         )
 
@@ -482,7 +482,7 @@ def _create_original_decoder_model(
         model = LoRAOriginalDecoderModel(
             lora_encoder=lora_encoder,
             freeze_decoder=freeze_decoder,
-            out_channels=4,
+            out_channels=3,
             use_semantic_heads=use_semantic_heads,
         )
 

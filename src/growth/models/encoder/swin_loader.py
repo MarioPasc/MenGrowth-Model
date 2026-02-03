@@ -263,7 +263,7 @@ def load_full_swinunetr(
     ckpt_path: Union[str, Path],
     freeze_encoder: bool = True,
     freeze_decoder: bool = False,
-    out_channels: int = 4,
+    out_channels: int = 3,
     use_checkpoint: bool = False,
     device: Union[str, torch.device] = "cpu",
 ) -> SwinUNETR:
@@ -273,11 +273,17 @@ def load_full_swinunetr(
     which is necessary for using the original SwinUNETR decoder architecture
     with pretrained weights (achieving ~0.85+ Dice).
 
+    IMPORTANT: BrainSegFounder was trained with 3 output channels (NCR, ED, ET)
+    using sigmoid activation per channel. Setting out_channels=3 preserves the
+    pretrained output layer. Setting out_channels=4 will REPLACE the output
+    layer with random weights (not recommended for frozen baselines).
+
     Args:
         ckpt_path: Path to BrainSegFounder checkpoint (.pt file).
         freeze_encoder: If True, freeze encoder (swinViT) parameters.
         freeze_decoder: If True, freeze decoder parameters.
-        out_channels: Number of output channels (4 for BraTS-MEN with background).
+        out_channels: Number of output channels. Default 3 to preserve pretrained
+            output layer. Use 3 with sigmoid+BCE loss, not softmax+CE.
         use_checkpoint: If True, use gradient checkpointing (saves memory).
         device: Device to load model to.
 
