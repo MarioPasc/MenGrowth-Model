@@ -209,7 +209,7 @@ class SemanticProbes:
     FEATURE_DIMS = {
         "volume": 4,   # total, NCR, ED, ET
         "location": 3,  # centroid x, y, z
-        "shape": 6,    # sphericity, surface_area, solidity, aspect_dh, aspect_dw, aspect_hw
+        "shape": 3,    # sphericity, surface_area_log, solidity
     }
 
     def __init__(

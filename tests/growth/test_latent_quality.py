@@ -109,7 +109,7 @@ class TestSemanticProbes:
         targets = {
             "volume": np.random.randn(200, 4),
             "location": np.random.randn(200, 3),
-            "shape": np.random.randn(200, 6),
+            "shape": np.random.randn(200, 3),
         }
 
         probes = SemanticProbes(input_dim=768)
@@ -137,7 +137,7 @@ class TestSemanticProbes:
         targets = {
             "volume": np.random.randn(200, 4),
             "location": np.random.randn(200, 3),
-            "shape": np.random.randn(200, 6),
+            "shape": np.random.randn(200, 3),
         }
 
         probes = SemanticProbes(input_dim=768)
@@ -284,7 +284,7 @@ class TestEvaluateLatentQuality:
         semantic_targets = {
             "volume": np.random.randn(100, 4),
             "location": np.random.randn(100, 3),
-            "shape": np.random.randn(100, 6),
+            "shape": np.random.randn(100, 3),
         }
 
         quality = evaluate_latent_quality(features, semantic_targets)
@@ -302,7 +302,7 @@ class TestEvaluateLatentQuality:
         semantic_targets = {
             "volume": np.random.randn(100, 4),
             "location": np.random.randn(100, 3),
-            "shape": np.random.randn(100, 6),
+            "shape": np.random.randn(100, 3),
         }
         partition_indices = {
             "vol": (0, 10),

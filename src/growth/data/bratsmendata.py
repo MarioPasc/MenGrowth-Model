@@ -65,8 +65,8 @@ class BraTSMENDataset(Dataset):
         - 'semantic_features': dict (if compute_semantic=True)
             - 'volume': [4] tensor
             - 'location': [3] tensor
-            - 'shape': [6] tensor
-            - 'all': [13] tensor
+            - 'shape': [3] tensor (sphericity, surface_area_log, solidity)
+            - 'all': [10] tensor
 
     Example:
         >>> dataset = BraTSMENDataset(

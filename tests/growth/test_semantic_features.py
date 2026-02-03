@@ -312,7 +312,7 @@ class TestComputeShapeArray:
 
         shape_arr = compute_shape_array(mask)
 
-        assert shape_arr.shape == (6,)
+        assert shape_arr.shape == (3,)
         assert shape_arr.dtype == np.float32
 
     def test_consistency_with_dict(self):
@@ -352,8 +352,8 @@ class TestExtractSemanticFeatures:
 
         assert features["volume"].shape == (4,)
         assert features["location"].shape == (3,)
-        assert features["shape"].shape == (6,)
-        assert features["all"].shape == (13,)
+        assert features["shape"].shape == (3,)
+        assert features["all"].shape == (10,)
 
     def test_all_is_concatenation(self):
         """'all' should be concatenation of volume, location, shape."""
@@ -380,4 +380,4 @@ class TestExtractSemanticFeatures:
         np.testing.assert_array_almost_equal(features["location"], [0.5, 0.5, 0.5])
 
         # Shape features should handle empty case
-        assert features["shape"].shape == (6,)
+        assert features["shape"].shape == (3,)

@@ -350,7 +350,7 @@ class LoRAOriginalDecoderModel(nn.Module):
                 input_dim=768,
                 volume_dim=4,
                 location_dim=3,
-                shape_dim=6,
+                shape_dim=3,
             )
         else:
             self.semantic_heads = None
@@ -397,7 +397,7 @@ class LoRAOriginalDecoderModel(nn.Module):
                 - 'features': Bottleneck features [B, 768]
                 - 'pred_volume': Volume predictions [B, 4] (if semantic_heads)
                 - 'pred_location': Location predictions [B, 3] (if semantic_heads)
-                - 'pred_shape': Shape predictions [B, 6] (if semantic_heads)
+                - 'pred_shape': Shape predictions [B, 3] (if semantic_heads)
         """
         # Get hidden states
         hidden_states = self.lora_encoder.get_hidden_states(x)

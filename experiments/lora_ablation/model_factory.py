@@ -186,7 +186,7 @@ class BaselineOriginalDecoderModel(nn.Module):
                 input_dim=768,
                 volume_dim=4,
                 location_dim=3,
-                shape_dim=6,
+                shape_dim=3,
             )
             logger.info("Baseline model: semantic heads enabled")
         else:

@@ -299,7 +299,7 @@ def plot_predictions_scatter(
     dim_labels = {
         'volume': ['Total', 'NCR', 'ED', 'ET'],
         'location': ['X', 'Y', 'Z'],
-        'shape': ['Sphericity', 'Surface', 'Solidity', 'AR_dh', 'AR_dw', 'AR_hw'],
+        'shape': ['Sphericity', 'Surface', 'Solidity'],
     }
 
     for col, feat in enumerate(feature_types):

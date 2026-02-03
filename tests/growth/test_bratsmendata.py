@@ -143,8 +143,8 @@ class TestBraTSMENDataset:
 
         assert features["volume"].shape == torch.Size([4])
         assert features["location"].shape == torch.Size([3])
-        assert features["shape"].shape == torch.Size([6])
-        assert features["all"].shape == torch.Size([13])
+        assert features["shape"].shape == torch.Size([3])
+        assert features["all"].shape == torch.Size([10])
 
     def test_semantic_caching(self, real_data_path: Path, tmp_path: Path):
         """Test semantic features are cached."""

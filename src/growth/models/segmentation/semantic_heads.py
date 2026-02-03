@@ -82,7 +82,7 @@ class AuxiliarySemanticHeads(nn.Module):
         input_dim: Dimension of bottleneck features (768).
         volume_dim: Number of volume features (4: total, NCR, ED, ET).
         location_dim: Number of location features (3: x, y, z).
-        shape_dim: Number of shape features (6).
+        shape_dim: Number of shape features (3: sphericity, surface_area_log, solidity).
         hidden_dim: Hidden dimension for MLPs.
         dropout: Dropout rate.
 
@@ -99,7 +99,7 @@ class AuxiliarySemanticHeads(nn.Module):
         input_dim: int = 768,
         volume_dim: int = 4,
         location_dim: int = 3,
-        shape_dim: int = 6,
+        shape_dim: int = 3,
         hidden_dim: int = 256,
         dropout: float = 0.1,
     ):
@@ -178,8 +178,8 @@ class AuxiliarySemanticLoss(nn.Module):
         self.register_buffer('volume_std', torch.ones(4))
         self.register_buffer('location_mean', torch.zeros(3))
         self.register_buffer('location_std', torch.ones(3))
-        self.register_buffer('shape_mean', torch.zeros(6))
-        self.register_buffer('shape_std', torch.ones(6))
+        self.register_buffer('shape_mean', torch.zeros(3))
+        self.register_buffer('shape_std', torch.ones(3))
 
         self._stats_initialized = False
 
@@ -196,7 +196,7 @@ class AuxiliarySemanticLoss(nn.Module):
         Args:
             volume: Volume targets [N, 4].
             location: Location targets [N, 3].
-            shape: Shape targets [N, 6].
+            shape: Shape targets [N, 3].
         """
         self.volume_mean = volume.mean(dim=0)
         self.volume_std = volume.std(dim=0).clamp(min=1e-6)
@@ -286,7 +286,7 @@ class MultiScaleSemanticHeads(nn.Module):
         stage_dims: Tuple[int, ...] = (192, 384, 768),  # layers2, 3, 4
         volume_dim: int = 4,
         location_dim: int = 3,
-        shape_dim: int = 6,
+        shape_dim: int = 3,
         hidden_dim: int = 256,
     ):
         super().__init__()
