@@ -10,11 +10,14 @@
 #   4. DoRA + no semantic heads (GPU 1)
 #
 # Usage:
-#   # Run all experiments sequentially (one at a time)
+#   # Run all 4 experiments sequentially (one at a time)
 #   ./run_all_experiments.sh
 #
-#   # Run 2 experiments in parallel (one per GPU)
-#   ./run_all_experiments.sh --parallel
+#   # Run only GPU 0 jobs (experiments 1 and 3) - use in Terminal 1
+#   ./run_all_experiments.sh --gpu 0
+#
+#   # Run only GPU 1 jobs (experiments 2 and 4) - use in Terminal 2
+#   ./run_all_experiments.sh --gpu 1
 #
 #   # Dry run (show commands without executing)
 #   ./run_all_experiments.sh --dry-run
@@ -22,12 +25,13 @@
 #   # Resume from a specific experiment (1-4)
 #   ./run_all_experiments.sh --start-from 3
 #
-#   # Skip domain features extraction
-#   ./run_all_experiments.sh --no-domain-features
+# For parallel execution across 2 GPUs, open 2 terminals:
+#   Terminal 1: ./run_all_experiments.sh --gpu 0
+#   Terminal 2: ./run_all_experiments.sh --gpu 1
 #
 # Requirements:
-#   - CUDA GPUs 0 and 1 available
-#   - Python environment with all dependencies
+#   - Conda environment 'growth' activated
+#   - CUDA GPUs available
 #   - Data paths configured in YAML files
 
 set -e  # Exit on error
@@ -47,12 +51,11 @@ CONFIG_DORA_NO_SEMANTIC="$SCRIPT_DIR/config/server/DoRA_no_semantic_heads_icai.y
 
 # Conda environment
 CONDA_ENV="growth"
-CONDA_PATH="/home/mariopascual/.conda/envs/$CONDA_ENV"
 
 # Default options
-PARALLEL=false
 DRY_RUN=false
 START_FROM=1
+GPU_FILTER=""  # Empty means run all, "0" or "1" to filter
 DOMAIN_FEATURES=true
 GLIOMA_TEST_SIZE=200
 
@@ -62,9 +65,9 @@ GLIOMA_TEST_SIZE=200
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --parallel)
-            PARALLEL=true
-            shift
+        --gpu)
+            GPU_FILTER="$2"
+            shift 2
             ;;
         --dry-run)
             DRY_RUN=true
@@ -86,12 +89,18 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --parallel           Run 2 experiments in parallel (one per GPU)"
+            echo "  --gpu N              Only run experiments for GPU N (0 or 1)"
+            echo "                       GPU 0: LoRA+semantic, DoRA+semantic"
+            echo "                       GPU 1: LoRA+no-semantic, DoRA+no-semantic"
             echo "  --dry-run            Show commands without executing"
             echo "  --start-from N       Start from experiment N (1-4)"
             echo "  --no-domain-features Skip domain feature extraction"
             echo "  --glioma-test-size N Number of glioma subjects for test (default: 200)"
             echo "  -h, --help           Show this help message"
+            echo ""
+            echo "For parallel execution, open 2 terminals:"
+            echo "  Terminal 1: $0 --gpu 0"
+            echo "  Terminal 2: $0 --gpu 1"
             exit 0
             ;;
         *)
@@ -105,127 +114,82 @@ done
 # Helper functions
 # =============================================================================
 
-log_info() {
+log_header() {
     echo ""
     echo "========================================================================"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     echo "========================================================================"
 }
 
+log_info() {
+    echo "[$(date '+%H:%M:%S')] $1"
+}
+
 run_experiment() {
     local gpu=$1
     local config=$2
     local name=$3
+    local exp_num=$4
+
+    # Check GPU filter
+    if [ -n "$GPU_FILTER" ] && [ "$GPU_FILTER" != "$gpu" ]; then
+        log_info "Skipping experiment $exp_num ($name) - GPU $gpu not selected"
+        return 0
+    fi
+
+    # Check start-from
+    if [ "$exp_num" -lt "$START_FROM" ]; then
+        log_info "Skipping experiment $exp_num ($name) - before start-from"
+        return 0
+    fi
 
     local domain_flag=""
     if [ "$DOMAIN_FEATURES" = true ]; then
         domain_flag="--domain-features"
     fi
 
-    local cmd="CUDA_VISIBLE_DEVICES=$gpu python -m experiments.lora_ablation.run_ablation \\
-        --config $config \\
-        run-all $domain_flag --glioma-test-size $GLIOMA_TEST_SIZE"
-
-    log_info "Running: $name (GPU $gpu)"
+    log_header "EXPERIMENT $exp_num: $name (GPU $gpu)"
     echo "Config: $config"
     echo ""
+
+    local cmd="CUDA_VISIBLE_DEVICES=$gpu python -m experiments.lora_ablation.run_ablation \
+        --config $config \
+        run-all $domain_flag --glioma-test-size $GLIOMA_TEST_SIZE"
+
     echo "Command:"
-    echo "$cmd"
+    echo "  $cmd"
     echo ""
 
-    if [ "$DRY_RUN" = false ]; then
-        eval "$cmd"
-    else
+    if [ "$DRY_RUN" = true ]; then
         echo "[DRY RUN] Would execute the above command"
-    fi
-}
-
-run_experiment_background() {
-    local gpu=$1
-    local config=$2
-    local name=$3
-    local logfile=$4
-
-    local domain_flag=""
-    if [ "$DOMAIN_FEATURES" = true ]; then
-        domain_flag="--domain-features"
+        echo ""
+        return 0
     fi
 
-    local cmd="CUDA_VISIBLE_DEVICES=$gpu python -m experiments.lora_ablation.run_ablation \\
-        --config $config \\
-        run-all $domain_flag --glioma-test-size $GLIOMA_TEST_SIZE"
+    # Run with live output
+    eval "$cmd"
 
-    log_info "Starting: $name (GPU $gpu) [background]"
-    echo "Config: $config"
-    echo "Log: $logfile"
-    echo ""
-
-    if [ "$DRY_RUN" = false ]; then
-        eval "$cmd" > "$logfile" 2>&1 &
-        echo $!  # Return PID
-    else
-        echo "[DRY RUN] Would execute in background"
-        echo 0
-    fi
+    log_info "Experiment $exp_num complete!"
 }
 
 # =============================================================================
-# Activate conda environment
+# Verify environment and configurations
 # =============================================================================
 
-log_info "Activating conda environment: $CONDA_ENV"
+log_header "Setup"
 
-# Check if already in the correct conda environment
-if [[ "$CONDA_DEFAULT_ENV" == "$CONDA_ENV" ]]; then
-    echo "  [OK] Already in conda environment: $CONDA_ENV"
-elif [[ -n "$CONDA_DEFAULT_ENV" ]]; then
-    # Conda is active but wrong environment - try to switch
-    echo "  Current environment: $CONDA_DEFAULT_ENV"
-    echo "  Switching to: $CONDA_ENV"
-    conda activate "$CONDA_ENV" 2>/dev/null || {
-        echo "ERROR: Failed to activate conda environment: $CONDA_ENV"
-        echo "Please activate it manually: conda activate $CONDA_ENV"
-        exit 1
-    }
-else
-    # Conda not active - try to initialize and activate
-    # Try common conda.sh locations
-    for conda_sh in \
-        "/home/mariopascual/miniconda3/etc/profile.d/conda.sh" \
-        "/home/mariopascual/anaconda3/etc/profile.d/conda.sh" \
-        "$HOME/miniconda3/etc/profile.d/conda.sh" \
-        "$HOME/anaconda3/etc/profile.d/conda.sh" \
-        "/opt/conda/etc/profile.d/conda.sh"; do
-        if [ -f "$conda_sh" ]; then
-            source "$conda_sh"
-            break
-        fi
-    done
-
-    # Try to activate
-    if command -v conda &> /dev/null; then
-        conda activate "$CONDA_ENV" 2>/dev/null || {
-            echo "ERROR: Failed to activate conda environment: $CONDA_ENV"
-            echo "Please activate it manually before running this script:"
-            echo "  conda activate $CONDA_ENV"
-            exit 1
-        }
-    else
-        echo "ERROR: Conda not found. Please activate the environment manually:"
-        echo "  conda activate $CONDA_ENV"
-        exit 1
-    fi
+# Check conda environment
+if [[ "$CONDA_DEFAULT_ENV" != "$CONDA_ENV" ]]; then
+    echo "WARNING: Not in '$CONDA_ENV' conda environment (current: $CONDA_DEFAULT_ENV)"
+    echo "Please run: conda activate $CONDA_ENV"
+    exit 1
 fi
+echo "[OK] Conda environment: $CONDA_ENV"
+echo "[OK] Python: $(which python)"
 
-echo "  [OK] Python: $(which python)"
-echo "  [OK] Version: $(python --version 2>&1)"
-
-# =============================================================================
-# Verify configurations exist
-# =============================================================================
-
-log_info "Verifying configuration files"
-
+# Verify config files
+echo ""
+echo "Verifying configuration files..."
 for config in "$CONFIG_LORA_SEMANTIC" "$CONFIG_LORA_NO_SEMANTIC" \
               "$CONFIG_DORA_SEMANTIC" "$CONFIG_DORA_NO_SEMANTIC"; do
     if [ ! -f "$config" ]; then
@@ -240,118 +204,56 @@ cd "$PROJECT_ROOT"
 echo ""
 echo "Working directory: $(pwd)"
 
+# Show run configuration
+echo ""
+echo "Run configuration:"
+echo "  - GPU filter: ${GPU_FILTER:-all}"
+echo "  - Start from: experiment $START_FROM"
+echo "  - Domain features: $DOMAIN_FEATURES"
+echo "  - Glioma test size: $GLIOMA_TEST_SIZE"
+echo "  - Dry run: $DRY_RUN"
+
 # =============================================================================
 # Run experiments
 # =============================================================================
 
-if [ "$PARALLEL" = true ]; then
-    # =======================================================================
-    # PARALLEL MODE: Run 2 experiments at a time (one per GPU)
-    # =======================================================================
+# Experiment 1: LoRA + Semantic Heads (GPU 0)
+run_experiment 0 "$CONFIG_LORA_SEMANTIC" "LoRA + Semantic Heads" 1
 
-    LOG_DIR="$PROJECT_ROOT/logs/lora_ablation_$(date '+%Y%m%d_%H%M%S')"
-    mkdir -p "$LOG_DIR"
+# Experiment 2: LoRA + No Semantic Heads (GPU 1)
+run_experiment 1 "$CONFIG_LORA_NO_SEMANTIC" "LoRA + No Semantic Heads" 2
 
-    # Batch 1: LoRA semantic (GPU 0) + LoRA no-semantic (GPU 1)
-    if [ "$START_FROM" -le 2 ]; then
-        log_info "BATCH 1: LoRA experiments (parallel on GPUs 0 and 1)"
+# Experiment 3: DoRA + Semantic Heads (GPU 0)
+run_experiment 0 "$CONFIG_DORA_SEMANTIC" "DoRA + Semantic Heads" 3
 
-        if [ "$START_FROM" -le 1 ]; then
-            PID1=$(run_experiment_background 0 "$CONFIG_LORA_SEMANTIC" "LoRA + Semantic Heads" "$LOG_DIR/lora_semantic.log")
-        fi
-
-        if [ "$START_FROM" -le 2 ]; then
-            PID2=$(run_experiment_background 1 "$CONFIG_LORA_NO_SEMANTIC" "LoRA + No Semantic Heads" "$LOG_DIR/lora_no_semantic.log")
-        fi
-
-        if [ "$DRY_RUN" = false ]; then
-            echo "Waiting for batch 1 to complete..."
-            echo "  - LoRA + Semantic Heads (PID: $PID1)"
-            echo "  - LoRA + No Semantic Heads (PID: $PID2)"
-            echo ""
-            echo "Monitor logs with:"
-            echo "  tail -f $LOG_DIR/lora_semantic.log"
-            echo "  tail -f $LOG_DIR/lora_no_semantic.log"
-            echo ""
-
-            wait $PID1 $PID2
-            echo "Batch 1 complete."
-        fi
-    fi
-
-    # Batch 2: DoRA semantic (GPU 0) + DoRA no-semantic (GPU 1)
-    if [ "$START_FROM" -le 4 ]; then
-        log_info "BATCH 2: DoRA experiments (parallel on GPUs 0 and 1)"
-
-        if [ "$START_FROM" -le 3 ]; then
-            PID3=$(run_experiment_background 0 "$CONFIG_DORA_SEMANTIC" "DoRA + Semantic Heads" "$LOG_DIR/dora_semantic.log")
-        fi
-
-        if [ "$START_FROM" -le 4 ]; then
-            PID4=$(run_experiment_background 1 "$CONFIG_DORA_NO_SEMANTIC" "DoRA + No Semantic Heads" "$LOG_DIR/dora_no_semantic.log")
-        fi
-
-        if [ "$DRY_RUN" = false ]; then
-            echo "Waiting for batch 2 to complete..."
-            echo "  - DoRA + Semantic Heads (PID: $PID3)"
-            echo "  - DoRA + No Semantic Heads (PID: $PID4)"
-            echo ""
-
-            wait $PID3 $PID4
-            echo "Batch 2 complete."
-        fi
-    fi
-
-else
-    # =======================================================================
-    # SEQUENTIAL MODE: Run experiments one at a time
-    # =======================================================================
-
-    # Experiment 1: LoRA + Semantic Heads (GPU 0)
-    if [ "$START_FROM" -le 1 ]; then
-        run_experiment 0 "$CONFIG_LORA_SEMANTIC" "LoRA + Semantic Heads"
-    fi
-
-    # Experiment 2: LoRA + No Semantic Heads (GPU 1)
-    if [ "$START_FROM" -le 2 ]; then
-        run_experiment 1 "$CONFIG_LORA_NO_SEMANTIC" "LoRA + No Semantic Heads"
-    fi
-
-    # Experiment 3: DoRA + Semantic Heads (GPU 0)
-    if [ "$START_FROM" -le 3 ]; then
-        run_experiment 0 "$CONFIG_DORA_SEMANTIC" "DoRA + Semantic Heads"
-    fi
-
-    # Experiment 4: DoRA + No Semantic Heads (GPU 1)
-    if [ "$START_FROM" -le 4 ]; then
-        run_experiment 1 "$CONFIG_DORA_NO_SEMANTIC" "DoRA + No Semantic Heads"
-    fi
-fi
+# Experiment 4: DoRA + No Semantic Heads (GPU 1)
+run_experiment 1 "$CONFIG_DORA_NO_SEMANTIC" "DoRA + No Semantic Heads" 4
 
 # =============================================================================
 # Summary
 # =============================================================================
 
-log_info "ALL EXPERIMENTS COMPLETE"
+log_header "COMPLETE"
 
-echo ""
-echo "Results are saved in the following directories:"
-echo "  1. LoRA + Semantic:    See output_dir in $CONFIG_LORA_SEMANTIC"
-echo "  2. LoRA + No Semantic: See output_dir in $CONFIG_LORA_NO_SEMANTIC"
-echo "  3. DoRA + Semantic:    See output_dir in $CONFIG_DORA_SEMANTIC"
-echo "  4. DoRA + No Semantic: See output_dir in $CONFIG_DORA_NO_SEMANTIC"
-echo ""
-echo "Key output files per experiment:"
-echo "  - comprehensive_results.csv (all metrics)"
-echo "  - comprehensive_table.tex (LaTeX table)"
-echo "  - test_dice_summary.csv (Dice scores)"
-echo "  - domain_shift_analysis.csv (MEN vs GLI)"
-echo ""
-
-if [ "$PARALLEL" = true ] && [ "$DRY_RUN" = false ]; then
-    echo "Log files:"
-    echo "  - $LOG_DIR/lora_semantic.log"
-    echo "  - $LOG_DIR/lora_no_semantic.log"
-    echo "  - $LOG_DIR/dora_semantic.log"
-    echo "  - $LOG_DIR/dora_no_semantic.log"
+if [ -n "$GPU_FILTER" ]; then
+    echo "Completed all experiments for GPU $GPU_FILTER"
+else
+    echo "Completed all experiments"
 fi
+
+echo ""
+echo "Results directories:"
+if [ -z "$GPU_FILTER" ] || [ "$GPU_FILTER" = "0" ]; then
+    echo "  - LoRA + Semantic:  /media/hddb/mario/results/growth/lora_ablation_semantic_heads/"
+    echo "  - DoRA + Semantic:  /media/hddb/mario/results/growth/dora_ablation_semantic_heads/"
+fi
+if [ -z "$GPU_FILTER" ] || [ "$GPU_FILTER" = "1" ]; then
+    echo "  - LoRA + No Semantic: /media/hddb/mario/results/growth/lora_ablation_no_semantic_heads/"
+    echo "  - DoRA + No Semantic: /media/hddb/mario/results/growth/dora_ablation_no_semantic_heads/"
+fi
+
+echo ""
+echo "Key output files:"
+echo "  - comprehensive_results.csv"
+echo "  - test_dice_summary.csv"
+echo "  - comprehensive_table.tex"
