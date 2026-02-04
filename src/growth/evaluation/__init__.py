@@ -20,6 +20,13 @@ from .latent_quality import (
     compute_dcor_matrix,
     compute_variance_per_dim,
     evaluate_latent_quality,
+    # Domain shift metrics
+    compute_effective_rank,
+    compute_mmd,
+    compute_domain_classifier_accuracy,
+    compute_proxy_a_distance,
+    DomainShiftMetrics,
+    compute_domain_shift_metrics,
 )
 
 from .enhanced_probes import (
@@ -43,6 +50,13 @@ __all__ = [
     "compute_dcor_matrix",
     "compute_variance_per_dim",
     "evaluate_latent_quality",
+    # Domain shift metrics
+    "compute_effective_rank",
+    "compute_mmd",
+    "compute_domain_classifier_accuracy",
+    "compute_proxy_a_distance",
+    "DomainShiftMetrics",
+    "compute_domain_shift_metrics",
     # Enhanced probes
     "EnhancedProbeResults",
     "EnhancedLinearProbe",

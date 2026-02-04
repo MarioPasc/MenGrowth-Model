@@ -475,6 +475,197 @@ def compute_variance_per_dim(features: np.ndarray) -> np.ndarray:
     return features.var(axis=0)
 
 
+def compute_effective_rank(features: np.ndarray) -> float:
+    """Compute effective rank of feature matrix.
+
+    Effective rank measures how many dimensions are actively used.
+    Based on the entropy of normalized singular values.
+
+    A higher effective rank indicates better use of the feature space.
+
+    Args:
+        features: Feature array [N, D].
+
+    Returns:
+        Effective rank in [1, min(N, D)].
+    """
+    # Center features
+    features_centered = features - features.mean(axis=0)
+
+    # SVD
+    _, s, _ = np.linalg.svd(features_centered, full_matrices=False)
+
+    # Normalize singular values to probabilities
+    s_norm = s / s.sum()
+
+    # Remove zeros to avoid log(0)
+    s_norm = s_norm[s_norm > 1e-10]
+
+    # Entropy
+    entropy = -np.sum(s_norm * np.log(s_norm))
+
+    # Effective rank = exp(entropy)
+    return float(np.exp(entropy))
+
+
+def compute_mmd(
+    X: np.ndarray,
+    Y: np.ndarray,
+    kernel: str = "rbf",
+    gamma: Optional[float] = None,
+) -> float:
+    """Compute Maximum Mean Discrepancy between two distributions.
+
+    MMD measures the distance between distributions in a reproducing kernel
+    Hilbert space. Lower MMD indicates more similar distributions.
+
+    Args:
+        X: First sample [N1, D].
+        Y: Second sample [N2, D].
+        kernel: Kernel type ("rbf" or "linear").
+        gamma: RBF kernel bandwidth. If None, uses median heuristic.
+
+    Returns:
+        MMD² value (unbiased estimator).
+    """
+    from scipy.spatial.distance import cdist
+
+    n, m = len(X), len(Y)
+
+    if kernel == "linear":
+        # Linear kernel: K(x, y) = x^T y
+        K_XX = X @ X.T
+        K_YY = Y @ Y.T
+        K_XY = X @ Y.T
+    else:
+        # RBF kernel with median heuristic for bandwidth
+        if gamma is None:
+            # Median heuristic
+            XY = np.vstack([X, Y])
+            dists = cdist(XY, XY, "sqeuclidean")
+            median_dist = np.median(dists[dists > 0])
+            gamma = 1.0 / median_dist if median_dist > 0 else 1.0
+
+        K_XX = np.exp(-gamma * cdist(X, X, "sqeuclidean"))
+        K_YY = np.exp(-gamma * cdist(Y, Y, "sqeuclidean"))
+        K_XY = np.exp(-gamma * cdist(X, Y, "sqeuclidean"))
+
+    # Unbiased MMD² estimator
+    # MMD² = E[K(X,X')] + E[K(Y,Y')] - 2*E[K(X,Y)]
+    mmd2 = (
+        (K_XX.sum() - np.trace(K_XX)) / (n * (n - 1))
+        + (K_YY.sum() - np.trace(K_YY)) / (m * (m - 1))
+        - 2 * K_XY.mean()
+    )
+
+    return max(0.0, float(mmd2))  # Clamp to non-negative
+
+
+def compute_domain_classifier_accuracy(
+    source_features: np.ndarray,
+    target_features: np.ndarray,
+    n_splits: int = 5,
+) -> float:
+    """Train domain classifier and return accuracy.
+
+    Lower accuracy indicates more domain-invariant features.
+    Random chance = 0.5 for balanced binary classification.
+
+    Args:
+        source_features: Source domain features [N1, D].
+        target_features: Target domain features [N2, D].
+        n_splits: Number of cross-validation splits.
+
+    Returns:
+        Mean cross-validated accuracy in [0, 1].
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import cross_val_score
+    from sklearn.preprocessing import StandardScaler
+
+    # Prepare data
+    X = np.vstack([source_features, target_features])
+    y = np.array([0] * len(source_features) + [1] * len(target_features))
+
+    # Standardize
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+
+    # Train domain classifier
+    clf = LogisticRegression(max_iter=1000, random_state=42)
+    scores = cross_val_score(clf, X, y, cv=n_splits)
+
+    return float(scores.mean())
+
+
+def compute_proxy_a_distance(
+    source_features: np.ndarray,
+    target_features: np.ndarray,
+) -> float:
+    """Compute Proxy A-distance between domains.
+
+    PAD = 2 * (1 - 2 * error), where error is domain classifier error.
+    PAD ∈ [0, 2], with 0 meaning indistinguishable domains.
+
+    Args:
+        source_features: Source domain features.
+        target_features: Target domain features.
+
+    Returns:
+        Proxy A-distance in [0, 2].
+    """
+    acc = compute_domain_classifier_accuracy(source_features, target_features)
+    error = 1.0 - acc
+    return 2.0 * (1.0 - 2.0 * error)
+
+
+@dataclass
+class DomainShiftMetrics:
+    """Metrics for evaluating domain shift."""
+
+    mmd: float
+    domain_classifier_accuracy: float
+    proxy_a_distance: float
+    source_effective_rank: float
+    target_effective_rank: float
+
+
+def compute_domain_shift_metrics(
+    source_features: np.ndarray,
+    target_features: np.ndarray,
+    max_samples: int = 500,
+) -> DomainShiftMetrics:
+    """Compute comprehensive domain shift metrics.
+
+    Args:
+        source_features: Source domain features [N1, D].
+        target_features: Target domain features [N2, D].
+        max_samples: Maximum samples per domain (for speed).
+
+    Returns:
+        DomainShiftMetrics with all metrics.
+    """
+    # Subsample if needed
+    if len(source_features) > max_samples:
+        idx = np.random.choice(len(source_features), max_samples, replace=False)
+        source_features = source_features[idx]
+    if len(target_features) > max_samples:
+        idx = np.random.choice(len(target_features), max_samples, replace=False)
+        target_features = target_features[idx]
+
+    return DomainShiftMetrics(
+        mmd=compute_mmd(source_features, target_features),
+        domain_classifier_accuracy=compute_domain_classifier_accuracy(
+            source_features, target_features
+        ),
+        proxy_a_distance=compute_proxy_a_distance(
+            source_features, target_features
+        ),
+        source_effective_rank=compute_effective_rank(source_features),
+        target_effective_rank=compute_effective_rank(target_features),
+    )
+
+
 def evaluate_latent_quality(
     features: np.ndarray,
     semantic_targets: Dict[str, np.ndarray],

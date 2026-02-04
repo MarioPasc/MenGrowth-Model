@@ -28,10 +28,20 @@ try:
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     from matplotlib.colors import Normalize
-    import seaborn as sns
-    HAS_PLOTTING = True
+    HAS_MATPLOTLIB = True
 except ImportError:
-    HAS_PLOTTING = False
+    HAS_MATPLOTLIB = False
+    plt = None
+
+try:
+    import seaborn as sns
+    HAS_SEABORN = True
+except ImportError:
+    HAS_SEABORN = False
+    sns = None
+
+# Plotting available only if matplotlib is present
+HAS_PLOTTING = HAS_MATPLOTLIB
 
 try:
     from umap import UMAP
@@ -42,19 +52,20 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Publication-quality settings
-plt.rcParams.update({
-    'font.size': 10,
-    'axes.labelsize': 11,
-    'axes.titlesize': 12,
-    'xtick.labelsize': 9,
-    'ytick.labelsize': 9,
-    'legend.fontsize': 9,
-    'figure.dpi': 150,
-    'savefig.dpi': 300,
-    'savefig.bbox': 'tight',
-    'savefig.pad_inches': 0.1,
-})
+# Publication-quality settings (only apply if matplotlib is available)
+if HAS_MATPLOTLIB:
+    plt.rcParams.update({
+        'font.size': 10,
+        'axes.labelsize': 11,
+        'axes.titlesize': 12,
+        'xtick.labelsize': 9,
+        'ytick.labelsize': 9,
+        'legend.fontsize': 9,
+        'figure.dpi': 150,
+        'savefig.dpi': 300,
+        'savefig.bbox': 'tight',
+        'savefig.pad_inches': 0.1,
+    })
 
 # Color palette for conditions
 CONDITION_COLORS = {

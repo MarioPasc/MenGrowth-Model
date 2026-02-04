@@ -35,14 +35,17 @@ Usage:
 import argparse
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
 from growth.utils.seed import set_seed
+from growth.utils.reproducibility import save_reproducibility_artifacts
 
 from .data_splits import main as generate_splits, load_splits
+from .domain_visualizations import generate_domain_figures
 from .extract_domain_features import extract_domain_features
 from .evaluate_dice import TestDiceEvaluator, generate_dice_summary, save_dice_results
 from .generate_tables import (
@@ -53,11 +56,71 @@ from .generate_tables import (
     generate_domain_shift_csv,
 )
 
+# Initial basic logging (will be enhanced with file handler after config is loaded)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Track whether file logging has been set up
+_file_logging_initialized = False
+
+
+def setup_file_logging(output_dir: Path, log_filename: Optional[str] = None) -> Path:
+    """Set up file logging in addition to console logging.
+
+    Creates a log file in the experiment output directory that captures all
+    log messages. The file is useful for post-hoc debugging with grep:
+        grep -E "WARNING|ERROR" experiment.log
+
+    Args:
+        output_dir: Experiment output directory.
+        log_filename: Optional custom log filename. Defaults to timestamped name.
+
+    Returns:
+        Path to the log file.
+    """
+    global _file_logging_initialized
+
+    if _file_logging_initialized:
+        return output_dir / "experiment.log"  # Already set up
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate log filename with timestamp if not provided
+    if log_filename is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"experiment_{timestamp}.log"
+
+    log_path = output_dir / log_filename
+
+    # Create file handler
+    file_handler = logging.FileHandler(log_path, mode='w')
+    file_handler.setLevel(logging.DEBUG)  # Capture all levels to file
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    ))
+
+    # Add file handler to root logger (captures all loggers)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_handler)
+
+    # Also create a symlink to latest log for convenience
+    latest_link = output_dir / "experiment.log"
+    try:
+        if latest_link.is_symlink() or latest_link.exists():
+            latest_link.unlink()
+        latest_link.symlink_to(log_path.name)
+    except OSError:
+        pass  # Symlinks may not work on all systems
+
+    _file_logging_initialized = True
+
+    logger.info(f"Logging to file: {log_path}")
+    logger.info(f"To check for errors: grep -E 'WARNING|ERROR' {log_path}")
+
+    return log_path
 
 
 def run_splits(config_path: str) -> None:
@@ -354,7 +417,12 @@ def run_all(
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
+    output_dir = Path(config["experiment"]["output_dir"])
     decoder_type = config.get("training", {}).get("decoder_type", "original")
+
+    # Save reproducibility artifacts
+    logger.info("Saving reproducibility artifacts...")
+    save_reproducibility_artifacts(output_dir, config, config_path)
 
     logger.info("=" * 60)
     logger.info("LORA ABLATION PIPELINE")
@@ -413,6 +481,11 @@ def run_all(
     # Step 7: Generate visualizations
     run_visualize(config_path)
 
+    # Step 7b: Generate domain shift visualizations
+    if domain_features:
+        logger.info("Generating domain shift visualizations...")
+        generate_domain_figures(output_dir, config)
+
     # Step 8: Generate comprehensive tables
     run_generate_tables(config_path)
 
@@ -426,10 +499,12 @@ def run_all(
     logger.info(f"Results: {config['experiment']['output_dir']}")
     logger.info("")
     logger.info("Key output files:")
+    logger.info("  - meta/run_manifest.json (reproducibility)")
     logger.info("  - comprehensive_results.csv (all metrics)")
     logger.info("  - comprehensive_table.tex (LaTeX table)")
     logger.info("  - test_dice_summary.csv (Dice scores)")
     logger.info("  - domain_shift_analysis.csv (MEN vs GLI)")
+    logger.info("  - figures/domain_*.png (domain shift plots)")
     logger.info("  - analysis_report.md (full report)")
 
 
@@ -535,6 +610,17 @@ def main():
                                help="Number of glioma subjects for test Dice")
 
     args = parser.parse_args()
+
+    # Set up file logging if a command is specified
+    if args.command and args.command != "help":
+        try:
+            with open(args.config) as f:
+                config = yaml.safe_load(f)
+            output_dir = Path(config["experiment"]["output_dir"])
+            setup_file_logging(output_dir)
+        except Exception as e:
+            # Don't fail if logging setup fails, just warn
+            logger.warning(f"Could not set up file logging: {e}")
 
     if args.command == "splits":
         run_splits(args.config)

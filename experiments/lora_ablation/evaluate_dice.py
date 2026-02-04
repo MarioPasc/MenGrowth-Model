@@ -119,9 +119,8 @@ class TestDiceEvaluator:
     ) -> DataLoader:
         """Create data loader for evaluation."""
         dataset = BraTSMENDataset(
-            root=data_root,
+            data_root=data_root,
             subject_ids=subject_ids,
-            augment=False,
             compute_semantic=False,
         )
 

@@ -178,13 +178,21 @@ class BraTSMENDataset(Dataset):
     def _get_semantic_features(
         self, subject_id: str, seg_path: Path
     ) -> Dict[str, np.ndarray]:
-        """Get semantic features, using cache if available."""
+        """Get semantic features, using cache if available.
+
+        Validates cached features match expected dimensions. If cache is stale
+        (e.g., from older code version with different feature count), it will
+        be recomputed and updated.
+        """
         if self.cache_semantic:
             cache_path = self._get_cache_path(subject_id)
 
             if cache_path.exists():
-                # Load from cache
-                return self._load_cached_features(cache_path)
+                # Load from cache (returns None if format is stale)
+                cached = self._load_cached_features(cache_path)
+                if cached is not None:
+                    return cached
+                # Stale cache - fall through to recompute
 
         # Compute features from original segmentation (not transformed)
         # This ensures features are computed on native resolution
@@ -196,7 +204,7 @@ class BraTSMENDataset(Dataset):
 
         features = extract_semantic_features(seg_data, spacing)
 
-        # Cache if enabled
+        # Cache if enabled (overwrites stale cache)
         if self.cache_semantic:
             self._save_cached_features(cache_path, features)
 
@@ -206,14 +214,34 @@ class BraTSMENDataset(Dataset):
         """Get cache file path for a subject."""
         return self.cache_dir / f"{subject_id}_semantic.npz"
 
-    def _load_cached_features(self, cache_path: Path) -> Dict[str, np.ndarray]:
-        """Load features from cache file."""
+    def _load_cached_features(self, cache_path: Path) -> Optional[Dict[str, np.ndarray]]:
+        """Load features from cache file.
+
+        Returns:
+            Feature dict if cache is valid, None if cache format is stale.
+        """
         data = np.load(cache_path)
+
+        # Validate expected dimensions (catches stale cache from older code versions)
+        # Expected: volume=[4], location=[3], shape=[3], all=[10]
+        volume = data["volume"]
+        location = data["location"]
+        shape = data["shape"]
+        all_feats = data["all"]
+
+        if volume.shape != (4,) or location.shape != (3,) or shape.shape != (3,) or all_feats.shape != (10,):
+            logger.warning(
+                f"Stale cache detected at {cache_path}: "
+                f"shape={shape.shape} (expected (3,)), all={all_feats.shape} (expected (10,)). "
+                f"Recomputing features."
+            )
+            return None
+
         return {
-            "volume": data["volume"],
-            "location": data["location"],
-            "shape": data["shape"],
-            "all": data["all"],
+            "volume": volume,
+            "location": location,
+            "shape": shape,
+            "all": all_feats,
         }
 
     def _save_cached_features(

@@ -89,6 +89,43 @@ base_encoder = load_swin_encoder("path/to/checkpoint.pt")
 model = PeftModel.from_pretrained(base_encoder, "path/to/adapter")
 ```
 
+## Evaluation Metrics
+
+### Segmentation Performance
+
+| Dataset | Mean Dice | NCR | ED | ET |
+|---------|-----------|-----|----|----|
+| BraTS-MEN (in-domain) | {{ dice_men_mean }} | {{ dice_men_ncr }} | {{ dice_men_ed }} | {{ dice_men_et }} |
+{% if dice_gli_mean != "N/A" %}| BraTS-GLI (out-of-domain) | {{ dice_gli_mean }} | {{ dice_gli_ncr }} | {{ dice_gli_ed }} | {{ dice_gli_et }} |{% endif %}
+
+{% if dice_gli_mean != "N/A" %}
+### Domain Generalization
+
+| Metric | Value |
+|--------|-------|
+| Retention Ratio (GLI/MEN) | {{ retention_ratio }} |
+| Performance Drop | {{ performance_drop }} |
+{% endif %}
+
+### Feature Quality (Linear Probes)
+
+| Target | R² |
+|--------|-----|
+| Volume | {{ r2_volume }} |
+| Location | {{ r2_location }} |
+| Shape | {{ r2_shape }} |
+| **Mean** | {{ r2_mean }} |
+
+{% if effective_rank != "N/A" %}
+### Latent Space Quality
+
+| Metric | Value |
+|--------|-------|
+| Effective Rank | {{ effective_rank }} |
+| Variance (mean) | {{ variance_mean }} |
+| Low-variance dims | {{ low_variance_dims }} |
+{% endif %}
+
 ### Framework Versions
 """
 
@@ -123,10 +160,37 @@ class LoRAModelCardConfig:
     weight_decay: float = 1e-5
     patience: int = 10
 
-    # Metrics
+    # Training metrics
     best_val_dice: str = "N/A"
     final_train_loss: str = "N/A"
     training_time: str = "N/A"
+
+    # Segmentation metrics (in-domain)
+    dice_men_mean: str = "N/A"
+    dice_men_ncr: str = "N/A"
+    dice_men_ed: str = "N/A"
+    dice_men_et: str = "N/A"
+
+    # Segmentation metrics (out-of-domain)
+    dice_gli_mean: str = "N/A"
+    dice_gli_ncr: str = "N/A"
+    dice_gli_ed: str = "N/A"
+    dice_gli_et: str = "N/A"
+
+    # Domain generalization
+    retention_ratio: str = "N/A"
+    performance_drop: str = "N/A"
+
+    # Feature quality (linear probes)
+    r2_volume: str = "N/A"
+    r2_location: str = "N/A"
+    r2_shape: str = "N/A"
+    r2_mean: str = "N/A"
+
+    # Latent space quality
+    effective_rank: str = "N/A"
+    variance_mean: str = "N/A"
+    low_variance_dims: str = "N/A"
 
     # Hardware/reproducibility
     device: str = "N/A"
@@ -181,6 +245,28 @@ def create_lora_model_card(config: LoRAModelCardConfig) -> ModelCard:
         best_val_dice=config.best_val_dice,
         final_train_loss=config.final_train_loss,
         training_time=config.training_time,
+        # Segmentation metrics
+        dice_men_mean=config.dice_men_mean,
+        dice_men_ncr=config.dice_men_ncr,
+        dice_men_ed=config.dice_men_ed,
+        dice_men_et=config.dice_men_et,
+        dice_gli_mean=config.dice_gli_mean,
+        dice_gli_ncr=config.dice_gli_ncr,
+        dice_gli_ed=config.dice_gli_ed,
+        dice_gli_et=config.dice_gli_et,
+        # Domain generalization
+        retention_ratio=config.retention_ratio,
+        performance_drop=config.performance_drop,
+        # Feature quality
+        r2_volume=config.r2_volume,
+        r2_location=config.r2_location,
+        r2_shape=config.r2_shape,
+        r2_mean=config.r2_mean,
+        # Latent space quality
+        effective_rank=config.effective_rank,
+        variance_mean=config.variance_mean,
+        low_variance_dims=config.low_variance_dims,
+        # Hardware/reproducibility
         device=config.device,
         seed=config.seed,
         git_commit=config.git_commit,

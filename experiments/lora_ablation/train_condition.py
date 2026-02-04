@@ -30,6 +30,7 @@ import argparse
 import csv
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -57,6 +58,64 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Track whether file logging has been set up
+_file_logging_initialized = False
+
+
+def setup_file_logging(output_dir: Path, condition_name: str) -> Path:
+    """Set up file logging for a training condition.
+
+    Creates a log file in the condition directory that captures all
+    log messages. Useful for post-hoc debugging:
+        grep -E "WARNING|ERROR" experiment.log
+
+    Args:
+        output_dir: Experiment output directory.
+        condition_name: Name of the condition being trained.
+
+    Returns:
+        Path to the log file.
+    """
+    global _file_logging_initialized
+
+    if _file_logging_initialized:
+        return output_dir / "conditions" / condition_name / "train.log"
+
+    condition_dir = output_dir / "conditions" / condition_name
+    condition_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate log filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"train_{timestamp}.log"
+    log_path = condition_dir / log_filename
+
+    # Create file handler
+    file_handler = logging.FileHandler(log_path, mode='w')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    ))
+
+    # Add file handler to root logger
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_handler)
+
+    # Create symlink to latest log
+    latest_link = condition_dir / "train.log"
+    try:
+        if latest_link.is_symlink() or latest_link.exists():
+            latest_link.unlink()
+        latest_link.symlink_to(log_path.name)
+    except OSError:
+        pass
+
+    _file_logging_initialized = True
+
+    logger.info(f"Logging to file: {log_path}")
+    logger.info(f"To check for errors: grep -E 'WARNING|ERROR' {log_path}")
+
+    return log_path
 
 
 # =============================================================================
@@ -1028,6 +1087,10 @@ def main(
     # Load configuration
     with open(config_path) as f:
         config = yaml.safe_load(f)
+
+    # Set up file logging
+    output_dir = Path(config["experiment"]["output_dir"])
+    setup_file_logging(output_dir, condition)
 
     # Set seed
     set_seed(config["experiment"]["seed"])

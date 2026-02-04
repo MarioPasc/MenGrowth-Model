@@ -574,7 +574,7 @@ def analyze_results(
     if not skip_figures:
         logger.info("\n[3/5] Generating publication figures...")
         try:
-            generate_all_figures(config_path, glioma_features_path)
+            generate_all_figures(config)
         except Exception as e:
             logger.warning(f"Figure generation failed: {e}")
     else:
