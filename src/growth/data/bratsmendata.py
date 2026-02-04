@@ -465,3 +465,57 @@ def load_splits(path: Union[str, Path]) -> Dict[str, List[str]]:
     """
     with open(path) as f:
         return json.load(f)
+
+
+def split_subjects_multi(
+    subject_ids: List[str],
+    split_sizes: Dict[str, int],
+    seed: int = 42,
+) -> Dict[str, List[str]]:
+    """Split subjects into multiple non-overlapping sets.
+
+    Generic n-way splitting function that supports any number of splits
+    with configurable sizes.
+
+    Args:
+        subject_ids: List of all subject IDs.
+        split_sizes: Dict mapping split names to sizes.
+            Example: {"train": 200, "val": 100, "test": 500}
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Dict mapping split names to subject ID lists.
+
+    Raises:
+        ValueError: If total requested size exceeds available subjects.
+
+    Example:
+        >>> all_ids = BraTSMENDataset.get_all_subject_ids(data_root)
+        >>> splits = split_subjects_multi(
+        ...     all_ids,
+        ...     {"lora_train": 400, "lora_val": 100, "probe_train": 200, "test": 300},
+        ...     seed=42,
+        ... )
+        >>> len(splits["lora_train"])
+        400
+    """
+    total_needed = sum(split_sizes.values())
+    if total_needed > len(subject_ids):
+        raise ValueError(
+            f"Requested {total_needed} subjects but only {len(subject_ids)} available"
+        )
+
+    # Deterministic shuffle
+    rng = np.random.RandomState(seed)
+    shuffled = list(subject_ids)
+    rng.shuffle(shuffled)
+
+    # Split sequentially
+    idx = 0
+    splits = {}
+
+    for split_name, size in split_sizes.items():
+        splits[split_name] = shuffled[idx : idx + size]
+        idx += size
+
+    return splits

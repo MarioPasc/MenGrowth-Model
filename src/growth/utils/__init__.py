@@ -2,7 +2,12 @@
 """
 Utility functions for the growth forecasting pipeline.
 
-Common utilities for config, checkpoints, logging, and reproducibility.
+Common utilities for config, checkpoints, logging, reproducibility, and paths.
+
+Components:
+- model_card: Model card generation for LoRA checkpoints
+- reproducibility: Git info, environment capture, run manifests
+- paths: Structured output directory management
 """
 
 from growth.utils.model_card import (
@@ -18,6 +23,16 @@ from growth.utils.reproducibility import (
     save_reproducibility_artifacts,
     check_reproducibility,
 )
+from growth.utils.paths import (
+    ComponentPaths,
+    ConditionPaths,
+    ExperimentPaths,
+    OutputPathManager,
+    get_path_manager,
+    get_features_path,
+    get_targets_path,
+    get_metrics_path,
+)
 
 __all__ = [
     # Model cards
@@ -31,4 +46,13 @@ __all__ = [
     "create_run_manifest",
     "save_reproducibility_artifacts",
     "check_reproducibility",
+    # Paths
+    "ComponentPaths",
+    "ConditionPaths",
+    "ExperimentPaths",
+    "OutputPathManager",
+    "get_path_manager",
+    "get_features_path",
+    "get_targets_path",
+    "get_metrics_path",
 ]

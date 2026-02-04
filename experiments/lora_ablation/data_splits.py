@@ -21,7 +21,7 @@ from typing import Dict, List
 import numpy as np
 import yaml
 
-from growth.data.bratsmendata import BraTSMENDataset, save_splits
+from growth.data.bratsmendata import BraTSMENDataset, save_splits, split_subjects_multi
 from growth.utils.seed import set_seed
 
 logging.basicConfig(
@@ -41,6 +41,9 @@ def split_subjects_four_way(
 ) -> Dict[str, List[str]]:
     """Split subjects into four non-overlapping sets.
 
+    This is a convenience wrapper around split_subjects_multi() for the
+    four-way split pattern used in LoRA ablation experiments.
+
     Args:
         subject_ids: List of all subject IDs.
         lora_train_size: Number of subjects for LoRA training.
@@ -55,33 +58,16 @@ def split_subjects_four_way(
     Raises:
         ValueError: If total size exceeds available subjects.
     """
-    total_needed = lora_train_size + lora_val_size + probe_train_size + test_size
-    if total_needed > len(subject_ids):
-        raise ValueError(
-            f"Requested {total_needed} subjects but only {len(subject_ids)} available"
-        )
-
-    # Deterministic shuffle
-    rng = np.random.RandomState(seed)
-    shuffled = list(subject_ids)
-    rng.shuffle(shuffled)
-
-    # Split sequentially
-    idx = 0
-    splits = {}
-
-    splits["lora_train"] = shuffled[idx:idx + lora_train_size]
-    idx += lora_train_size
-
-    splits["lora_val"] = shuffled[idx:idx + lora_val_size]
-    idx += lora_val_size
-
-    splits["probe_train"] = shuffled[idx:idx + probe_train_size]
-    idx += probe_train_size
-
-    splits["test"] = shuffled[idx:idx + test_size]
-
-    return splits
+    return split_subjects_multi(
+        subject_ids=subject_ids,
+        split_sizes={
+            "lora_train": lora_train_size,
+            "lora_val": lora_val_size,
+            "probe_train": probe_train_size,
+            "test": test_size,
+        },
+        seed=seed,
+    )
 
 
 def main(config_path: str, force: bool = False) -> Dict[str, List[str]]:

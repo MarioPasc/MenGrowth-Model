@@ -24,48 +24,45 @@ import numpy as np
 import torch
 import yaml
 
-try:
+# Import reusable visualization functions from growth library
+from growth.evaluation.visualization import (
+    set_publication_style,
+    save_figure,
+    plot_umap,
+    plot_variance_spectrum,
+    plot_prediction_scatter,
+    plot_r2_comparison,
+    plot_correlation_matrix,
+    HAS_MATPLOTLIB,
+    HAS_SEABORN,
+    HAS_UMAP,
+)
+
+# Re-export for backward compatibility
+HAS_PLOTTING = HAS_MATPLOTLIB
+
+# Conditional imports for this module
+if HAS_MATPLOTLIB:
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     from matplotlib.colors import Normalize
-    HAS_MATPLOTLIB = True
-except ImportError:
-    HAS_MATPLOTLIB = False
+else:
     plt = None
 
-try:
+if HAS_SEABORN:
     import seaborn as sns
-    HAS_SEABORN = True
-except ImportError:
-    HAS_SEABORN = False
+else:
     sns = None
 
-# Plotting available only if matplotlib is present
-HAS_PLOTTING = HAS_MATPLOTLIB
-
-try:
+if HAS_UMAP:
     from umap import UMAP
-    HAS_UMAP = True
-except ImportError:
-    HAS_UMAP = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Publication-quality settings (only apply if matplotlib is available)
+# Apply publication style
 if HAS_MATPLOTLIB:
-    plt.rcParams.update({
-        'font.size': 10,
-        'axes.labelsize': 11,
-        'axes.titlesize': 12,
-        'xtick.labelsize': 9,
-        'ytick.labelsize': 9,
-        'legend.fontsize': 9,
-        'figure.dpi': 150,
-        'savefig.dpi': 300,
-        'savefig.bbox': 'tight',
-        'savefig.pad_inches': 0.1,
-    })
+    set_publication_style()
 
 # Color palette for conditions
 CONDITION_COLORS = {

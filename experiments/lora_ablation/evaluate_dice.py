@@ -33,6 +33,7 @@ import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset
 from growth.losses.segmentation import DiceMetric3Ch
+from growth.evaluation.segmentation_metrics import SegmentationEvaluator
 
 from .model_factory import create_ablation_model, get_condition_config
 

@@ -7,6 +7,9 @@ Provides metrics for latent quality, ODE predictions, and clinical risk assessme
 Components:
 - latent_quality: Linear probes, R² metrics, correlation analysis
 - enhanced_probes: MLP probes, target normalization, nonlinearity analysis
+- statistics: Bootstrap CIs, effect sizes, statistical tests
+- segmentation_metrics: Dice evaluation utilities
+- visualization: Publication-quality plots
 """
 
 from .latent_quality import (
@@ -38,6 +41,38 @@ from .enhanced_probes import (
     compute_multi_scale_features,
 )
 
+from .statistics import (
+    BootstrapCI,
+    PairedTestResult,
+    StatisticalTest,
+    bootstrap_ci,
+    bootstrap_delta_ci,
+    cohens_d,
+    interpret_cohens_d,
+    paired_statistical_test,
+    holm_bonferroni_correction,
+    bonferroni_correction,
+)
+
+from .segmentation_metrics import (
+    SegmentationEvaluator,
+    compute_dice_coefficient,
+    compute_per_class_dice,
+)
+
+from .visualization import (
+    set_publication_style,
+    save_figure,
+    plot_umap,
+    plot_variance_spectrum,
+    plot_prediction_scatter,
+    plot_r2_comparison,
+    plot_correlation_matrix,
+    HAS_MATPLOTLIB,
+    HAS_SEABORN,
+    HAS_UMAP,
+)
+
 __all__ = [
     # Basic probes
     "ProbeResults",
@@ -64,4 +99,30 @@ __all__ = [
     "EnhancedSemanticProbes",
     "analyze_feature_quality",
     "compute_multi_scale_features",
+    # Statistics
+    "BootstrapCI",
+    "PairedTestResult",
+    "StatisticalTest",
+    "bootstrap_ci",
+    "bootstrap_delta_ci",
+    "cohens_d",
+    "interpret_cohens_d",
+    "paired_statistical_test",
+    "holm_bonferroni_correction",
+    "bonferroni_correction",
+    # Segmentation metrics
+    "SegmentationEvaluator",
+    "compute_dice_coefficient",
+    "compute_per_class_dice",
+    # Visualization
+    "set_publication_style",
+    "save_figure",
+    "plot_umap",
+    "plot_variance_spectrum",
+    "plot_prediction_scatter",
+    "plot_r2_comparison",
+    "plot_correlation_matrix",
+    "HAS_MATPLOTLIB",
+    "HAS_SEABORN",
+    "HAS_UMAP",
 ]

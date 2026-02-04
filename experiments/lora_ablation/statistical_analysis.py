@@ -27,46 +27,27 @@ from scipy import stats
 from sklearn.utils import resample
 import yaml
 
+# Import reusable statistical functions from growth library
+from growth.evaluation.statistics import (
+    BootstrapCI,
+    PairedTestResult,
+    bootstrap_ci,
+    bootstrap_delta_ci,
+    cohens_d,
+    interpret_cohens_d,
+    paired_statistical_test,
+    holm_bonferroni_correction,
+    bonferroni_correction,
+)
+
+# Backward compatibility alias
+StatisticalTest = PairedTestResult
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# Data Classes for Results
-# =============================================================================
-
-@dataclass
-class BootstrapCI:
-    """Bootstrap confidence interval results."""
-    mean: float
-    ci_lower: float
-    ci_upper: float
-    std: float
-    n_bootstrap: int = 1000
-
-    def __str__(self) -> str:
-        return f"{self.mean:.4f} [{self.ci_lower:.4f}, {self.ci_upper:.4f}]"
-
-
-@dataclass
-class StatisticalTest:
-    """Results from a statistical test."""
-    test_name: str
-    statistic: float
-    p_value: float
-    effect_size: float  # Cohen's d
-    effect_interpretation: str
-    significant_005: bool
-    significant_001: bool
-    n1: int
-    n2: int
-
-    def __str__(self) -> str:
-        stars = "***" if self.p_value < 0.001 else "**" if self.p_value < 0.01 else "*" if self.p_value < 0.05 else "n.s."
-        return f"{self.test_name}: p={self.p_value:.4f} {stars}, d={self.effect_size:.3f} ({self.effect_interpretation})"
 
 
 @dataclass
@@ -88,251 +69,6 @@ class AblationStatistics:
     comparisons: Dict[str, Dict[str, ConditionComparison]] = field(default_factory=dict)
     summary_table: pd.DataFrame = None
     recommendation: str = ""
-
-
-# =============================================================================
-# Bootstrap Confidence Intervals
-# =============================================================================
-
-def bootstrap_ci(
-    data: np.ndarray,
-    n_bootstrap: int = 1000,
-    ci: float = 0.95,
-    statistic: str = "mean",
-    random_state: int = 42,
-) -> BootstrapCI:
-    """Compute bootstrap confidence interval.
-
-    Args:
-        data: 1D array of values.
-        n_bootstrap: Number of bootstrap samples.
-        ci: Confidence level (default 0.95 for 95% CI).
-        statistic: "mean" or "median".
-        random_state: Random seed.
-
-    Returns:
-        BootstrapCI with mean, CI bounds, and std.
-    """
-    rng = np.random.RandomState(random_state)
-    n = len(data)
-
-    # Bootstrap sampling
-    bootstrap_stats = []
-    for _ in range(n_bootstrap):
-        sample = resample(data, n_samples=n, random_state=rng.randint(0, 2**31))
-        if statistic == "mean":
-            bootstrap_stats.append(np.mean(sample))
-        else:
-            bootstrap_stats.append(np.median(sample))
-
-    bootstrap_stats = np.array(bootstrap_stats)
-
-    # Compute percentiles for CI
-    alpha = 1 - ci
-    lower_percentile = alpha / 2 * 100
-    upper_percentile = (1 - alpha / 2) * 100
-
-    return BootstrapCI(
-        mean=np.mean(data) if statistic == "mean" else np.median(data),
-        ci_lower=np.percentile(bootstrap_stats, lower_percentile),
-        ci_upper=np.percentile(bootstrap_stats, upper_percentile),
-        std=np.std(bootstrap_stats),
-        n_bootstrap=n_bootstrap,
-    )
-
-
-def bootstrap_delta_ci(
-    data1: np.ndarray,
-    data2: np.ndarray,
-    n_bootstrap: int = 1000,
-    ci: float = 0.95,
-    random_state: int = 42,
-) -> BootstrapCI:
-    """Compute bootstrap CI for the difference between two conditions.
-
-    Uses paired bootstrap (same indices for both).
-
-    Args:
-        data1: Values from condition 1 (e.g., baseline).
-        data2: Values from condition 2 (e.g., LoRA).
-        n_bootstrap: Number of bootstrap samples.
-        ci: Confidence level.
-        random_state: Random seed.
-
-    Returns:
-        BootstrapCI for (data2 - data1).
-    """
-    rng = np.random.RandomState(random_state)
-    n = len(data1)
-    assert len(data2) == n, "Arrays must have same length for paired bootstrap"
-
-    deltas = data2 - data1
-    bootstrap_deltas = []
-
-    for _ in range(n_bootstrap):
-        indices = rng.randint(0, n, size=n)
-        bootstrap_deltas.append(np.mean(deltas[indices]))
-
-    bootstrap_deltas = np.array(bootstrap_deltas)
-
-    alpha = 1 - ci
-    return BootstrapCI(
-        mean=np.mean(deltas),
-        ci_lower=np.percentile(bootstrap_deltas, alpha / 2 * 100),
-        ci_upper=np.percentile(bootstrap_deltas, (1 - alpha / 2) * 100),
-        std=np.std(bootstrap_deltas),
-        n_bootstrap=n_bootstrap,
-    )
-
-
-# =============================================================================
-# Statistical Tests
-# =============================================================================
-
-def cohens_d(group1: np.ndarray, group2: np.ndarray) -> float:
-    """Compute Cohen's d effect size.
-
-    Uses pooled standard deviation.
-
-    Args:
-        group1: Values from group 1.
-        group2: Values from group 2.
-
-    Returns:
-        Cohen's d (positive if group2 > group1).
-    """
-    n1, n2 = len(group1), len(group2)
-    var1, var2 = np.var(group1, ddof=1), np.var(group2, ddof=1)
-
-    # Pooled standard deviation
-    pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
-
-    if pooled_std == 0:
-        return 0.0
-
-    return (np.mean(group2) - np.mean(group1)) / pooled_std
-
-
-def interpret_cohens_d(d: float) -> str:
-    """Interpret Cohen's d effect size magnitude."""
-    d_abs = abs(d)
-    if d_abs < 0.2:
-        return "negligible"
-    elif d_abs < 0.5:
-        return "small"
-    elif d_abs < 0.8:
-        return "medium"
-    else:
-        return "large"
-
-
-def paired_statistical_test(
-    baseline: np.ndarray,
-    condition: np.ndarray,
-    test_type: str = "auto",
-) -> StatisticalTest:
-    """Perform paired statistical test.
-
-    Args:
-        baseline: Values from baseline condition.
-        condition: Values from LoRA condition.
-        test_type: "wilcoxon", "ttest", or "auto" (checks normality).
-
-    Returns:
-        StatisticalTest result.
-    """
-    n = len(baseline)
-    assert len(condition) == n, "Arrays must have same length"
-
-    differences = condition - baseline
-
-    # Check normality for auto selection
-    if test_type == "auto":
-        # Shapiro-Wilk test for normality
-        if n >= 3:
-            _, p_normal = stats.shapiro(differences)
-            test_type = "ttest" if p_normal > 0.05 else "wilcoxon"
-        else:
-            test_type = "wilcoxon"
-
-    # Perform test
-    if test_type == "wilcoxon":
-        # Wilcoxon signed-rank test (non-parametric)
-        try:
-            statistic, p_value = stats.wilcoxon(differences, alternative="two-sided")
-            test_name = "Wilcoxon signed-rank"
-        except ValueError:
-            # All zeros - no difference
-            statistic, p_value = 0.0, 1.0
-            test_name = "Wilcoxon signed-rank"
-    else:
-        # Paired t-test
-        statistic, p_value = stats.ttest_rel(condition, baseline)
-        test_name = "Paired t-test"
-
-    # Effect size
-    d = cohens_d(baseline, condition)
-
-    return StatisticalTest(
-        test_name=test_name,
-        statistic=statistic,
-        p_value=p_value,
-        effect_size=d,
-        effect_interpretation=interpret_cohens_d(d),
-        significant_005=p_value < 0.05,
-        significant_001=p_value < 0.01,
-        n1=n,
-        n2=n,
-    )
-
-
-# =============================================================================
-# Multiple Comparison Correction
-# =============================================================================
-
-def holm_bonferroni_correction(p_values: List[float], alpha: float = 0.05) -> List[Tuple[float, bool]]:
-    """Apply Holm-Bonferroni correction for multiple comparisons.
-
-    Args:
-        p_values: List of p-values.
-        alpha: Family-wise error rate.
-
-    Returns:
-        List of (corrected_p, significant) tuples.
-    """
-    n = len(p_values)
-    sorted_indices = np.argsort(p_values)
-    sorted_p = np.array(p_values)[sorted_indices]
-
-    corrected = []
-    for i, p in enumerate(sorted_p):
-        corrected_p = p * (n - i)
-        corrected.append(min(corrected_p, 1.0))
-
-    # Ensure monotonicity
-    for i in range(1, n):
-        corrected[i] = max(corrected[i], corrected[i-1])
-
-    # Map back to original order
-    result = [None] * n
-    for i, orig_idx in enumerate(sorted_indices):
-        result[orig_idx] = (corrected[i], corrected[i] < alpha)
-
-    return result
-
-
-def bonferroni_correction(p_values: List[float], alpha: float = 0.05) -> List[Tuple[float, bool]]:
-    """Apply Bonferroni correction for multiple comparisons.
-
-    Args:
-        p_values: List of p-values.
-        alpha: Family-wise error rate.
-
-    Returns:
-        List of (corrected_p, significant) tuples.
-    """
-    n = len(p_values)
-    return [(min(p * n, 1.0), p * n < alpha) for p in p_values]
 
 
 # =============================================================================

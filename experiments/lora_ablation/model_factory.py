@@ -2,9 +2,8 @@
 # experiments/lora_ablation/model_factory.py
 """Unified model factory for LoRA ablation experiment.
 
-This module provides a single entry point for creating models with either:
-- Lightweight decoder (SegmentationHead, ~2M params) - original v1 approach
-- Original decoder (SwinUNETR decoder, ~30M params) - v2 approach with pretrained weights
+This module provides experiment-specific model creation by wrapping the
+generic utilities from growth.models.factory.
 
 The decoder type is controlled by the `decoder_type` config parameter:
 - "lightweight": Uses custom SegmentationHead (v1 behavior)
@@ -27,6 +26,13 @@ from typing import Dict, List, Optional, Union
 import torch
 import torch.nn as nn
 
+# Import from growth library
+from growth.models.factory import (
+    FrozenSwinUNETR,
+    FrozenEncoderWithDecoder,
+    create_swinunetr_model,
+    get_model_config,
+)
 from growth.models.encoder.lora_adapter import LoRASwinViT
 from growth.models.encoder.swin_loader import load_swin_encoder, load_full_swinunetr
 from growth.models.segmentation.seg_head import SegmentationHead, LoRASegmentationModel
@@ -34,6 +40,9 @@ from growth.models.segmentation.original_decoder import (
     LoRAOriginalDecoderModel,
     OriginalDecoderSegmentationModel,
 )
+
+# Backward compatibility alias
+CompletelyFrozenModel = FrozenSwinUNETR
 
 logger = logging.getLogger(__name__)
 
