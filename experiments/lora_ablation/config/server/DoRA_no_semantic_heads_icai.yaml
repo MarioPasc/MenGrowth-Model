@@ -89,8 +89,8 @@ training:
   aux_warmup_epochs: 0
   aux_warmup_duration: 0
 
-  # Gradient monitoring
-  enable_gradient_monitoring: false
+  # Gradient monitoring (for diagnostics - always enabled for analysis)
+  enable_gradient_monitoring: true
   gradient_monitor_freq: 50
 
 # Segmentation loss

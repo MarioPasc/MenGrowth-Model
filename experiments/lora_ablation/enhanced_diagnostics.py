@@ -481,9 +481,21 @@ def run_comprehensive_diagnostics(config_path: str) -> Dict[str, pd.DataFrame]:
 
     if 'gradients' in results:
         grad_df = results['gradients']
-        balanced = grad_df[(grad_df['grad_ratio_mean'] > 0.5) & (grad_df['grad_ratio_mean'] < 3)]
-        if not balanced.empty:
-            logger.info(f"\n3. Conditions with balanced gradients: {list(balanced['condition'])}")
+        # Check if gradient data is available (some conditions may not have it)
+        if 'grad_ratio_mean' in grad_df.columns:
+            # Filter out rows with NaN gradient ratios
+            grad_df_valid = grad_df[grad_df['grad_ratio_mean'].notna()]
+            if not grad_df_valid.empty:
+                balanced = grad_df_valid[
+                    (grad_df_valid['grad_ratio_mean'] > 0.5) &
+                    (grad_df_valid['grad_ratio_mean'] < 3)
+                ]
+                if not balanced.empty:
+                    logger.info(f"\n3. Conditions with balanced gradients: {list(balanced['condition'])}")
+                else:
+                    logger.info("\n3. No conditions have balanced gradients (ratio between 0.5x-3x)")
+        else:
+            logger.info("\n3. Gradient monitoring was not enabled during training")
 
     return results
 
