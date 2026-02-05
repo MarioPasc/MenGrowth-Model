@@ -221,8 +221,12 @@ class TestDiceEvaluator:
                 raise ValueError("glioma_root not specified in config paths")
             if subject_ids is None:
                 # Use all available glioma subjects for test
+                # Filter out hidden directories (like .semantic_cache)
                 glioma_path = Path(data_root)
-                subject_ids = sorted([d.name for d in glioma_path.iterdir() if d.is_dir()])
+                subject_ids = sorted([
+                    d.name for d in glioma_path.iterdir()
+                    if d.is_dir() and not d.name.startswith('.')
+                ])
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}. Use 'men' or 'gli'.")
 
@@ -274,7 +278,11 @@ class TestDiceEvaluator:
             glioma_root = config["paths"].get("glioma_root")
             if glioma_root and Path(glioma_root).exists():
                 glioma_path = Path(glioma_root)
-                gli_subjects = sorted([d.name for d in glioma_path.iterdir() if d.is_dir()])
+                # Filter out hidden directories (like .semantic_cache)
+                gli_subjects = sorted([
+                    d.name for d in glioma_path.iterdir()
+                    if d.is_dir() and not d.name.startswith('.')
+                ])
                 if glioma_test_size is not None:
                     gli_subjects = gli_subjects[:glioma_test_size]
                 logger.info(f"Glioma test set: {len(gli_subjects)} subjects")

@@ -391,6 +391,105 @@ def run_analysis(config_path: str, glioma_features_path: Optional[str] = None) -
     analyze_results(config_path, glioma_features_path=glioma_features_path)
 
 
+def run_enhanced_diagnostics(config_path: str) -> None:
+    """Run enhanced diagnostics analysis."""
+    logger.info("=" * 60)
+    logger.info("STEP 10: Enhanced Diagnostics")
+    logger.info("=" * 60)
+
+    from .enhanced_diagnostics import run_comprehensive_diagnostics
+    run_comprehensive_diagnostics(config_path)
+
+
+def run_analyze_only(
+    config_path: str,
+    device: str = "cuda",
+    domain_features: bool = False,
+    n_glioma: int = 200,
+    n_meningioma: int = 200,
+    glioma_test_size: int = 200,
+    skip_extraction: bool = False,
+    skip_probes: bool = False,
+    skip_dice: bool = False,
+) -> None:
+    """Run analysis-only pipeline on already-trained conditions.
+
+    This is useful when training is complete but analysis needs to be re-run
+    with fixes or enhancements. Re-computes features, probes, and tables.
+
+    Pipeline Steps (analysis-only):
+    1. Extract features (unless --skip-extraction)
+    2. Extract domain features (if --domain-features)
+    3. Evaluate probes (unless --skip-probes)
+    4. Evaluate test Dice (unless --skip-dice)
+    5. Generate visualizations
+    6. Generate comprehensive tables
+    7. Statistical analysis with enhanced diagnostics
+    """
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    output_dir = Path(config["experiment"]["output_dir"])
+
+    logger.info("=" * 60)
+    logger.info("ANALYSIS-ONLY PIPELINE")
+    logger.info("=" * 60)
+    logger.info("")
+    logger.info("This mode skips training and re-runs analysis steps.")
+    logger.info(f"  - Skip feature extraction: {skip_extraction}")
+    logger.info(f"  - Skip probe evaluation: {skip_probes}")
+    logger.info(f"  - Skip Dice evaluation: {skip_dice}")
+    logger.info(f"  - Domain features: {domain_features}")
+    logger.info("")
+
+    set_seed(config["experiment"]["seed"])
+
+    # Step 1: Extract features (optional)
+    if not skip_extraction:
+        run_extract_all(config_path, device)
+
+    # Step 2: Extract domain features (optional)
+    glioma_features_path = None
+    if domain_features:
+        run_domain_all(config_path, n_glioma, n_meningioma, device)
+        for cond in config["conditions"]:
+            glioma_path = output_dir / "conditions" / cond["name"] / "features_glioma.pt"
+            if glioma_path.exists():
+                glioma_features_path = str(glioma_path)
+                break
+
+    # Step 3: Evaluate probes (optional)
+    if not skip_probes:
+        run_probes_all(config_path, device)
+
+    # Step 4: Evaluate test Dice (optional)
+    if not skip_dice:
+        run_test_dice_all(config_path, device, glioma_test_size)
+
+    # Step 5: Generate visualizations
+    run_visualize(config_path)
+
+    # Step 5b: Generate domain shift visualizations
+    if domain_features:
+        logger.info("Generating domain shift visualizations...")
+        generate_domain_figures(output_dir, config)
+
+    # Step 6: Generate comprehensive tables
+    run_generate_tables(config_path)
+
+    # Step 7: Statistical analysis
+    run_analysis(config_path, glioma_features_path)
+
+    # Step 8: Enhanced diagnostics (includes gradient analysis)
+    run_enhanced_diagnostics(config_path)
+
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("ANALYSIS COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"Results: {config['experiment']['output_dir']}")
+
+
 def run_all(
     config_path: str,
     max_epochs: Optional[int] = None,
@@ -492,6 +591,9 @@ def run_all(
     # Step 9: Statistical analysis
     run_analysis(config_path, glioma_features_path)
 
+    # Step 10: Enhanced diagnostics (gradient analysis, feature quality, etc.)
+    run_enhanced_diagnostics(config_path)
+
     logger.info("")
     logger.info("=" * 60)
     logger.info("PIPELINE COMPLETE")
@@ -506,6 +608,8 @@ def run_all(
     logger.info("  - domain_shift_analysis.csv (MEN vs GLI)")
     logger.info("  - figures/domain_*.png (domain shift plots)")
     logger.info("  - analysis_report.md (full report)")
+    logger.info("  - diagnostics_*.csv (enhanced diagnostics)")
+    logger.info("  - diagnostics_report.txt (diagnostic summary)")
 
 
 def main():
@@ -596,6 +700,12 @@ def main():
     analyze_parser.add_argument("--glioma-features", type=str, default=None,
                                help="Path to glioma features for domain shift")
 
+    # enhanced-diagnostics
+    subparsers.add_parser(
+        "enhanced-diagnostics",
+        help="Run enhanced diagnostics (gradient analysis, feature quality, etc.)"
+    )
+
     # run-all
     run_all_parser = subparsers.add_parser("run-all", help="Run complete pipeline")
     run_all_parser.add_argument("--max-epochs", type=int, default=None)
@@ -608,6 +718,25 @@ def main():
     run_all_parser.add_argument("--n-meningioma", type=int, default=200)
     run_all_parser.add_argument("--glioma-test-size", type=int, default=200,
                                help="Number of glioma subjects for test Dice")
+
+    # analyze-only (NEW)
+    analyze_only_parser = subparsers.add_parser(
+        "analyze-only",
+        help="Re-run analysis on already-trained conditions (skips training)"
+    )
+    analyze_only_parser.add_argument("--device", type=str, default="cuda")
+    analyze_only_parser.add_argument("--domain-features", action="store_true",
+                                     help="Extract domain features for UMAP")
+    analyze_only_parser.add_argument("--n-glioma", type=int, default=200)
+    analyze_only_parser.add_argument("--n-meningioma", type=int, default=200)
+    analyze_only_parser.add_argument("--glioma-test-size", type=int, default=200,
+                                     help="Number of glioma subjects for test Dice")
+    analyze_only_parser.add_argument("--skip-extraction", action="store_true",
+                                     help="Skip feature extraction (use existing)")
+    analyze_only_parser.add_argument("--skip-probes", action="store_true",
+                                     help="Skip probe evaluation (use existing)")
+    analyze_only_parser.add_argument("--skip-dice", action="store_true",
+                                     help="Skip Dice evaluation (use existing)")
 
     args = parser.parse_args()
 
@@ -651,11 +780,19 @@ def main():
         run_generate_tables(args.config)
     elif args.command == "analyze":
         run_analysis(args.config, args.glioma_features)
+    elif args.command == "enhanced-diagnostics":
+        run_enhanced_diagnostics(args.config)
     elif args.command == "run-all":
         run_all(
             args.config, args.max_epochs, args.device, args.skip_training,
             args.domain_features, args.n_glioma, args.n_meningioma,
             args.glioma_test_size
+        )
+    elif args.command == "analyze-only":
+        run_analyze_only(
+            args.config, args.device, args.domain_features,
+            args.n_glioma, args.n_meningioma, args.glioma_test_size,
+            args.skip_extraction, args.skip_probes, args.skip_dice
         )
     else:
         parser.print_help()

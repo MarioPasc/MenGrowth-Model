@@ -133,8 +133,10 @@ def load_condition_data(condition_dir: Path) -> Dict:
         with open(summary_path) as f:
             data["training_summary"] = yaml.safe_load(f)
 
-    # Load predictions
-    pred_path = condition_dir / "predictions.json"
+    # Load predictions (check both new and old filenames)
+    pred_path = condition_dir / "predictions_enhanced.json"
+    if not pred_path.exists():
+        pred_path = condition_dir / "predictions.json"  # Fallback to old name
     if pred_path.exists():
         with open(pred_path) as f:
             data["predictions"] = json.load(f)
@@ -149,6 +151,9 @@ def compute_per_subject_metrics(
 ) -> Dict[str, np.ndarray]:
     """Compute per-subject error metrics for statistical tests.
 
+    Handles both old format (predictions[target_name] = list) and
+    new format (predictions[target_name]['linear'] = list).
+
     Returns dict mapping metric names to [N] arrays.
     """
     metrics = {}
@@ -157,7 +162,17 @@ def compute_per_subject_metrics(
         if target_name == "all":
             continue
 
-        pred_vals = np.array(predictions[target_name])
+        # Handle both old and new prediction formats
+        pred_data = predictions.get(target_name)
+        if pred_data is None:
+            continue
+
+        # New format: predictions[target_name]['linear']
+        if isinstance(pred_data, dict) and 'linear' in pred_data:
+            pred_vals = np.array(pred_data['linear'])
+        else:
+            # Old format: predictions[target_name] = list
+            pred_vals = np.array(pred_data)
 
         # Per-subject negative MSE (higher is better)
         per_subject_neg_mse = -np.mean((pred_vals - target_vals) ** 2, axis=1)
