@@ -17,9 +17,9 @@ paths:
 
 # Updated splits (300/50/150/500)
 data_splits:
-  lora_train: 300      # Train LoRA adaptation
+  lora_train: 250      # Train LoRA adaptation
   lora_val: 50         # Early stopping
-  probe_train: 150     # Train probes (separate from LoRA)
+  probe_train: 200     # Train probes (separate from LoRA)
   test: 500            # Final evaluation
 
 # Experimental conditions
@@ -105,14 +105,14 @@ loss:
 probe:
   alpha_linear: 1.0           # Ridge regularization
   use_mlp_probes: true        # Enable MLP probes
-  alpha_mlp: 0.001            # MLP L2 regularization (increased)
+  alpha_mlp: 0.01             # MLP L2 regularization (increased to prevent overfitting)
   hidden_sizes: [128]         # Simplified from [256, 128]
   normalize_features: true
   normalize_targets: true     # Normalize targets for stable training
 
 # Feature extraction
 feature_extraction:
-  level: multi_scale          # layers2+3+4 (1344-dim)
+  level: encoder10            # 768-dim (matches SDP Phase 2)
   batch_size: 8
 
 # Domain analysis (glioma vs meningioma)

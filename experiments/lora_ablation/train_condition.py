@@ -670,9 +670,9 @@ def validate(
     return {
         "loss": avg_loss,
         "dice_mean": dice_tensor.mean().item(),
-        "dice_0": dice_tensor[0].item(),  # NCR
-        "dice_1": dice_tensor[1].item(),  # ED
-        "dice_2": dice_tensor[2].item(),  # ET
+        "dice_0": dice_tensor[0].item(),  # TC (Tumor Core)
+        "dice_1": dice_tensor[1].item(),  # WT (Whole Tumor)
+        "dice_2": dice_tensor[2].item(),  # ET (Enhancing Tumor)
     }
 
 

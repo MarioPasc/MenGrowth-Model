@@ -102,7 +102,7 @@ class BraTSGLIDataset(torch.utils.data.Dataset):
             else:
                 raise FileNotFoundError(f"Missing {modality}: {path}")
 
-        # Segmentation (optional for feature extraction)
+        # Segmentation (optional for feature extraction, required for Dice eval)
         seg_path = subject_dir / f"{subject_id}{GLIOMA_SEG_SUFFIX}"
         if seg_path.exists():
             data["seg"] = str(seg_path)
@@ -110,11 +110,17 @@ class BraTSGLIDataset(torch.utils.data.Dataset):
         # Apply transforms
         transformed = self.transform(data)
 
-        return {
+        result = {
             "image": transformed["image"],
             "subject_id": subject_id,
             "domain": "glioma",
         }
+
+        # Include seg if available (needed for Dice evaluation)
+        if "seg" in transformed:
+            result["seg"] = transformed["seg"]
+
+        return result
 
 
 def load_encoder_for_condition(

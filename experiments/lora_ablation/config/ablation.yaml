@@ -99,16 +99,16 @@ probe:
 
   # Additional options when decoder_type: "original"
   use_mlp_probes: true        # Enable MLP probes (set false for v1 behavior)
-  alpha_mlp: 1.0e-4           # MLP L2 regularization
-  hidden_sizes: [256, 128]    # MLP hidden layers
+  alpha_mlp: 0.01             # MLP L2 regularization (increased to prevent overfitting)
+  hidden_sizes: [128]         # MLP hidden layer (simplified from [256, 128])
   normalize_features: true
   normalize_targets: true     # KEY: normalize targets for stable training
 
 # Feature extraction
 feature_extraction:
-  # - "encoder10": Single-scale 768-dim (v1 behavior)
-  # - "multi_scale": layers2+3+4 (192+384+768=1344-dim, recommended)
-  level: multi_scale
+  # - "encoder10": Single-scale 768-dim (matches SDP Phase 2)
+  # - "multi_scale": layers2+3+4 (192+384+768=1344-dim)
+  level: encoder10
   batch_size: 8
 
 # Domain analysis (glioma vs meningioma)
@@ -151,4 +151,4 @@ model_card:
 #   probe:
 #     use_mlp_probes: true
 #   feature_extraction:
-#     level: multi_scale
+#     level: encoder10

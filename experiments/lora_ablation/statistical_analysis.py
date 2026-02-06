@@ -330,8 +330,8 @@ def create_summary_table(
 
             # Use TEST Dice from metrics.json (not validation from training_summary)
             row["Test_Dice"] = metrics.get("test_dice_mean", None)
-            row["Test_Dice_NCR"] = metrics.get("test_dice_NCR", None)
-            row["Test_Dice_ED"] = metrics.get("test_dice_ED", None)
+            row["Test_Dice_TC"] = metrics.get("test_dice_TC", None)
+            row["Test_Dice_WT"] = metrics.get("test_dice_WT", None)
             row["Test_Dice_ET"] = metrics.get("test_dice_ET", None)
 
         if cond != "baseline" and cond in results.comparisons:

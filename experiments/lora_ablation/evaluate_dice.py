@@ -35,6 +35,7 @@ from growth.data.bratsmendata import BraTSMENDataset
 from growth.losses.segmentation import DiceMetric3Ch
 from growth.evaluation.segmentation_metrics import SegmentationEvaluator
 
+from .extract_domain_features import BraTSGLIDataset
 from .model_factory import create_ablation_model, get_condition_config
 
 logging.basicConfig(
@@ -143,7 +144,7 @@ class TestDiceEvaluator:
         """Evaluate model on a dataset.
 
         Returns:
-            Dict with 'dice_mean', 'dice_NCR', 'dice_ED', 'dice_ET', 'dice_std'.
+            Dict with 'dice_mean', 'dice_TC', 'dice_WT', 'dice_ET', 'dice_std'.
         """
         model.eval()
         all_dice_scores = []
@@ -169,11 +170,12 @@ class TestDiceEvaluator:
 
         return {
             "dice_mean": float(dice_tensor.mean()),
-            "dice_NCR": float(dice_tensor[:, 0].mean()),
-            "dice_ED": float(dice_tensor[:, 1].mean()),
+            "dice_TC": float(dice_tensor[:, 0].mean()),
+            "dice_WT": float(dice_tensor[:, 1].mean()),
             "dice_ET": float(dice_tensor[:, 2].mean()),
             "dice_std": float(dice_mean_per_sample.std()),
-            "num_samples": len(dice_tensor),
+            "num_samples": len(dataloader.dataset),
+            "num_batches": len(dice_tensor),
         }
 
     def evaluate_condition(
@@ -237,8 +239,18 @@ class TestDiceEvaluator:
         # Load model
         model = self._load_model(condition_config, training_config, condition_dir)
 
-        # Create dataloader
-        dataloader = self._create_dataloader(data_root, subject_ids)
+        # Create dataloader (use appropriate dataset class)
+        if dataset_name == "gli":
+            dataset = BraTSGLIDataset(data_root=data_root, subject_ids=subject_ids)
+            dataloader = DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=self.num_workers,
+                pin_memory=True,
+            )
+        else:
+            dataloader = self._create_dataloader(data_root, subject_ids)
 
         # Evaluate
         results = self._evaluate_dataset(
@@ -247,7 +259,7 @@ class TestDiceEvaluator:
 
         logger.info(
             f"  - Dice: {results['dice_mean']:.4f} "
-            f"(NCR={results['dice_NCR']:.4f}, ED={results['dice_ED']:.4f}, "
+            f"(TC={results['dice_TC']:.4f}, WT={results['dice_WT']:.4f}, "
             f"ET={results['dice_ET']:.4f})"
         )
 
@@ -348,8 +360,8 @@ def generate_dice_summary(
         if name in men_results and "error" not in men_results[name]:
             m = men_results[name]
             row["men_dice_mean"] = m.get("dice_mean")
-            row["men_dice_NCR"] = m.get("dice_NCR")
-            row["men_dice_ED"] = m.get("dice_ED")
+            row["men_dice_TC"] = m.get("dice_TC")
+            row["men_dice_WT"] = m.get("dice_WT")
             row["men_dice_ET"] = m.get("dice_ET")
             row["men_dice_std"] = m.get("dice_std")
 
@@ -357,8 +369,8 @@ def generate_dice_summary(
         if gli_results and name in gli_results and "error" not in gli_results[name]:
             g = gli_results[name]
             row["gli_dice_mean"] = g.get("dice_mean")
-            row["gli_dice_NCR"] = g.get("dice_NCR")
-            row["gli_dice_ED"] = g.get("dice_ED")
+            row["gli_dice_TC"] = g.get("dice_TC")
+            row["gli_dice_WT"] = g.get("dice_WT")
             row["gli_dice_ET"] = g.get("dice_ET")
             row["gli_dice_std"] = g.get("dice_std")
 
@@ -485,8 +497,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--glioma-test-size",
         type=int,
-        default=200,
-        help="Number of glioma subjects for test (default: 200)",
+        default=None,
+        help="Number of glioma subjects for test (default: all available)",
     )
     parser.add_argument(
         "--device",

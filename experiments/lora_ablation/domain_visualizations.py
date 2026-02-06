@@ -145,8 +145,8 @@ def plot_domain_dice_comparison(
     meningioma (in-domain) to glioma (out-of-domain).
 
     Args:
-        dice_men: Dict[condition -> {dice_mean, dice_NCR, dice_ED, dice_ET}].
-        dice_gli: Dict[condition -> {dice_mean, dice_NCR, dice_ED, dice_ET}].
+        dice_men: Dict[condition -> {dice_mean, dice_TC, dice_WT, dice_ET}].
+        dice_gli: Dict[condition -> {dice_mean, dice_TC, dice_WT, dice_ET}].
         output_path: Path to save figure.
         figsize: Figure size.
     """
@@ -155,7 +155,7 @@ def plot_domain_dice_comparison(
         return
 
     conditions = list(dice_men.keys())
-    classes = ["mean", "NCR", "ED", "ET"]
+    classes = ["mean", "TC", "WT", "ET"]
 
     fig, axes = plt.subplots(1, 4, figsize=figsize)
 

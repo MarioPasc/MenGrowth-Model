@@ -380,8 +380,8 @@ def generate_markdown_report(
         "",
         "## 3. Secondary Results: Segmentation Dice",
         "",
-        "| Condition | Test Dice (Mean) | Test Dice (NCR) | Test Dice (ED) | Test Dice (ET) |",
-        "|-----------|------------------|-----------------|----------------|----------------|",
+        "| Condition | Test Dice (Mean) | Test Dice (TC) | Test Dice (WT) | Test Dice (ET) |",
+        "|-----------|------------------|----------------|----------------|----------------|",
     ])
 
     for cond in config["conditions"]:
@@ -392,11 +392,11 @@ def generate_markdown_report(
         m = metrics[name]
         # Use test dice from metrics.json
         dice_mean = f"{m.get('test_dice_mean', 0):.4f}" if m.get('test_dice_mean') else "N/A"
-        dice_ncr = f"{m.get('test_dice_NCR', 0):.4f}" if m.get('test_dice_NCR') else "N/A"
-        dice_ed = f"{m.get('test_dice_ED', 0):.4f}" if m.get('test_dice_ED') else "N/A"
+        dice_tc = f"{m.get('test_dice_TC', 0):.4f}" if m.get('test_dice_TC') else "N/A"
+        dice_wt = f"{m.get('test_dice_WT', 0):.4f}" if m.get('test_dice_WT') else "N/A"
         dice_et = f"{m.get('test_dice_ET', 0):.4f}" if m.get('test_dice_ET') else "N/A"
 
-        lines.append(f"| {name} | {dice_mean} | {dice_ncr} | {dice_ed} | {dice_et} |")
+        lines.append(f"| {name} | {dice_mean} | {dice_tc} | {dice_wt} | {dice_et} |")
 
     lines.extend([
         "",
@@ -617,8 +617,8 @@ def analyze_results(
                 "r2_mean_mlp": m.get("r2_mean_mlp"),
                 # Test Dice
                 "test_dice_mean": m.get("test_dice_mean"),
-                "test_dice_NCR": m.get("test_dice_NCR"),
-                "test_dice_ED": m.get("test_dice_ED"),
+                "test_dice_TC": m.get("test_dice_TC"),
+                "test_dice_WT": m.get("test_dice_WT"),
                 "test_dice_ET": m.get("test_dice_ET"),
                 "val_dice": m.get("val_dice"),  # Keep for reference
                 "variance_mean": m.get("variance_mean"),

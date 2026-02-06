@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # BrainSegFounder architecture constants
 BRAINSEGFOUNDER_FEATURE_SIZE = 48   # Base channel count
 BRAINSEGFOUNDER_IN_CHANNELS = 4     # t1c, t1n, t2f, t2w
-BRAINSEGFOUNDER_OUT_CHANNELS = 3    # BraTS segmentation classes (NCR, ED, ET)
+BRAINSEGFOUNDER_OUT_CHANNELS = 3    # BraTS segmentation classes (TC, WT, ET)
 BRAINSEGFOUNDER_DEPTHS = (2, 2, 2, 2)
 BRAINSEGFOUNDER_NUM_HEADS = (3, 6, 12, 24)
 
@@ -273,8 +273,9 @@ def load_full_swinunetr(
     which is necessary for using the original SwinUNETR decoder architecture
     with pretrained weights (achieving ~0.85+ Dice).
 
-    IMPORTANT: BrainSegFounder was trained with 3 output channels (NCR, ED, ET)
-    using sigmoid activation per channel. Setting out_channels=3 preserves the
+    IMPORTANT: BrainSegFounder was trained with 3 output channels (TC, WT, ET)
+    using sigmoid activation per channel. These are hierarchical overlapping
+    regions, not individual labels. Setting out_channels=3 preserves the
     pretrained output layer. Setting out_channels=4 will REPLACE the output
     layer with random weights (not recommended for frozen baselines).
 

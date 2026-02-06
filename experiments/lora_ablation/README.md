@@ -123,7 +123,7 @@ All conditions train the decoder (~30M params for original decoder).
 
 **Segmentation Dice**:
 - `dice_mean`: Mean Dice across tumor subregions
-- `dice_0`, `dice_1`, `dice_2`: Per-class Dice (NCR, ED, ET)
+- `dice_0`, `dice_1`, `dice_2`: Per-class Dice (TC, WT, ET)
 
 ## Configuration
 

@@ -17,9 +17,9 @@ paths:
 
 # Updated splits (300/50/150/500)
 data_splits:
-  lora_train: 300
+  lora_train: 250
   lora_val: 50
-  probe_train: 150
+  probe_train: 200
   test: 500
 
 # Experimental conditions - DoRA only
@@ -107,14 +107,14 @@ loss:
 probe:
   alpha_linear: 1.0
   use_mlp_probes: true
-  alpha_mlp: 0.001
+  alpha_mlp: 0.01
   hidden_sizes: [128]
   normalize_features: true
   normalize_targets: true
 
 # Feature extraction
 feature_extraction:
-  level: multi_scale
+  level: encoder10
   batch_size: 8
 
 # Domain analysis

@@ -5,11 +5,16 @@ Implements Dice loss + Cross-Entropy for meningioma segmentation using
 MONAI's robust loss implementations. Standard BraTS-style multi-class
 segmentation objective with support for deep supervision.
 
-BraTS Segmentation Labels:
+BraTS Segmentation Labels (input):
     - 0: Background
     - 1: NCR (Necrotic Core)
     - 2: ED (Peritumoral Edema)
     - 3: ET (Enhancing Tumor)
+
+BrainSegFounder 3-channel sigmoid output convention (TC/WT/ET):
+    - Ch0: TC (Tumor Core) = NCR ∪ ET = (label==1) | (label==3)
+    - Ch1: WT (Whole Tumor) = NCR ∪ ED ∪ ET = (label==1) | (label==2) | (label==3)
+    - Ch2: ET (Enhancing Tumor) = (label==3)
 """
 
 import logging
@@ -286,10 +291,10 @@ def create_segmentation_loss(
 # per channel. This allows using the FULL pretrained decoder including output
 # layer, which is critical for frozen baseline comparisons.
 #
-# Channel mapping:
-#   - Channel 0: NCR (Necrotic Core) - corresponds to label == 1
-#   - Channel 1: ED (Peritumoral Edema) - corresponds to label == 2
-#   - Channel 2: ET (Enhancing Tumor) - corresponds to label == 3
+# Channel mapping (hierarchical overlapping regions, MONAI BraTS convention):
+#   - Channel 0: TC (Tumor Core) = NCR ∪ ET = (label==1) | (label==3)
+#   - Channel 1: WT (Whole Tumor) = NCR ∪ ED ∪ ET = (label==1) | (label==2) | (label==3)
+#   - Channel 2: ET (Enhancing Tumor) = (label==3)
 #
 # Background is implicit (where all channels < threshold).
 # =============================================================================
@@ -327,23 +332,28 @@ class SegmentationLoss3Ch(nn.Module):
     def _convert_target(self, target: torch.Tensor) -> torch.Tensor:
         """Convert integer labels [B, 1, D, H, W] to binary masks [B, 3, D, H, W].
 
+        Uses BrainSegFounder's hierarchical overlapping region convention:
+            - Ch0: TC (Tumor Core) = NCR ∪ ET = (label==1) | (label==3)
+            - Ch1: WT (Whole Tumor) = NCR ∪ ED ∪ ET = (label==1) | (label==2) | (label==3)
+            - Ch2: ET (Enhancing Tumor) = (label==3)
+
         Args:
             target: Integer labels with values 0 (background), 1 (NCR), 2 (ED), 3 (ET).
 
         Returns:
-            Binary masks for each of the 3 tumor classes.
+            Binary masks for TC, WT, ET channels.
         """
         # Squeeze channel dim if present
         if target.dim() == 5 and target.shape[1] == 1:
             target = target.squeeze(1)  # [B, D, H, W]
 
-        # Create binary masks for each class
-        ncr = (target == 1).float()  # [B, D, H, W]
-        ed = (target == 2).float()
-        et = (target == 3).float()
+        # Create hierarchical overlapping binary masks
+        tc = ((target == 1) | (target == 3)).float()                       # Tumor Core
+        wt = ((target == 1) | (target == 2) | (target == 3)).float()      # Whole Tumor
+        et = (target == 3).float()                                         # Enhancing Tumor
 
         # Stack to [B, 3, D, H, W]
-        return torch.stack([ncr, ed, et], dim=1)
+        return torch.stack([tc, wt, et], dim=1)
 
     def _dice_loss(
         self, pred: torch.Tensor, target: torch.Tensor
@@ -415,7 +425,7 @@ class DiceMetric3Ch(nn.Module):
         >>> target = torch.randint(0, 4, (2, 1, 96, 96, 96))  # integer labels
         >>> dice_scores = metric(pred, target)
         >>> dice_scores.shape
-        torch.Size([3])  # Dice for NCR, ED, ET
+        torch.Size([3])  # Dice for TC, WT, ET
     """
 
     def __init__(
@@ -428,15 +438,15 @@ class DiceMetric3Ch(nn.Module):
         self.reduction = reduction
 
     def _convert_target(self, target: torch.Tensor) -> torch.Tensor:
-        """Convert integer labels to binary masks."""
+        """Convert integer labels to binary masks (TC/WT/ET convention)."""
         if target.dim() == 5 and target.shape[1] == 1:
             target = target.squeeze(1)
 
-        ncr = (target == 1).float()
-        ed = (target == 2).float()
-        et = (target == 3).float()
+        tc = ((target == 1) | (target == 3)).float()                       # Tumor Core
+        wt = ((target == 1) | (target == 2) | (target == 3)).float()      # Whole Tumor
+        et = (target == 3).float()                                         # Enhancing Tumor
 
-        return torch.stack([ncr, ed, et], dim=1)
+        return torch.stack([tc, wt, et], dim=1)
 
     def forward(
         self, pred: torch.Tensor, target: torch.Tensor
