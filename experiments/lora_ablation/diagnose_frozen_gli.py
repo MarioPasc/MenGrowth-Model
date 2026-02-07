@@ -1,35 +1,37 @@
 #!/usr/bin/env python
 # experiments/lora_ablation/diagnose_frozen_gli.py
-"""Diagnose frozen BrainSegFounder Dice on BraTS-GLI data.
+"""Diagnose frozen BrainSegFounder segmentation on BraTS-GLI and BraTS-MEN.
 
-BraTS-GLI uses labels {0, 2, 4} (no label 1/NCR, ET=4), but _convert_target()
-expects {0, 1, 2, 3}. This causes TC and ET channels to be empty for GLI data,
-fully explaining the near-zero Dice observed in previous evaluations.
+Runs identical diagnostics on both datasets to identify whether poor GLI Dice
+is caused by label encoding issues, domain gap, or pipeline problems.
 
-This script tests 4 inference×label conditions to confirm the root cause:
-  1. (center_crop, original_labels)  — current pipeline (expected ~0.02 Dice)
-  2. (center_crop, remapped_labels)  — remap {4→3} before _convert_target()
-  3. (sliding_window, original_labels) — MONAI sliding window inference
-  4. (sliding_window, remapped_labels) — combined fix
+Diagnostics per dataset:
+  1. Label statistics (unique values, volume fractions, bounding boxes)
+  2. Channel target coverage after _convert_target() conversion
+  3. Model output activations (mean sigmoid, positive fraction)
+  4. Spatial analysis (tumor retention after 96^3 center-crop)
+  5. Dice evaluation (center-crop; GLI also tests remapped labels)
 
-It also runs additional diagnostics:
-  - Per-sample label statistics (unique values, volume fractions)
-  - Channel activation analysis (what the model actually predicts)
-  - Per-channel target coverage (fraction of non-zero targets after conversion)
-
-Reads paths (checkpoint, glioma_root) from any server config YAML in
-experiments/lora_ablation/config/server/.
+Reads paths (checkpoint, glioma_root, data_root) from any server config YAML.
 
 Usage:
+    # Run on both datasets (recommended):
     python experiments/lora_ablation/diagnose_frozen_gli.py \
         --config experiments/lora_ablation/config/server/LoRA_semantic_heads_icai.yaml \
-        --output-dir /path/to/results/diagnose_frozen_gli
+        --output-dir /path/to/results/diagnose_frozen \
+        --dataset both
+
+    # GLI only:
+    python experiments/lora_ablation/diagnose_frozen_gli.py \
+        --config experiments/lora_ablation/config/server/LoRA_semantic_heads_icai.yaml \
+        --output-dir /path/to/results/diagnose_frozen \
+        --dataset gli
 
     # Override defaults:
     python experiments/lora_ablation/diagnose_frozen_gli.py \
-        --config experiments/lora_ablation/config/server/DoRA_semantic_heads_icai.yaml \
-        --output-dir /tmp/gli_diag \
-        --max-subjects 50 --batch-size 1 --num-workers 2
+        --config experiments/lora_ablation/config/server/LoRA_semantic_heads_icai.yaml \
+        --output-dir /tmp/diag \
+        --max-subjects 50 --batch-size 1
 """
 
 import argparse
@@ -38,7 +40,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -47,13 +49,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import yaml
 
-from monai.inferers import sliding_window_inference
-
 from growth.losses.segmentation import DiceMetric3Ch
 from growth.models.encoder.swin_loader import load_full_swinunetr
+from growth.data.bratsmendata import BraTSMENDataset
 
-# Reuse BraTSGLIDataset from existing code
 from experiments.lora_ablation.extract_domain_features import BraTSGLIDataset
+from experiments.lora_ablation.data_splits import load_splits
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,9 +66,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_SUBJECTS = 200
 DEFAULT_BATCH_SIZE = 2
 DEFAULT_NUM_WORKERS = 4
-DEFAULT_ROI_SIZE = (96, 96, 96)
-DEFAULT_SW_BATCH_SIZE = 4
-DEFAULT_SW_OVERLAP = 0.5
 
 
 # =========================================================================
@@ -75,11 +73,11 @@ DEFAULT_SW_OVERLAP = 0.5
 # =========================================================================
 
 def remap_gli_labels(seg: torch.Tensor) -> torch.Tensor:
-    """Remap BraTS-GLI labels {0, 2, 4} → {0, 2, 3}.
+    """Remap BraTS-GLI labels {0, 2, 4} -> {0, 2, 3}.
 
     GLI uses: 0=background, 2=ED, 4=ET.
     BrainSegFounder expects: 0=background, 1=NCR, 2=ED, 3=ET.
-    GLI has no NCR (label 1), so we only need to remap 4→3.
+    GLI has no NCR (label 1), so we only need to remap 4->3.
     """
     seg = seg.clone()
     seg[seg == 4] = 3
@@ -97,7 +95,7 @@ def collect_label_statistics(
     """Collect per-sample label statistics for the first n subjects.
 
     Returns list of dicts with subject_id, unique_labels, volume_fractions,
-    and spatial extent (bounding box size of non-background voxels).
+    bounding box size, tumor voxels, and original spatial size.
     """
     stats = []
     count = 0
@@ -124,7 +122,7 @@ def collect_label_statistics(
             if len(nonzero) > 0:
                 bbox_min = nonzero.min(dim=0).values.tolist()
                 bbox_max = nonzero.max(dim=0).values.tolist()
-                bbox_size = [mx - mn + 1 for mn, mx in zip(bbox_min, bbox_max)]
+                bbox_size = [int(mx - mn + 1) for mn, mx in zip(bbox_min, bbox_max)]
             else:
                 bbox_size = [0, 0, 0]
 
@@ -132,6 +130,7 @@ def collect_label_statistics(
                 "subject_id": sid,
                 "unique_labels": unique_vals,
                 "volume_fractions": fractions,
+                "spatial_size": list(s.shape),
                 "tumor_bbox_size": bbox_size,
                 "tumor_voxels": int((s > 0).sum()),
             }
@@ -141,34 +140,34 @@ def collect_label_statistics(
     return stats
 
 
-def log_label_statistics(stats: List[Dict]) -> None:
+def log_label_statistics(stats: List[Dict], dataset_name: str) -> None:
     """Log collected label statistics."""
-    logger.info(f"\nLabel statistics ({len(stats)} subjects):")
-    logger.info("-" * 80)
+    logger.info(f"\n  Label statistics ({len(stats)} {dataset_name} subjects):")
+    logger.info("  " + "-" * 78)
     for entry in stats:
         frac_str = ", ".join(
             f"{k}: {v:.4f}" for k, v in sorted(entry["volume_fractions"].items())
         )
         logger.info(
-            f"  {entry['subject_id']}: "
+            f"    {entry['subject_id']}: "
             f"labels={entry['unique_labels']}, "
-            f"fractions={{{frac_str}}}, "
+            f"spatial={entry['spatial_size']}, "
             f"bbox={entry['tumor_bbox_size']}, "
-            f"tumor_voxels={entry['tumor_voxels']}"
+            f"tumor={entry['tumor_voxels']}"
         )
+        logger.info(f"      fractions={{{frac_str}}}")
 
 
 @torch.no_grad()
 def analyze_channel_targets(
     dataloader: DataLoader,
-    remap: bool,
+    remap: bool = False,
 ) -> Dict[str, float]:
-    """Analyze what _convert_target produces for GLI data.
+    """Analyze what _convert_target produces for data.
 
-    Reports per-channel statistics: what fraction of samples have non-empty
+    Reports per-channel statistics: fraction of samples with non-empty
     targets for TC/WT/ET, and mean target volume fraction.
     """
-    from growth.losses.segmentation import DiceMetric3Ch
     metric = DiceMetric3Ch()
 
     ch_names = ["TC", "WT", "ET"]
@@ -207,10 +206,9 @@ def analyze_model_activations(
     device: str,
     max_batches: int = 10,
 ) -> Dict[str, float]:
-    """Analyze model output activations on GLI data.
+    """Analyze model output activations.
 
-    Reports per-channel mean sigmoid activation and prediction coverage
-    (fraction of voxels predicted as positive).
+    Reports per-channel mean sigmoid activation and prediction coverage.
     """
     model.eval()
     ch_names = ["TC", "WT", "ET"]
@@ -240,19 +238,82 @@ def analyze_model_activations(
     return result
 
 
+def analyze_spatial_coverage(
+    dataloader: DataLoader,
+    roi_size: Tuple[int, int, int] = (96, 96, 96),
+) -> Dict[str, float]:
+    """Analyze how much tumor survives the center-crop to roi_size.
+
+    Since val transforms apply ResizeWithPadOrCrop to 96^3, large tumors
+    may be partially truncated. This reports:
+    - Mean tumor bbox size per axis (after crop)
+    - Fraction of samples where bbox exceeds crop in any axis
+    - All spatial sizes are post-transform (should all be 96^3)
+    """
+    bbox_sizes_all = []
+    exceeds_roi = 0
+    total_samples = 0
+    tumor_voxel_fracs = []
+
+    for batch in dataloader:
+        seg = batch["seg"]  # [B, 1, D, H, W]
+        for b in range(seg.shape[0]):
+            s = seg[b].squeeze(0)  # [D, H, W]
+            nonzero = (s > 0).nonzero(as_tuple=False)
+
+            if len(nonzero) > 0:
+                bbox_min = nonzero.min(dim=0).values
+                bbox_max = nonzero.max(dim=0).values
+                bbox_size = (bbox_max - bbox_min + 1).tolist()
+
+                # Check if tumor bbox touches the edge (suggesting truncation)
+                touches_edge = False
+                for dim_idx in range(3):
+                    if bbox_min[dim_idx] == 0 or bbox_max[dim_idx] == s.shape[dim_idx] - 1:
+                        touches_edge = True
+                        break
+
+                if touches_edge:
+                    exceeds_roi += 1
+
+                bbox_sizes_all.append(bbox_size)
+                tumor_voxel_fracs.append(float((s > 0).sum()) / s.numel())
+            else:
+                bbox_sizes_all.append([0, 0, 0])
+                tumor_voxel_fracs.append(0.0)
+
+            total_samples += 1
+
+    bbox_arr = np.array(bbox_sizes_all)
+
+    return {
+        "total_samples": total_samples,
+        "mean_bbox_D": float(bbox_arr[:, 0].mean()),
+        "mean_bbox_H": float(bbox_arr[:, 1].mean()),
+        "mean_bbox_W": float(bbox_arr[:, 2].mean()),
+        "max_bbox_D": int(bbox_arr[:, 0].max()),
+        "max_bbox_H": int(bbox_arr[:, 1].max()),
+        "max_bbox_W": int(bbox_arr[:, 2].max()),
+        "bbox_touches_edge_frac": exceeds_roi / max(total_samples, 1),
+        "mean_tumor_vol_frac": float(np.mean(tumor_voxel_fracs)),
+        "median_tumor_vol_frac": float(np.median(tumor_voxel_fracs)),
+    }
+
+
 # =========================================================================
 # Evaluation
 # =========================================================================
 
 @torch.no_grad()
-def evaluate_center_crop(
+def evaluate_dice(
     model: nn.Module,
     dataloader: DataLoader,
     dice_metric: DiceMetric3Ch,
-    remap: bool,
     device: str,
+    remap: bool = False,
+    desc: str = "Evaluating",
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """Evaluate with center-crop (standard pipeline).
+    """Evaluate Dice with optional label remapping.
 
     Returns:
         Tuple of (per_sample_dice [N, 3], summary dict).
@@ -260,7 +321,7 @@ def evaluate_center_crop(
     model.eval()
     all_dice = []
 
-    for batch in tqdm(dataloader, desc=f"Center-crop (remap={remap})", leave=False):
+    for batch in tqdm(dataloader, desc=desc, leave=False):
         images = batch["image"].to(device)
         segs = batch["seg"].to(device)
 
@@ -275,49 +336,8 @@ def evaluate_center_crop(
     return dice_all, _summarize(dice_all)
 
 
-@torch.no_grad()
-def evaluate_sliding_window(
-    model: nn.Module,
-    dataloader: DataLoader,
-    dice_metric: DiceMetric3Ch,
-    remap: bool,
-    device: str,
-    roi_size: Tuple[int, int, int],
-    sw_batch_size: int,
-    sw_overlap: float,
-) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """Evaluate with MONAI sliding window inference.
-
-    Returns:
-        Tuple of (per_sample_dice [N, 3], summary dict).
-    """
-    model.eval()
-    all_dice = []
-
-    for batch in tqdm(dataloader, desc=f"Sliding-window (remap={remap})", leave=False):
-        images = batch["image"].to(device)
-        segs = batch["seg"].to(device)
-
-        if remap:
-            segs = remap_gli_labels(segs)
-
-        pred = sliding_window_inference(
-            inputs=images,
-            roi_size=roi_size,
-            sw_batch_size=sw_batch_size,
-            predictor=model,
-            overlap=sw_overlap,
-        )
-
-        dice = dice_metric(pred, segs)  # [B, 3]
-        all_dice.append(dice.cpu())
-
-    dice_all = torch.cat(all_dice, dim=0)  # [N, 3]
-    return dice_all, _summarize(dice_all)
-
-
 def _summarize(dice_all: torch.Tensor) -> Dict[str, float]:
-    """Summarize per-sample Dice tensor [N, 3] → dict."""
+    """Summarize per-sample Dice tensor [N, 3] -> dict."""
     return {
         "dice_mean": float(dice_all.mean()),
         "dice_TC": float(dice_all[:, 0].mean()),
@@ -334,44 +354,409 @@ def _summarize(dice_all: torch.Tensor) -> Dict[str, float]:
 
 
 # =========================================================================
+# Per-dataset diagnostic runner
+# =========================================================================
+
+def run_diagnostics(
+    model: nn.Module,
+    dataloader: DataLoader,
+    dataset_name: str,
+    out_dir: Path,
+    device: str,
+    is_gli: bool,
+) -> Dict:
+    """Run all diagnostics for a single dataset.
+
+    Args:
+        model: Frozen BrainSegFounder model.
+        dataloader: DataLoader for the dataset.
+        dataset_name: Display name (e.g. "GLI", "MEN").
+        out_dir: Output subdirectory for this dataset.
+        device: Device string.
+        is_gli: True for GLI (enables label remapping conditions).
+
+    Returns:
+        Dict with all diagnostic results.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    all_results = {}
+
+    # ==================================================================
+    # Diagnostic 1: Label Statistics
+    # ==================================================================
+    logger.info(f"\n  {'='*66}")
+    logger.info(f"  DIAGNOSTIC 1: Label Statistics ({dataset_name})")
+    logger.info(f"  {'='*66}")
+
+    label_stats = collect_label_statistics(dataloader, n_subjects=10)
+    log_label_statistics(label_stats, dataset_name)
+
+    with open(out_dir / "label_statistics.json", "w") as f:
+        json.dump(label_stats, f, indent=2, default=str)
+
+    all_labels_seen = set()
+    for entry in label_stats:
+        all_labels_seen.update(int(v) for v in entry["unique_labels"])
+
+    logger.info(f"\n    All unique labels seen: {sorted(all_labels_seen)}")
+    all_results["labels_seen"] = sorted(all_labels_seen)
+
+    # ==================================================================
+    # Diagnostic 2: Channel Target Coverage
+    # ==================================================================
+    logger.info(f"\n  {'='*66}")
+    logger.info(f"  DIAGNOSTIC 2: Channel Target Coverage ({dataset_name})")
+    logger.info(f"  {'='*66}")
+
+    coverage_modes = [("standard", False)]
+    if is_gli:
+        coverage_modes.append(("remapped_4to3", True))
+
+    all_results["channel_coverage"] = {}
+    for label, remap in coverage_modes:
+        coverage = analyze_channel_targets(dataloader, remap=remap)
+        all_results["channel_coverage"][label] = coverage
+
+        logger.info(f"\n    Labels mode: {label}")
+        for ch in ["TC", "WT", "ET"]:
+            logger.info(
+                f"      {ch}: "
+                f"non-empty in {coverage[f'{ch}_nonempty_frac']*100:.1f}% of samples, "
+                f"mean vol fraction={coverage[f'{ch}_mean_vol_frac']:.6f}"
+            )
+
+        with open(out_dir / f"channel_coverage_{label}.json", "w") as f:
+            json.dump(coverage, f, indent=2)
+
+    # ==================================================================
+    # Diagnostic 3: Model Activations
+    # ==================================================================
+    logger.info(f"\n  {'='*66}")
+    logger.info(f"  DIAGNOSTIC 3: Model Activations ({dataset_name}, first 10 batches)")
+    logger.info(f"  {'='*66}")
+
+    activations = analyze_model_activations(model, dataloader, device, max_batches=10)
+    all_results["activations"] = activations
+
+    for ch in ["TC", "WT", "ET"]:
+        logger.info(
+            f"    {ch}: mean sigmoid={activations[f'{ch}_mean_activation']:.4f}, "
+            f"positive (>0.5) frac={activations[f'{ch}_positive_frac']:.6f}"
+        )
+
+    with open(out_dir / "model_activations.json", "w") as f:
+        json.dump(activations, f, indent=2)
+
+    # ==================================================================
+    # Diagnostic 4: Spatial / Tumor Retention Analysis
+    # ==================================================================
+    logger.info(f"\n  {'='*66}")
+    logger.info(f"  DIAGNOSTIC 4: Spatial Analysis ({dataset_name})")
+    logger.info(f"  {'='*66}")
+
+    spatial = analyze_spatial_coverage(dataloader)
+    all_results["spatial"] = spatial
+
+    logger.info(f"    Mean tumor bbox (D,H,W): "
+                f"({spatial['mean_bbox_D']:.1f}, {spatial['mean_bbox_H']:.1f}, {spatial['mean_bbox_W']:.1f})")
+    logger.info(f"    Max tumor bbox (D,H,W): "
+                f"({spatial['max_bbox_D']}, {spatial['max_bbox_H']}, {spatial['max_bbox_W']})")
+    logger.info(f"    Tumor touches 96^3 edge: "
+                f"{spatial['bbox_touches_edge_frac']*100:.1f}% of samples (potential truncation)")
+    logger.info(f"    Mean tumor vol fraction: {spatial['mean_tumor_vol_frac']:.6f}")
+    logger.info(f"    Median tumor vol fraction: {spatial['median_tumor_vol_frac']:.6f}")
+
+    with open(out_dir / "spatial_analysis.json", "w") as f:
+        json.dump(spatial, f, indent=2)
+
+    # ==================================================================
+    # Diagnostic 5: Dice Evaluation
+    # ==================================================================
+    logger.info(f"\n  {'='*66}")
+    logger.info(f"  DIAGNOSTIC 5: Dice Evaluation ({dataset_name})")
+    logger.info(f"  {'='*66}")
+
+    dice_metric = DiceMetric3Ch()
+    dice_results = {}
+
+    # Always run standard (no remap)
+    conditions = [("standard", False)]
+    if is_gli:
+        conditions.append(("remapped_4to3", True))
+
+    for label, remap in conditions:
+        t0 = time.time()
+        dice_all, summary = evaluate_dice(
+            model, dataloader, dice_metric, device,
+            remap=remap,
+            desc=f"{dataset_name} Dice ({label})",
+        )
+        elapsed = time.time() - t0
+        summary["time_seconds"] = round(elapsed, 1)
+        dice_results[label] = summary
+
+        logger.info(
+            f"    [{label}] "
+            f"Dice mean={summary['dice_mean']:.4f}  "
+            f"TC={summary['dice_TC']:.4f}+/-{summary['dice_TC_std']:.4f}  "
+            f"WT={summary['dice_WT']:.4f}+/-{summary['dice_WT_std']:.4f}  "
+            f"ET={summary['dice_ET']:.4f}+/-{summary['dice_ET_std']:.4f}  "
+            f"[{elapsed:.1f}s]"
+        )
+
+        torch.save(dice_all, out_dir / f"dice_per_sample__{label}.pt")
+
+    all_results["dice"] = dice_results
+
+    # Save combined results
+    with open(out_dir / "results.json", "w") as f:
+        json.dump(all_results, f, indent=2)
+
+    return all_results
+
+
+# =========================================================================
+# Comparative Analysis
+# =========================================================================
+
+def generate_comparison(
+    gli_results: Optional[Dict],
+    men_results: Optional[Dict],
+    output_dir: Path,
+    config_path: str,
+    checkpoint_path: str,
+) -> str:
+    """Generate comparative analysis text and CSV."""
+
+    lines = [
+        "=" * 72,
+        "DIAGNOSIS: Frozen BrainSegFounder — GLI vs MEN Comparison",
+        "=" * 72,
+        "",
+        f"Config: {config_path}",
+        f"Checkpoint: {checkpoint_path}",
+        "",
+    ]
+
+    # ---- Labels ----
+    lines.append("1. LABEL ENCODING")
+    lines.append("-" * 50)
+    if gli_results:
+        lines.append(f"   GLI labels seen: {gli_results.get('labels_seen', '?')}")
+    if men_results:
+        lines.append(f"   MEN labels seen: {men_results.get('labels_seen', '?')}")
+    lines.append("")
+
+    # ---- Channel targets ----
+    lines.append("2. CHANNEL TARGET COVERAGE (after _convert_target)")
+    lines.append("-" * 50)
+    header = f"   {'Dataset':<8} {'Mode':<14} {'TC %':>7} {'WT %':>7} {'ET %':>7}   {'TC vol':>10} {'WT vol':>10} {'ET vol':>10}"
+    lines.append(header)
+
+    for name, results in [("GLI", gli_results), ("MEN", men_results)]:
+        if results is None:
+            continue
+        for mode, cov in results.get("channel_coverage", {}).items():
+            lines.append(
+                f"   {name:<8} {mode:<14} "
+                f"{cov['TC_nonempty_frac']*100:>6.1f}% "
+                f"{cov['WT_nonempty_frac']*100:>6.1f}% "
+                f"{cov['ET_nonempty_frac']*100:>6.1f}%   "
+                f"{cov['TC_mean_vol_frac']:>10.6f} "
+                f"{cov['WT_mean_vol_frac']:>10.6f} "
+                f"{cov['ET_mean_vol_frac']:>10.6f}"
+            )
+    lines.append("")
+
+    # ---- Activations ----
+    lines.append("3. MODEL OUTPUT ACTIVATIONS")
+    lines.append("-" * 50)
+    lines.append(f"   {'Dataset':<8} {'TC sig':>8} {'WT sig':>8} {'ET sig':>8}   {'TC pos%':>8} {'WT pos%':>8} {'ET pos%':>8}")
+
+    for name, results in [("GLI", gli_results), ("MEN", men_results)]:
+        if results is None:
+            continue
+        act = results.get("activations", {})
+        lines.append(
+            f"   {name:<8} "
+            f"{act.get('TC_mean_activation', 0):>8.4f} "
+            f"{act.get('WT_mean_activation', 0):>8.4f} "
+            f"{act.get('ET_mean_activation', 0):>8.4f}   "
+            f"{act.get('TC_positive_frac', 0)*100:>7.4f}% "
+            f"{act.get('WT_positive_frac', 0)*100:>7.4f}% "
+            f"{act.get('ET_positive_frac', 0)*100:>7.4f}%"
+        )
+    lines.append("")
+
+    # ---- Spatial ----
+    lines.append("4. SPATIAL ANALYSIS (after 96^3 center-crop)")
+    lines.append("-" * 50)
+    lines.append(f"   {'Dataset':<8} {'Mean bbox':>20} {'Max bbox':>20} {'Edge %':>8} {'Tumor vol%':>10}")
+
+    for name, results in [("GLI", gli_results), ("MEN", men_results)]:
+        if results is None:
+            continue
+        sp = results.get("spatial", {})
+        mean_bbox = f"({sp.get('mean_bbox_D',0):.0f},{sp.get('mean_bbox_H',0):.0f},{sp.get('mean_bbox_W',0):.0f})"
+        max_bbox = f"({sp.get('max_bbox_D',0)},{sp.get('max_bbox_H',0)},{sp.get('max_bbox_W',0)})"
+        lines.append(
+            f"   {name:<8} {mean_bbox:>20} {max_bbox:>20} "
+            f"{sp.get('bbox_touches_edge_frac',0)*100:>7.1f}% "
+            f"{sp.get('mean_tumor_vol_frac',0)*100:>9.4f}%"
+        )
+    lines.append("")
+
+    # ---- Dice ----
+    lines.append("5. DICE SCORES")
+    lines.append("-" * 50)
+    lines.append(f"   {'Dataset':<8} {'Mode':<14} {'Mean':>7} {'TC':>7} {'WT':>7} {'ET':>7}")
+
+    csv_rows = []
+    for name, results in [("GLI", gli_results), ("MEN", men_results)]:
+        if results is None:
+            continue
+        for mode, d in results.get("dice", {}).items():
+            lines.append(
+                f"   {name:<8} {mode:<14} "
+                f"{d['dice_mean']:>7.4f} "
+                f"{d['dice_TC']:>7.4f} "
+                f"{d['dice_WT']:>7.4f} "
+                f"{d['dice_ET']:>7.4f}"
+            )
+            csv_rows.append({
+                "dataset": name, "label_mode": mode,
+                **{k: f"{v:.4f}" if isinstance(v, float) else v for k, v in d.items()},
+            })
+    lines.append("")
+
+    # ---- Interpretation ----
+    lines.append("6. INTERPRETATION")
+    lines.append("-" * 50)
+
+    if gli_results and men_results:
+        gli_act_wt = gli_results.get("activations", {}).get("WT_mean_activation", 0)
+        men_act_wt = men_results.get("activations", {}).get("WT_mean_activation", 0)
+        gli_dice = gli_results.get("dice", {}).get("standard", {}).get("dice_mean", 0)
+        men_dice = men_results.get("dice", {}).get("standard", {}).get("dice_mean", 0)
+        gli_edge = gli_results.get("spatial", {}).get("bbox_touches_edge_frac", 0)
+        men_edge = men_results.get("spatial", {}).get("bbox_touches_edge_frac", 0)
+
+        if men_act_wt > 0.1 and gli_act_wt < 0.05:
+            lines.append(
+                "   Model activations are high on MEN but very low on GLI."
+            )
+            lines.append(
+                "   -> The frozen model segments MEN but NOT GLI at 96^3, indicating"
+            )
+            lines.append(
+                "   -> a genuine domain gap (model was NOT fine-tuned on GLI, or"
+            )
+            lines.append(
+                "   -> GLI tumors are too large for 96^3 center-crop)."
+            )
+        elif men_act_wt < 0.05 and gli_act_wt < 0.05:
+            lines.append(
+                "   Model activations are low on BOTH datasets."
+            )
+            lines.append(
+                "   -> Pipeline issue: 96^3 center-crop may be cutting too much"
+            )
+            lines.append(
+                "   -> brain context, or transforms are incompatible with checkpoint."
+            )
+        elif men_dice > 0.3 and gli_dice < 0.05:
+            lines.append(
+                "   MEN Dice is reasonable but GLI Dice is near-zero."
+            )
+            lines.append(
+                "   -> The low GLI Dice is NOT a pipeline issue but a domain/label issue."
+            )
+
+        if gli_edge > 0.5:
+            lines.append(
+                f"\n   {gli_edge*100:.0f}% of GLI tumors touch the 96^3 edge (truncation)."
+            )
+            lines.append(
+                "   -> Large gliomas may need full-resolution sliding-window inference"
+            )
+            lines.append(
+                "   -> BEFORE the 96^3 crop (i.e., skip ResizeWithPadOrCrop in transforms)."
+            )
+
+        # Label remapping effect
+        gli_standard = gli_results.get("dice", {}).get("standard", {}).get("dice_mean", 0)
+        gli_remapped = gli_results.get("dice", {}).get("remapped_4to3", {}).get("dice_mean", 0)
+        remap_delta = gli_remapped - gli_standard
+
+        if remap_delta > 0.1:
+            lines.append(
+                f"\n   Label remapping improved GLI Dice by +{remap_delta:.4f}."
+            )
+            lines.append(
+                "   -> Label encoding mismatch was a significant factor."
+            )
+        elif remap_delta > 0:
+            lines.append(
+                f"\n   Label remapping gave modest improvement (+{remap_delta:.4f})."
+            )
+            lines.append(
+                "   -> Label encoding is a contributing but not primary factor."
+            )
+    elif gli_results:
+        lines.append("   (MEN comparison not available — run with --dataset both)")
+
+    lines.append("")
+
+    analysis_text = "\n".join(lines)
+
+    # Save analysis
+    analysis_path = output_dir / "analysis.txt"
+    with open(analysis_path, "w") as f:
+        f.write(analysis_text + "\n")
+
+    # Save comparison CSV
+    if csv_rows:
+        csv_path = output_dir / "dice_comparison.csv"
+        fieldnames = list(csv_rows[0].keys())
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_rows)
+
+    return analysis_text
+
+
+# =========================================================================
 # Main
 # =========================================================================
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Diagnose frozen BrainSegFounder Dice on BraTS-GLI data"
+        description="Diagnose frozen BrainSegFounder segmentation on GLI and/or MEN"
     )
     parser.add_argument(
         "--config", type=str, required=True,
-        help="Path to a server config YAML (e.g. experiments/lora_ablation/config/server/LoRA_semantic_heads_icai.yaml)",
+        help="Path to a server config YAML",
     )
     parser.add_argument(
         "--output-dir", type=str, required=True,
         help="Directory to save diagnosis results",
     )
     parser.add_argument(
+        "--dataset", type=str, default="both", choices=["gli", "men", "both"],
+        help="Which dataset(s) to diagnose (default: both)",
+    )
+    parser.add_argument(
         "--max-subjects", type=int, default=DEFAULT_MAX_SUBJECTS,
-        help=f"Maximum GLI subjects to evaluate (default: {DEFAULT_MAX_SUBJECTS})",
+        help=f"Max subjects per dataset (default: {DEFAULT_MAX_SUBJECTS})",
     )
     parser.add_argument(
         "--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
-        help=f"Batch size for evaluation (default: {DEFAULT_BATCH_SIZE})",
+        help=f"Batch size (default: {DEFAULT_BATCH_SIZE})",
     )
     parser.add_argument(
         "--num-workers", type=int, default=DEFAULT_NUM_WORKERS,
         help=f"DataLoader workers (default: {DEFAULT_NUM_WORKERS})",
-    )
-    parser.add_argument(
-        "--roi-size", type=int, nargs=3, default=list(DEFAULT_ROI_SIZE),
-        help=f"ROI size for sliding window (default: {list(DEFAULT_ROI_SIZE)})",
-    )
-    parser.add_argument(
-        "--sw-batch-size", type=int, default=DEFAULT_SW_BATCH_SIZE,
-        help=f"Sliding window batch size (default: {DEFAULT_SW_BATCH_SIZE})",
-    )
-    parser.add_argument(
-        "--sw-overlap", type=float, default=DEFAULT_SW_OVERLAP,
-        help=f"Sliding window overlap (default: {DEFAULT_SW_OVERLAP})",
     )
     parser.add_argument(
         "--device", type=str, default="cuda",
@@ -388,46 +773,47 @@ def main() -> None:
         config = yaml.safe_load(f)
 
     checkpoint_path = config["paths"]["checkpoint"]
+    data_root = config["paths"]["data_root"]
     glioma_root = config["paths"].get("glioma_root")
-    if glioma_root is None:
-        raise ValueError(
-            f"Config {config_path} does not have paths.glioma_root. "
-            "Add it to your config or use a config that has it."
-        )
 
     output_dir = Path(args.output_dir)
-    roi_size = tuple(args.roi_size)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     device = args.device
     if device == "cuda" and not torch.cuda.is_available():
         logger.warning("CUDA not available, falling back to CPU")
         device = "cpu"
 
+    run_gli = args.dataset in ("gli", "both")
+    run_men = args.dataset in ("men", "both")
+
+    if run_gli and glioma_root is None:
+        raise ValueError(
+            f"Config {config_path} has no paths.glioma_root but --dataset includes 'gli'"
+        )
+
     logger.info(f"Config: {config_path}")
     logger.info(f"Checkpoint: {checkpoint_path}")
-    logger.info(f"GLI data root: {glioma_root}")
+    logger.info(f"Datasets: {args.dataset}")
     logger.info(f"Output dir: {output_dir}")
     logger.info(f"Device: {device}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save resolved config for reproducibility
     with open(output_dir / "resolved_config.yaml", "w") as f:
         yaml.dump({
             "source_config": str(config_path),
             "checkpoint": checkpoint_path,
+            "data_root": data_root,
             "glioma_root": glioma_root,
+            "dataset": args.dataset,
             "max_subjects": args.max_subjects,
             "batch_size": args.batch_size,
             "num_workers": args.num_workers,
-            "roi_size": list(roi_size),
-            "sw_batch_size": args.sw_batch_size,
-            "sw_overlap": args.sw_overlap,
             "device": device,
         }, f, default_flow_style=False)
 
-    # ---- Load model ----
-    logger.info("Loading frozen BrainSegFounder model...")
+    # ---- Load model (once, shared) ----
+    logger.info("\nLoading frozen BrainSegFounder model...")
     model = load_full_swinunetr(
         ckpt_path=checkpoint_path,
         freeze_encoder=True,
@@ -437,254 +823,83 @@ def main() -> None:
     )
     model.eval()
 
-    # ---- Discover GLI subjects ----
-    gli_path = Path(glioma_root)
-    if not gli_path.exists():
-        raise FileNotFoundError(f"GLI data root not found: {gli_path}")
+    # ---- GLI diagnostics ----
+    gli_results = None
+    if run_gli:
+        logger.info("\n" + "#" * 72)
+        logger.info("# BraTS-GLI DIAGNOSTICS")
+        logger.info("#" * 72)
 
-    all_subjects = sorted([
-        d.name for d in gli_path.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
-    ])
-    subjects = all_subjects[:args.max_subjects]
-    logger.info(
-        f"Selected {len(subjects)} subjects "
-        f"(from {len(all_subjects)} available, capped at {args.max_subjects})"
-    )
+        gli_path = Path(glioma_root)
+        if not gli_path.exists():
+            raise FileNotFoundError(f"GLI data not found: {gli_path}")
 
-    dataset = BraTSGLIDataset(data_root=str(glioma_root), subject_ids=subjects)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
-    )
-
-    # ==================================================================
-    # Diagnostic 1: Label statistics
-    # ==================================================================
-    logger.info("\n" + "=" * 70)
-    logger.info("DIAGNOSTIC 1: Label Statistics")
-    logger.info("=" * 70)
-    label_stats = collect_label_statistics(dataloader, n_subjects=10)
-    log_label_statistics(label_stats)
-
-    # Save label stats
-    with open(output_dir / "label_statistics.json", "w") as f:
-        json.dump(label_stats, f, indent=2, default=str)
-
-    # Aggregate: what label values exist across all sampled subjects?
-    all_labels_seen = set()
-    for entry in label_stats:
-        all_labels_seen.update(int(v) for v in entry["unique_labels"])
-    logger.info(f"\n  All unique labels seen: {sorted(all_labels_seen)}")
-    has_label_4 = 4 in all_labels_seen
-    has_label_3 = 3 in all_labels_seen
-    has_label_1 = 1 in all_labels_seen
-    logger.info(
-        f"  Has label 4 (GLI ET): {has_label_4}, "
-        f"Has label 3 (expected ET): {has_label_3}, "
-        f"Has label 1 (NCR): {has_label_1}"
-    )
-
-    # ==================================================================
-    # Diagnostic 2: Channel target coverage (original vs remapped)
-    # ==================================================================
-    logger.info("\n" + "=" * 70)
-    logger.info("DIAGNOSTIC 2: Channel Target Coverage (_convert_target output)")
-    logger.info("=" * 70)
-
-    for remap, label in [(False, "original"), (True, "remapped")]:
-        coverage = analyze_channel_targets(dataloader, remap=remap)
-        logger.info(f"\n  Labels: {label}")
-        for ch in ["TC", "WT", "ET"]:
-            logger.info(
-                f"    {ch}: "
-                f"non-empty in {coverage[f'{ch}_nonempty_frac']*100:.1f}% of samples, "
-                f"mean vol fraction={coverage[f'{ch}_mean_vol_frac']:.6f}"
-            )
-
-        with open(output_dir / f"channel_coverage_{label}.json", "w") as f:
-            json.dump(coverage, f, indent=2)
-
-    # ==================================================================
-    # Diagnostic 3: Model activation analysis
-    # ==================================================================
-    logger.info("\n" + "=" * 70)
-    logger.info("DIAGNOSTIC 3: Model Output Activations (first 10 batches)")
-    logger.info("=" * 70)
-
-    activations = analyze_model_activations(model, dataloader, device, max_batches=10)
-    for ch in ["TC", "WT", "ET"]:
-        logger.info(
-            f"  {ch}: mean sigmoid={activations[f'{ch}_mean_activation']:.4f}, "
-            f"positive (>0.5) frac={activations[f'{ch}_positive_frac']:.6f}"
-        )
-
-    with open(output_dir / "model_activations.json", "w") as f:
-        json.dump(activations, f, indent=2)
-
-    # ==================================================================
-    # Diagnostic 4: Dice evaluation under 4 conditions
-    # ==================================================================
-    logger.info("\n" + "=" * 70)
-    logger.info("DIAGNOSTIC 4: Dice Evaluation (4 conditions)")
-    logger.info("=" * 70)
-
-    dice_metric = DiceMetric3Ch()
-    results = {}
-    conditions = [
-        ("center_crop",     "original_labels", False, False),
-        ("center_crop",     "remapped_labels", False, True),
-        ("sliding_window",  "original_labels", True,  False),
-        ("sliding_window",  "remapped_labels", True,  True),
-    ]
-
-    for inference_mode, label_mode, use_sw, use_remap in conditions:
-        key = f"{inference_mode}__{label_mode}"
-        logger.info(f"\n  Condition: {key}")
-
-        t0 = time.time()
-        if use_sw:
-            dice_all, summary = evaluate_sliding_window(
-                model, dataloader, dice_metric, use_remap, device,
-                roi_size=roi_size,
-                sw_batch_size=args.sw_batch_size,
-                sw_overlap=args.sw_overlap,
-            )
-        else:
-            dice_all, summary = evaluate_center_crop(
-                model, dataloader, dice_metric, use_remap, device,
-            )
-        elapsed = time.time() - t0
-
-        summary["time_seconds"] = round(elapsed, 1)
-        results[key] = summary
-
-        logger.info(
-            f"    Dice mean={summary['dice_mean']:.4f}  "
-            f"TC={summary['dice_TC']:.4f}+/-{summary['dice_TC_std']:.4f}  "
-            f"WT={summary['dice_WT']:.4f}+/-{summary['dice_WT_std']:.4f}  "
-            f"ET={summary['dice_ET']:.4f}+/-{summary['dice_ET_std']:.4f}  "
-            f"[{elapsed:.1f}s]"
-        )
-
-        # Save per-sample Dice
-        torch.save(dice_all, output_dir / f"dice_per_sample__{key}.pt")
-
-    # ---- Save results CSV ----
-    csv_path = output_dir / "results.csv"
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "condition", "dice_mean",
-            "dice_TC", "dice_WT", "dice_ET",
-            "dice_TC_std", "dice_WT_std", "dice_ET_std",
-            "dice_TC_median", "dice_WT_median", "dice_ET_median",
-            "n_samples", "time_seconds",
+        all_gli = sorted([
+            d.name for d in gli_path.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
         ])
-        for key, s in results.items():
-            writer.writerow([
-                key, f"{s['dice_mean']:.4f}",
-                f"{s['dice_TC']:.4f}", f"{s['dice_WT']:.4f}", f"{s['dice_ET']:.4f}",
-                f"{s['dice_TC_std']:.4f}", f"{s['dice_WT_std']:.4f}", f"{s['dice_ET_std']:.4f}",
-                f"{s['dice_TC_median']:.4f}", f"{s['dice_WT_median']:.4f}", f"{s['dice_ET_median']:.4f}",
-                s["n_samples"], s["time_seconds"],
+        gli_subjects = all_gli[:args.max_subjects]
+        logger.info(f"GLI subjects: {len(gli_subjects)} (from {len(all_gli)} available)")
+
+        gli_dataset = BraTSGLIDataset(data_root=str(glioma_root), subject_ids=gli_subjects)
+        gli_loader = DataLoader(
+            gli_dataset, batch_size=args.batch_size, shuffle=False,
+            num_workers=args.num_workers, pin_memory=True,
+        )
+
+        gli_results = run_diagnostics(
+            model, gli_loader, "GLI", output_dir / "gli", device, is_gli=True,
+        )
+
+    # ---- MEN diagnostics ----
+    men_results = None
+    if run_men:
+        logger.info("\n" + "#" * 72)
+        logger.info("# BraTS-MEN DIAGNOSTICS")
+        logger.info("#" * 72)
+
+        # Load test split subjects
+        try:
+            splits = load_splits(str(config_path))
+            men_subjects = splits["test"][:args.max_subjects]
+            logger.info(f"MEN subjects: {len(men_subjects)} (from test split)")
+        except FileNotFoundError:
+            # No splits file: discover subjects directly
+            logger.warning("No data_splits.json found, discovering subjects from data_root")
+            men_path = Path(data_root)
+            all_men = sorted([
+                d.name for d in men_path.iterdir()
+                if d.is_dir() and not d.name.startswith(".")
             ])
-    logger.info(f"\nSaved results CSV to {csv_path}")
+            men_subjects = all_men[:args.max_subjects]
+            logger.info(f"MEN subjects: {len(men_subjects)} (discovered from {data_root})")
 
-    # Save full results JSON
-    with open(output_dir / "results.json", "w") as f:
-        json.dump(results, f, indent=2)
-
-    # ---- Generate analysis text ----
-    analysis_lines = [
-        "=" * 70,
-        "DIAGNOSIS: Frozen BrainSegFounder on BraTS-GLI",
-        "=" * 70,
-        "",
-        f"Config: {config_path}",
-        f"Checkpoint: {checkpoint_path}",
-        f"GLI root: {glioma_root}",
-        f"Subjects: {len(subjects)}",
-        "",
-        "HYPOTHESIS:",
-        "  BraTS-GLI labels use {0, 2, 4} while _convert_target() expects",
-        "  {0, 1, 2, 3}. This makes TC=(label==1|label==3) and ET=(label==3)",
-        "  empty for GLI, causing near-zero Dice on TC and ET channels.",
-        "",
-        "LABEL EVIDENCE:",
-        f"  Labels observed in data: {sorted(all_labels_seen)}",
-        f"  Has label 4 (GLI ET): {has_label_4}",
-        f"  Has label 3 (expected ET): {has_label_3}",
-        f"  Has label 1 (NCR): {has_label_1}",
-        "",
-        "DICE RESULTS:",
-        f"  {'Condition':<40} {'Mean':>6} {'TC':>6} {'WT':>6} {'ET':>6}",
-        "  " + "-" * 64,
-    ]
-
-    for key, s in results.items():
-        analysis_lines.append(
-            f"  {key:<40} {s['dice_mean']:>6.4f} {s['dice_TC']:>6.4f} "
-            f"{s['dice_WT']:>6.4f} {s['dice_ET']:>6.4f}"
+        men_dataset = BraTSMENDataset(
+            data_root=data_root,
+            subject_ids=men_subjects,
+            compute_semantic=False,
+        )
+        men_loader = DataLoader(
+            men_dataset, batch_size=args.batch_size, shuffle=False,
+            num_workers=args.num_workers, pin_memory=True,
         )
 
-    # Deltas
-    analysis_lines.append("")
-    analysis_lines.append("COMPARISONS:")
-
-    cc_orig = results.get("center_crop__original_labels", {})
-    cc_remap = results.get("center_crop__remapped_labels", {})
-    sw_orig = results.get("sliding_window__original_labels", {})
-    sw_remap = results.get("sliding_window__remapped_labels", {})
-
-    if cc_orig and cc_remap:
-        delta = cc_remap.get("dice_mean", 0) - cc_orig.get("dice_mean", 0)
-        analysis_lines.append(
-            f"  Label remap effect (center_crop): "
-            f"+{delta:.4f} mean Dice"
-        )
-        for ch in ["TC", "WT", "ET"]:
-            d = cc_remap.get(f"dice_{ch}", 0) - cc_orig.get(f"dice_{ch}", 0)
-            analysis_lines.append(f"    {ch}: +{d:.4f}")
-
-    if cc_remap and sw_remap:
-        delta = sw_remap.get("dice_mean", 0) - cc_remap.get("dice_mean", 0)
-        analysis_lines.append(
-            f"  Sliding window effect (remapped): "
-            f"+{delta:.4f} mean Dice"
+        men_results = run_diagnostics(
+            model, men_loader, "MEN", output_dir / "men", device, is_gli=False,
         )
 
-    # Conclusion
-    if cc_orig and cc_remap:
-        remap_delta = cc_remap.get("dice_mean", 0) - cc_orig.get("dice_mean", 0)
-        analysis_lines.extend([
-            "",
-            "CONCLUSION:",
-        ])
-        if remap_delta > 0.1:
-            analysis_lines.append(
-                "  Label remapping dramatically improves Dice (+{:.4f}), confirming ".format(remap_delta)
-                + "that the\n"
-                "  near-zero frozen-GLI Dice was caused by the label encoding "
-                "mismatch ({0,2,4}\n"
-                "  vs expected {0,1,2,3}), NOT by poor model generalization."
-            )
-        else:
-            analysis_lines.append(
-                "  Label remapping had limited effect (+{:.4f}). ".format(remap_delta)
-                + "Investigate further."
-            )
+    # ---- Comparative analysis ----
+    logger.info("\n" + "#" * 72)
+    logger.info("# COMPARATIVE ANALYSIS")
+    logger.info("#" * 72)
 
-    analysis_text = "\n".join(analysis_lines)
-    print("\n" + analysis_text)
+    analysis = generate_comparison(
+        gli_results, men_results, output_dir,
+        str(config_path), checkpoint_path,
+    )
+    print("\n" + analysis)
 
-    analysis_path = output_dir / "analysis.txt"
-    with open(analysis_path, "w") as f:
-        f.write(analysis_text + "\n")
-    logger.info(f"Saved analysis to {analysis_path}")
+    logger.info(f"\nAll results saved to {output_dir}")
 
 
 if __name__ == "__main__":
