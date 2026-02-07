@@ -34,7 +34,9 @@ from monai.transforms import (
 logger = logging.getLogger(__name__)
 
 # Default keys for BraTS data
-MODALITY_KEYS: List[str] = ["t1c", "t1n", "t2f", "t2w"]
+# Channel order matches BrainSegFounder training: [FLAIR, T1ce, T1, T2]
+# This order is critical — wrong order causes near-zero Dice scores.
+MODALITY_KEYS: List[str] = ["t2f", "t1c", "t1n", "t2w"]
 SEG_KEY: str = "seg"
 IMAGE_KEY: str = "image"
 

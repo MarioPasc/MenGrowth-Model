@@ -35,7 +35,7 @@ class TestConstants:
 
     def test_modality_keys(self):
         """Test expected modality keys."""
-        assert MODALITY_KEYS == ["t1c", "t1n", "t2f", "t2w"]
+        assert MODALITY_KEYS == ["t2f", "t1c", "t1n", "t2w"]
 
     def test_seg_key(self):
         """Test segmentation key."""

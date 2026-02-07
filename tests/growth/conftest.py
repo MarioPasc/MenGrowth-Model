@@ -28,7 +28,7 @@ def sample_config_dict() -> Dict:
             "output_dir": "/tmp/output",
         },
         "data": {
-            "modalities": ["t1c", "t1n", "t2f", "t2w"],
+            "modalities": ["t2f", "t1c", "t1n", "t2w"],
             "roi_size": [128, 128, 128],
             "spacing": [1.0, 1.0, 1.0],
             "orientation": "RAS",

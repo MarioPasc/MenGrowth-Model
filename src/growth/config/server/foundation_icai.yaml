@@ -35,12 +35,13 @@ paths:
 # Data Configuration
 # =============================================================================
 data:
-  # MRI modalities (must match BrainSegFounder training)
+  # MRI modalities — order matches BrainSegFounder training: [FLAIR, T1ce, T1, T2]
+  # CRITICAL: wrong channel order causes near-zero Dice scores
   modalities:
-    - t1c   # T1 contrast-enhanced
-    - t1n   # T1 native (non-enhanced)
-    - t2f   # T2-FLAIR
-    - t2w   # T2-weighted
+    - t2f   # T2-FLAIR (channel 0)
+    - t1c   # T1 contrast-enhanced (channel 1)
+    - t1n   # T1 native (channel 2)
+    - t2w   # T2-weighted (channel 3)
 
   # Spatial configuration (matches BrainSegFounder fine-tuning)
   roi_size: [128, 128, 128]   # Matches BrainSegFounder training ROI

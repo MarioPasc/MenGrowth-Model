@@ -181,4 +181,4 @@ class TestToDict:
         result = to_dict(cfg)
 
         assert isinstance(result["data"]["modalities"], list)
-        assert result["data"]["modalities"] == ["t1c", "t1n", "t2f", "t2w"]
+        assert result["data"]["modalities"] == ["t2f", "t1c", "t1n", "t2w"]

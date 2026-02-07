@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # BrainSegFounder architecture constants
 BRAINSEGFOUNDER_FEATURE_SIZE = 48   # Base channel count
-BRAINSEGFOUNDER_IN_CHANNELS = 4     # t1c, t1n, t2f, t2w
+BRAINSEGFOUNDER_IN_CHANNELS = 4     # [FLAIR, T1ce, T1, T2] = [t2f, t1c, t1n, t2w]
 BRAINSEGFOUNDER_OUT_CHANNELS = 3    # BraTS segmentation classes (TC, WT, ET)
 BRAINSEGFOUNDER_DEPTHS = (2, 2, 2, 2)
 BRAINSEGFOUNDER_NUM_HEADS = (3, 6, 12, 24)
