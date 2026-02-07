@@ -164,9 +164,9 @@ class TestDiceEvaluator:
             dice_scores = self.dice_metric(pred, segs)
             all_dice_scores.append(dice_scores.cpu())
 
-        # Aggregate
-        dice_tensor = torch.stack(all_dice_scores)  # [N, 3]
-        dice_mean_per_sample = dice_tensor.mean(dim=1)  # [N]
+        # Aggregate: each element is [B_i, 3], concat to [N_samples, 3]
+        dice_tensor = torch.cat(all_dice_scores, dim=0)  # [N_samples, 3]
+        dice_mean_per_sample = dice_tensor.mean(dim=1)  # [N_samples]
 
         return {
             "dice_mean": float(dice_tensor.mean()),
@@ -174,8 +174,7 @@ class TestDiceEvaluator:
             "dice_WT": float(dice_tensor[:, 1].mean()),
             "dice_ET": float(dice_tensor[:, 2].mean()),
             "dice_std": float(dice_mean_per_sample.std()),
-            "num_samples": len(dataloader.dataset),
-            "num_batches": len(dice_tensor),
+            "num_samples": len(dice_tensor),
         }
 
     def evaluate_condition(

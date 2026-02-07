@@ -191,8 +191,8 @@ def _run_validation_only(
     val_metrics = validate(model, val_loader, seg_loss_fn, dice_metric, device)
 
     logger.info(f"Validation Dice: {val_metrics['dice_mean']:.4f}")
-    logger.info(f"  NCR: {val_metrics['dice_0']:.4f}")
-    logger.info(f"  ED: {val_metrics['dice_1']:.4f}")
+    logger.info(f"  TC: {val_metrics['dice_0']:.4f}")
+    logger.info(f"  WT: {val_metrics['dice_1']:.4f}")
     logger.info(f"  ET: {val_metrics['dice_2']:.4f}")
 
     # Save summary
@@ -665,7 +665,7 @@ def validate(
 
     # Aggregate metrics
     avg_loss = total_loss / num_batches
-    dice_tensor = torch.stack(all_dice_scores).mean(dim=0)
+    dice_tensor = torch.cat(all_dice_scores, dim=0).mean(dim=0)  # [B1+B2+..., 3] -> [3]
 
     return {
         "loss": avg_loss,

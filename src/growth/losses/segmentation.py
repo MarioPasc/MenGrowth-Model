@@ -425,7 +425,7 @@ class DiceMetric3Ch(nn.Module):
         >>> target = torch.randint(0, 4, (2, 1, 96, 96, 96))  # integer labels
         >>> dice_scores = metric(pred, target)
         >>> dice_scores.shape
-        torch.Size([3])  # Dice for TC, WT, ET
+        torch.Size([2, 3])  # Per-sample Dice for TC, WT, ET
     """
 
     def __init__(
@@ -451,14 +451,14 @@ class DiceMetric3Ch(nn.Module):
     def forward(
         self, pred: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
-        """Compute Dice scores per channel.
+        """Compute per-sample Dice scores per channel.
 
         Args:
             pred: Predicted logits [B, 3, D, H, W].
             target: Ground truth labels [B, 1, D, H, W].
 
         Returns:
-            Dice scores per channel [3] or scalar if reduction='mean'.
+            Dice scores [B, 3] or scalar if reduction='mean'.
         """
         # Convert target to binary masks
         target_3ch = self._convert_target(target)
@@ -467,24 +467,25 @@ class DiceMetric3Ch(nn.Module):
         pred_prob = torch.sigmoid(pred)
         pred_binary = (pred_prob > self.threshold).float()
 
-        # Compute Dice per channel
+        # Compute per-sample Dice per channel
         dice_scores = []
         for c in range(3):
-            pred_c = pred_binary[:, c]
-            target_c = target_3ch[:, c]
+            pred_c = pred_binary[:, c]           # [B, D, H, W]
+            target_c = target_3ch[:, c]          # [B, D, H, W]
 
-            intersection = (pred_c * target_c).sum()
-            union = pred_c.sum() + target_c.sum()
+            # Sum over spatial dims only, keep batch dim
+            intersection = (pred_c * target_c).sum(dim=(1, 2, 3))  # [B]
+            union = pred_c.sum(dim=(1, 2, 3)) + target_c.sum(dim=(1, 2, 3))  # [B]
 
-            if union == 0:
-                # Both empty: perfect match
-                dice = torch.tensor(1.0, device=pred.device)
-            else:
-                dice = (2.0 * intersection) / (union + 1e-8)
+            # Per-sample Dice with empty-set handling
+            dice = torch.where(
+                union == 0,
+                torch.ones_like(union),
+                (2.0 * intersection) / (union + 1e-8)
+            )
+            dice_scores.append(dice)  # [B]
 
-            dice_scores.append(dice)
-
-        dice_tensor = torch.stack(dice_scores)
+        dice_tensor = torch.stack(dice_scores, dim=1)  # [B, 3]
 
         if self.reduction == "mean":
             return dice_tensor.mean()
