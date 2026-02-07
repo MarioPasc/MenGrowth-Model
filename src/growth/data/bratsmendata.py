@@ -75,7 +75,7 @@ class BraTSMENDataset(Dataset):
         ... )
         >>> sample = dataset[0]
         >>> sample['image'].shape
-        torch.Size([4, 96, 96, 96])
+        torch.Size([4, 128, 128, 128])
         >>> sample['semantic_features']['volume'].shape
         torch.Size([4])
     """

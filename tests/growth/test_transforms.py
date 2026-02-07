@@ -22,6 +22,8 @@ from growth.data.transforms import (
     get_inference_transforms,
     get_intensity_transforms,
     get_load_transforms,
+    get_reorient_and_spacing_transforms,
+    get_sliding_window_transforms,
     get_spatial_transforms,
     get_train_transforms,
     get_val_transforms,
@@ -45,7 +47,7 @@ class TestConstants:
 
     def test_default_roi_size(self):
         """Test default ROI size."""
-        assert DEFAULT_ROI_SIZE == (96, 96, 96)
+        assert DEFAULT_ROI_SIZE == (128, 128, 128)
 
     def test_default_spacing(self):
         """Test default spacing."""
@@ -82,18 +84,62 @@ class TestGetSpatialTransforms:
     """Tests for get_spatial_transforms function."""
 
     def test_spatial_transforms_default(self):
-        """Test spatial transforms with defaults."""
+        """Test spatial transforms with defaults (CropForeground pipeline)."""
         transforms = get_spatial_transforms()
 
-        # Orientationd, Spacingd (modalities), Spacingd (seg), ResizeWithPadOrCropd
-        assert len(transforms) == 4
+        # Orientationd, Spacingd (modalities), Spacingd (seg),
+        # CropForegroundd, SpatialPadd, ResizeWithPadOrCropd
+        assert len(transforms) == 6
 
     def test_spatial_transforms_no_seg(self):
         """Test spatial transforms without segmentation."""
         transforms = get_spatial_transforms(include_seg=False)
 
-        # Orientationd, Spacingd (modalities), ResizeWithPadOrCropd
+        # Orientationd, Spacingd (modalities),
+        # CropForegroundd, SpatialPadd, ResizeWithPadOrCropd
+        assert len(transforms) == 5
+
+    def test_spatial_transforms_random_crop(self):
+        """Test spatial transforms with random crop (training mode)."""
+        transforms = get_spatial_transforms(random_crop=True)
+
+        # Orientationd, Spacingd (modalities), Spacingd (seg),
+        # CropForegroundd, SpatialPadd, RandSpatialCropd
+        assert len(transforms) == 6
+
+
+class TestGetReorientAndSpacingTransforms:
+    """Tests for get_reorient_and_spacing_transforms function."""
+
+    def test_reorient_spacing_default(self):
+        """Test reorient+spacing transforms with defaults (with seg)."""
+        transforms = get_reorient_and_spacing_transforms()
+
+        # Orientationd, Spacingd (modalities), Spacingd (seg)
         assert len(transforms) == 3
+
+    def test_reorient_spacing_no_seg(self):
+        """Test reorient+spacing transforms without segmentation."""
+        transforms = get_reorient_and_spacing_transforms(include_seg=False)
+
+        # Orientationd, Spacingd (modalities)
+        assert len(transforms) == 2
+
+
+class TestGetSlidingWindowTransforms:
+    """Tests for get_sliding_window_transforms function."""
+
+    def test_sliding_window_transforms(self):
+        """Test sliding window transforms pipeline creation."""
+        pipeline = get_sliding_window_transforms()
+
+        assert pipeline is not None
+
+    def test_sliding_window_no_seg(self):
+        """Test sliding window transforms without segmentation."""
+        pipeline = get_sliding_window_transforms(include_seg=False)
+
+        assert pipeline is not None
 
 
 class TestGetIntensityTransforms:
@@ -227,13 +273,13 @@ class TestTransformPipelines:
 
         result = pipeline(synthetic_nifti_data)
 
-        # Image should be [4, 96, 96, 96] (4 modalities concatenated)
+        # Image should be [4, 128, 128, 128] (4 modalities concatenated)
         assert IMAGE_KEY in result
-        assert result[IMAGE_KEY].shape == (4, 96, 96, 96)
+        assert result[IMAGE_KEY].shape == (4, 128, 128, 128)
 
-        # Segmentation should be [1, 96, 96, 96]
+        # Segmentation should be [1, 128, 128, 128]
         assert SEG_KEY in result
-        assert result[SEG_KEY].shape == (1, 96, 96, 96)
+        assert result[SEG_KEY].shape == (1, 128, 128, 128)
 
     def test_val_pipeline_output_shape(self, synthetic_nifti_data):
         """Test that validation pipeline produces correct output shapes."""
@@ -241,8 +287,8 @@ class TestTransformPipelines:
 
         result = pipeline(synthetic_nifti_data)
 
-        assert result[IMAGE_KEY].shape == (4, 96, 96, 96)
-        assert result[SEG_KEY].shape == (1, 96, 96, 96)
+        assert result[IMAGE_KEY].shape == (4, 128, 128, 128)
+        assert result[SEG_KEY].shape == (1, 128, 128, 128)
 
     def test_inference_pipeline_output_shape(self, synthetic_nifti_data):
         """Test that inference pipeline produces correct output shapes."""
@@ -253,7 +299,7 @@ class TestTransformPipelines:
 
         result = pipeline(inference_data)
 
-        assert result[IMAGE_KEY].shape == (4, 96, 96, 96)
+        assert result[IMAGE_KEY].shape == (4, 128, 128, 128)
         assert SEG_KEY not in result
 
     def test_train_pipeline_dtype(self, synthetic_nifti_data):
@@ -294,7 +340,7 @@ class TestTransformPipelines:
         result = pipeline(subset_data)
 
         # Should have 2 channels
-        assert result[IMAGE_KEY].shape == (2, 96, 96, 96)
+        assert result[IMAGE_KEY].shape == (2, 128, 128, 128)
 
 
 class TestTransformPipelinesReal:
@@ -328,8 +374,8 @@ class TestTransformPipelinesReal:
         result = pipeline(data)
 
         # Check output shapes
-        assert result[IMAGE_KEY].shape == (4, 96, 96, 96)
-        assert result[SEG_KEY].shape == (1, 96, 96, 96)
+        assert result[IMAGE_KEY].shape == (4, 128, 128, 128)
+        assert result[SEG_KEY].shape == (1, 128, 128, 128)
 
         # Check data is not all zeros
         assert result[IMAGE_KEY].abs().sum() > 0
@@ -359,4 +405,4 @@ class TestTransformPipelinesReal:
 
         result = pipeline(data)
 
-        assert result[IMAGE_KEY].shape == (4, 96, 96, 96)
+        assert result[IMAGE_KEY].shape == (4, 128, 128, 128)

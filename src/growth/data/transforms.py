@@ -2,7 +2,10 @@
 """MONAI transforms for MRI preprocessing.
 
 Shared transforms for loading, resampling, normalization, and augmentation.
-Designed to match BrainSegFounder's expected input format (96^3).
+Matches BrainSegFounder's preprocessing pipeline:
+  - Training: CropForeground + RandSpatialCrop(128^3) + augmentation
+  - Validation: CropForeground + center crop to 128^3
+  - Sliding window: no spatial crop (full volume for sliding_window_inference)
 """
 
 import logging
@@ -16,6 +19,9 @@ from monai.transforms import (
     Spacingd,
     NormalizeIntensityd,
     ConcatItemsd,
+    CropForegroundd,
+    RandSpatialCropd,
+    SpatialPadd,
     ResizeWithPadOrCropd,
     ToTensord,
     RandFlipd,
@@ -32,8 +38,8 @@ MODALITY_KEYS: List[str] = ["t1c", "t1n", "t2f", "t2w"]
 SEG_KEY: str = "seg"
 IMAGE_KEY: str = "image"
 
-# Default spatial settings matching BrainSegFounder/SwinUNETR
-DEFAULT_ROI_SIZE: Tuple[int, int, int] = (96, 96, 96)
+# Default spatial settings matching BrainSegFounder fine-tuning
+DEFAULT_ROI_SIZE: Tuple[int, int, int] = (128, 128, 128)
 DEFAULT_SPACING: Tuple[float, float, float] = (1.0, 1.0, 1.0)
 DEFAULT_ORIENTATION: str = "RAS"
 
@@ -70,15 +76,25 @@ def get_spatial_transforms(
     spacing: Tuple[float, float, float] = DEFAULT_SPACING,
     orientation: str = DEFAULT_ORIENTATION,
     roi_size: Tuple[int, int, int] = DEFAULT_ROI_SIZE,
+    random_crop: bool = False,
 ) -> List:
     """Get spatial preprocessing transforms.
+
+    Matches BrainSegFounder pipeline:
+      1. Reorient to RAS
+      2. Resample to 1mm isotropic
+      3. CropForeground to brain bounding box (removes background/air)
+      4. SpatialPad to ensure volume >= roi_size
+      5. RandSpatialCrop (training) or center crop (validation) to roi_size
 
     Args:
         modality_keys: List of modality keys.
         include_seg: Whether to include segmentation.
         spacing: Target voxel spacing in mm (isotropic recommended).
         orientation: Target orientation (e.g., "RAS", "LPS").
-        roi_size: Target spatial size (default: 96^3 for SwinUNETR).
+        roi_size: Target spatial size (default: 128^3 matching BrainSegFounder).
+        random_crop: If True, use RandSpatialCropd (training).
+            If False, use ResizeWithPadOrCropd for deterministic center crop.
 
     Returns:
         List of MONAI spatial transforms.
@@ -116,10 +132,80 @@ def get_spatial_transforms(
             )
         )
 
-    # Pad or crop to target size
+    # Crop to brain foreground (removes background/air around skull-stripped brain)
     transforms.append(
-        ResizeWithPadOrCropd(keys=all_keys, spatial_size=roi_size)
+        CropForegroundd(keys=all_keys, source_key=modality_keys[0])
     )
+
+    # Ensure volume is at least roi_size (pad with zeros if brain is smaller)
+    transforms.append(
+        SpatialPadd(keys=all_keys, spatial_size=roi_size)
+    )
+
+    if random_crop:
+        # Training: random crop within brain volume
+        transforms.append(
+            RandSpatialCropd(
+                keys=all_keys, roi_size=roi_size, random_size=False,
+            )
+        )
+    else:
+        # Validation: deterministic center crop within brain
+        transforms.append(
+            ResizeWithPadOrCropd(keys=all_keys, spatial_size=roi_size)
+        )
+
+    return transforms
+
+
+def get_reorient_and_spacing_transforms(
+    modality_keys: List[str] = None,
+    include_seg: bool = True,
+    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    orientation: str = DEFAULT_ORIENTATION,
+) -> List:
+    """Get orientation + spacing transforms only (no crop).
+
+    Used by sliding window transforms where no spatial cropping is applied.
+
+    Args:
+        modality_keys: List of modality keys.
+        include_seg: Whether to include segmentation.
+        spacing: Target voxel spacing in mm.
+        orientation: Target orientation.
+
+    Returns:
+        List of MONAI transforms for reorientation and resampling.
+    """
+    if modality_keys is None:
+        modality_keys = MODALITY_KEYS.copy()
+
+    keys = list(modality_keys)
+    seg_keys = [SEG_KEY] if include_seg else []
+    all_keys = keys + seg_keys
+
+    transforms = []
+
+    transforms.append(
+        Orientationd(keys=all_keys, axcodes=orientation)
+    )
+
+    transforms.append(
+        Spacingd(
+            keys=modality_keys,
+            pixdim=spacing,
+            mode=["bilinear"] * len(modality_keys),
+        )
+    )
+
+    if include_seg:
+        transforms.append(
+            Spacingd(
+                keys=[SEG_KEY],
+                pixdim=spacing,
+                mode=("nearest",),
+            )
+        )
 
     return transforms
 
@@ -274,22 +360,24 @@ def get_train_transforms(
 ) -> Compose:
     """Get complete training transform pipeline.
 
-    Pipeline order:
-    1. Load NIfTI files
-    2. Ensure channel-first format
-    3. Reorient to target orientation (RAS)
-    4. Resample to target spacing (1mm isotropic)
-    5. Pad/crop to target size (96^3)
-    6. Z-score normalize intensities (nonzero voxels)
-    7. Concatenate modalities into single tensor
-    8. Apply augmentation (optional)
-    9. Convert to PyTorch tensors
+    Matches BrainSegFounder preprocessing:
+      1. Load NIfTI files
+      2. Ensure channel-first format
+      3. Reorient to RAS
+      4. Resample to 1mm isotropic
+      5. CropForeground to brain bounding box
+      6. SpatialPad to ensure volume >= roi_size
+      7. RandSpatialCrop to roi_size (random position within brain)
+      8. Z-score normalize intensities (nonzero voxels)
+      9. Concatenate modalities into single tensor
+      10. Apply augmentation (optional)
+      11. Convert to PyTorch tensors
 
     Args:
         modality_keys: List of modality keys (default: t1c, t1n, t2f, t2w).
         spacing: Target voxel spacing (default: 1mm isotropic).
         orientation: Target orientation (default: RAS).
-        roi_size: Target spatial size (default: 96^3).
+        roi_size: Target spatial size (default: 128^3).
         include_seg: Include segmentation mask in pipeline.
         augment: Apply data augmentation (for training).
 
@@ -300,7 +388,7 @@ def get_train_transforms(
         >>> transforms = get_train_transforms(augment=True)
         >>> data = {"t1c": "path/to/t1c.nii.gz", ...}
         >>> result = transforms(data)
-        >>> result["image"].shape  # [4, 96, 96, 96]
+        >>> result["image"].shape  # [4, 128, 128, 128]
     """
     if modality_keys is None:
         modality_keys = MODALITY_KEYS.copy()
@@ -310,9 +398,10 @@ def get_train_transforms(
     # Load and basic preprocessing
     transforms.extend(get_load_transforms(modality_keys, include_seg))
 
-    # Spatial preprocessing
+    # Spatial preprocessing (CropForeground + random crop)
     transforms.extend(get_spatial_transforms(
-        modality_keys, include_seg, spacing, orientation, roi_size
+        modality_keys, include_seg, spacing, orientation, roi_size,
+        random_crop=True,
     ))
 
     # Intensity normalization
@@ -335,9 +424,9 @@ def get_train_transforms(
     pipeline = Compose(transforms)
 
     logger.info(
-        f"Created {'training' if augment else 'validation'} transform pipeline: "
+        f"Created training transform pipeline: "
         f"roi_size={roi_size}, spacing={spacing}, orientation={orientation}, "
-        f"include_seg={include_seg}, augment={augment}, "
+        f"include_seg={include_seg}, augment={augment}, random_crop=True, "
         f"{len(transforms)} transforms"
     )
 
@@ -351,9 +440,11 @@ def get_val_transforms(
     roi_size: Tuple[int, int, int] = DEFAULT_ROI_SIZE,
     include_seg: bool = True,
 ) -> Compose:
-    """Get validation/inference transform pipeline.
+    """Get validation transform pipeline.
 
-    Same as training but without augmentation for deterministic evaluation.
+    Same spatial preprocessing as training (CropForeground + crop to roi_size)
+    but uses deterministic center crop instead of random crop, and no
+    augmentation.
 
     Args:
         modality_keys: List of modality keys.
@@ -365,14 +456,84 @@ def get_val_transforms(
     Returns:
         MONAI Compose transform pipeline.
     """
-    return get_train_transforms(
-        modality_keys=modality_keys,
-        spacing=spacing,
-        orientation=orientation,
-        roi_size=roi_size,
-        include_seg=include_seg,
-        augment=False,  # No augmentation for validation
+    if modality_keys is None:
+        modality_keys = MODALITY_KEYS.copy()
+
+    transforms = []
+    transforms.extend(get_load_transforms(modality_keys, include_seg))
+
+    # Spatial preprocessing (CropForeground + deterministic center crop)
+    transforms.extend(get_spatial_transforms(
+        modality_keys, include_seg, spacing, orientation, roi_size,
+        random_crop=False,
+    ))
+
+    transforms.extend(get_intensity_transforms(modality_keys))
+    transforms.extend(get_concat_transforms(modality_keys))
+    transforms.extend(get_finalize_transforms(IMAGE_KEY, include_seg))
+
+    pipeline = Compose(transforms)
+
+    logger.info(
+        f"Created validation transform pipeline: "
+        f"roi_size={roi_size}, spacing={spacing}, orientation={orientation}, "
+        f"include_seg={include_seg}, augment=False, random_crop=False, "
+        f"{len(transforms)} transforms"
     )
+
+    return pipeline
+
+
+def get_sliding_window_transforms(
+    modality_keys: List[str] = None,
+    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    orientation: str = DEFAULT_ORIENTATION,
+    include_seg: bool = True,
+) -> Compose:
+    """Get transforms for sliding window inference (no spatial crop).
+
+    Applies only orientation, spacing, and normalization. The full-resolution
+    volume is passed to monai.inferers.sliding_window_inference which handles
+    patching internally. Use with batch_size=1 since volumes have variable
+    spatial dimensions.
+
+    This matches BrainSegFounder's inference-time preprocessing where the
+    full brain volume is processed via sliding window with overlapping patches.
+
+    Args:
+        modality_keys: List of modality keys.
+        spacing: Target voxel spacing.
+        orientation: Target orientation.
+        include_seg: Include segmentation mask.
+
+    Returns:
+        MONAI Compose transform pipeline.
+    """
+    if modality_keys is None:
+        modality_keys = MODALITY_KEYS.copy()
+
+    transforms = []
+    transforms.extend(get_load_transforms(modality_keys, include_seg))
+
+    # Orientation + spacing only (no crop)
+    transforms.extend(get_reorient_and_spacing_transforms(
+        modality_keys, include_seg, spacing, orientation,
+    ))
+
+    transforms.extend(get_intensity_transforms(modality_keys))
+    transforms.extend(get_concat_transforms(modality_keys))
+    transforms.extend(get_finalize_transforms(IMAGE_KEY, include_seg))
+
+    pipeline = Compose(transforms)
+
+    logger.info(
+        f"Created sliding window transform pipeline: "
+        f"spacing={spacing}, orientation={orientation}, "
+        f"include_seg={include_seg}, no_crop=True, "
+        f"{len(transforms)} transforms"
+    )
+
+    return pipeline
 
 
 def get_inference_transforms(
@@ -383,7 +544,9 @@ def get_inference_transforms(
 ) -> Compose:
     """Get inference-only transform pipeline (no segmentation).
 
-    Minimal pipeline for inference without ground truth.
+    Uses CropForeground + center crop for fixed-size batched inference.
+    For sliding window inference on full volumes, use
+    get_sliding_window_transforms() instead.
 
     Args:
         modality_keys: List of modality keys.
@@ -394,11 +557,28 @@ def get_inference_transforms(
     Returns:
         MONAI Compose transform pipeline.
     """
-    return get_train_transforms(
-        modality_keys=modality_keys,
-        spacing=spacing,
-        orientation=orientation,
-        roi_size=roi_size,
-        include_seg=False,  # No segmentation for inference
-        augment=False,
+    if modality_keys is None:
+        modality_keys = MODALITY_KEYS.copy()
+
+    transforms = []
+    transforms.extend(get_load_transforms(modality_keys, include_seg=False))
+
+    transforms.extend(get_spatial_transforms(
+        modality_keys, include_seg=False, spacing=spacing,
+        orientation=orientation, roi_size=roi_size,
+        random_crop=False,
+    ))
+
+    transforms.extend(get_intensity_transforms(modality_keys))
+    transforms.extend(get_concat_transforms(modality_keys))
+    transforms.extend(get_finalize_transforms(IMAGE_KEY, include_seg=False))
+
+    pipeline = Compose(transforms)
+
+    logger.info(
+        f"Created inference transform pipeline: "
+        f"roi_size={roi_size}, spacing={spacing}, orientation={orientation}, "
+        f"include_seg=False, {len(transforms)} transforms"
     )
+
+    return pipeline

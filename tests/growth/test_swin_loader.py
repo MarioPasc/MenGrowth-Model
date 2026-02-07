@@ -407,7 +407,7 @@ class TestRealDataForwardPass:
         # Apply transforms
         transforms = get_val_transforms()
         result = transforms(data)
-        image = result["image"].unsqueeze(0)  # [1, 4, 96, 96, 96]
+        image = result["image"].unsqueeze(0)  # [1, 4, 128, 128, 128]
 
         # Forward pass
         with torch.no_grad():

@@ -122,9 +122,9 @@ class TestBraTSMENDataset:
 
         sample = dataset[0]
 
-        # Default transforms produce 96x96x96
-        assert sample["image"].shape == torch.Size([4, 96, 96, 96])
-        assert sample["seg"].shape == torch.Size([1, 96, 96, 96])
+        # Default transforms produce 128x128x128 (matching BrainSegFounder)
+        assert sample["image"].shape == torch.Size([4, 128, 128, 128])
+        assert sample["seg"].shape == torch.Size([1, 128, 128, 128])
 
     def test_getitem_semantic_features(self, real_data_path: Path):
         """Test semantic features have correct shapes."""
@@ -294,7 +294,7 @@ class TestDataLoaderIntegration:
         # Load all samples
         for i in range(len(dataset)):
             sample = dataset[i]
-            assert sample["image"].shape == torch.Size([4, 96, 96, 96])
+            assert sample["image"].shape == torch.Size([4, 128, 128, 128])
             assert not torch.isnan(sample["image"]).any()
             assert not torch.isinf(sample["image"]).any()
 

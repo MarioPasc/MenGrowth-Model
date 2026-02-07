@@ -29,7 +29,7 @@ def sample_config_dict() -> Dict:
         },
         "data": {
             "modalities": ["t1c", "t1n", "t2f", "t2w"],
-            "roi_size": [96, 96, 96],
+            "roi_size": [128, 128, 128],
             "spacing": [1.0, 1.0, 1.0],
             "orientation": "RAS",
             "batch_size": 4,

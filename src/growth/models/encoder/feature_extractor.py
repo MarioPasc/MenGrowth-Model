@@ -87,7 +87,7 @@ class FeatureExtractor(nn.Module):
 
         Args:
             x: Input tensor of shape [B, C, D, H, W].
-                Expected: [B, 4, 96, 96, 96] for BraTS data.
+                Expected: [B, 4, 128, 128, 128] for BraTS data.
 
         Returns:
             Feature tensor of shape [B, output_dim].
