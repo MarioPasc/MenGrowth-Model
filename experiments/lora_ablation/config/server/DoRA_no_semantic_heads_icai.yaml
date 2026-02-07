@@ -17,10 +17,10 @@ paths:
 
 # Updated splits (300/50/150/500)
 data_splits:
-  lora_train: 250
-  lora_val: 50
-  probe_train: 200
-  test: 500
+  lora_train: 525
+  lora_val: 100
+  sdp_train: 225
+  test: 150
 
 # Experimental conditions - DoRA only
 # NOTE: Using 3-channel output with sigmoid activation preserves the FULL pretrained
