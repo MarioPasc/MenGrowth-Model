@@ -69,7 +69,7 @@ conditions:
 training:
   max_epochs: 100
   early_stopping_patience: 25
-  batch_size: 4
+  batch_size: 2            # Reduced from 4 (128³ ROI requires ~2.4x more memory than 96³)
   lr_encoder: 1.0e-4
   lr_decoder: 5.0e-4
   weight_decay: 1.0e-5
@@ -115,7 +115,7 @@ probe:
 # Feature extraction
 feature_extraction:
   level: encoder10
-  batch_size: 8
+  batch_size: 4              # Reduced from 8 (128³ ROI)
 
 # Domain analysis
 domain_analysis:
