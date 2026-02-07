@@ -322,11 +322,12 @@ def extract_features(
     num_workers = config["training"].get("num_workers", 4)
     feature_level = fe_config.get("level", "multi_scale")
 
-    # Extract for probe_train split
-    logger.info(f"\nExtracting probe_train features ({len(splits['probe_train'])} subjects)")
+    # Extract for sdp_train split (used for SDP projection and probe training)
+    sdp_split_key = "sdp_train" if "sdp_train" in splits else "probe_train"
+    logger.info(f"\nExtracting sdp_train features ({len(splits[sdp_split_key])} subjects)")
     probe_features, probe_targets, probe_ids = extract_features_for_split(
         encoder=encoder,
-        subject_ids=splits["probe_train"],
+        subject_ids=splits[sdp_split_key],
         data_root=config["paths"]["data_root"],
         device=device,
         batch_size=batch_size,

@@ -20,7 +20,7 @@ paths:
 data_splits:
   lora_train: 200      # Train LoRA adaptation
   lora_val: 100        # Early stopping
-  probe_train: 200     # Train probes (separate from LoRA)
+  sdp_train: 200       # Train SDP projection and probes (separate from LoRA)
   test: 500            # Final evaluation
 
 # Experimental conditions

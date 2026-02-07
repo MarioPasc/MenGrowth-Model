@@ -296,7 +296,7 @@ def generate_markdown_report(
         "### Data Splits",
         f"- LoRA Training: {config['data_splits']['lora_train']} subjects",
         f"- LoRA Validation: {config['data_splits']['lora_val']} subjects",
-        f"- Probe Training: {config['data_splits']['probe_train']} subjects",
+        f"- SDP/Probe Training: {config['data_splits'].get('sdp_train', config['data_splits'].get('probe_train', 'N/A'))} subjects",
         f"- Test Set: {config['data_splits']['test']} subjects",
         "",
         "### Experimental Conditions",

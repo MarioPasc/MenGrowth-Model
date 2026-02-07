@@ -5,7 +5,7 @@
 Creates four non-overlapping splits:
 - lora_train: For training LoRA/baseline segmentation
 - lora_val: For early stopping during LoRA training
-- probe_train: For training linear probes (separate from LoRA training)
+- sdp_train: For training SDP projection and linear probes (separate from LoRA training)
 - test: For final evaluation (never touched during training)
 
 Usage:
@@ -35,7 +35,7 @@ def split_subjects_four_way(
     subject_ids: List[str],
     lora_train_size: int,
     lora_val_size: int,
-    probe_train_size: int,
+    sdp_train_size: int,
     test_size: int,
     seed: int = 42,
 ) -> Dict[str, List[str]]:
@@ -48,12 +48,12 @@ def split_subjects_four_way(
         subject_ids: List of all subject IDs.
         lora_train_size: Number of subjects for LoRA training.
         lora_val_size: Number of subjects for LoRA validation.
-        probe_train_size: Number of subjects for probe training.
+        sdp_train_size: Number of subjects for SDP/probe training.
         test_size: Number of subjects for testing.
         seed: Random seed for reproducibility.
 
     Returns:
-        Dict with keys 'lora_train', 'lora_val', 'probe_train', 'test'.
+        Dict with keys 'lora_train', 'lora_val', 'sdp_train', 'test'.
 
     Raises:
         ValueError: If total size exceeds available subjects.
@@ -63,7 +63,7 @@ def split_subjects_four_way(
         split_sizes={
             "lora_train": lora_train_size,
             "lora_val": lora_val_size,
-            "probe_train": probe_train_size,
+            "sdp_train": sdp_train_size,
             "test": test_size,
         },
         seed=seed,
@@ -115,7 +115,7 @@ def main(config_path: str, force: bool = False) -> Dict[str, List[str]]:
         subject_ids=all_subjects,
         lora_train_size=split_config["lora_train"],
         lora_val_size=split_config["lora_val"],
-        probe_train_size=split_config["probe_train"],
+        sdp_train_size=split_config["sdp_train"],
         test_size=split_config["test"],
         seed=seed,
     )
