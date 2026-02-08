@@ -529,13 +529,13 @@ def generate_domain_figures(
     # Generate UMAP for select conditions
     for cond in ["baseline", "lora_r8"]:
         cond_dir = output_dir / "conditions" / cond
-        men_path = cond_dir / "features_meningioma.pt"
+        men_path = cond_dir / "features_meningioma_subset.pt"
         gli_path = cond_dir / "features_glioma.pt"
 
         if men_path.exists() and gli_path.exists():
             logger.info(f"Generating domain UMAP for {cond}...")
-            men_feat = torch.load(men_path).numpy()
-            gli_feat = torch.load(gli_path).numpy()
+            men_feat = torch.load(men_path, map_location="cpu", weights_only=False)["features"].numpy()
+            gli_feat = torch.load(gli_path, map_location="cpu", weights_only=False)["features"].numpy()
 
             plot_domain_umap(
                 men_feat, gli_feat,

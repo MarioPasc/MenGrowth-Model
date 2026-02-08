@@ -14,6 +14,8 @@ from growth.evaluation.latent_quality import (
     compute_dcor_matrix,
     compute_variance_per_dim,
     evaluate_latent_quality,
+    compute_cka,
+    mmd_permutation_test,
 )
 
 
@@ -316,3 +318,89 @@ class TestEvaluateLatentQuality:
 
         assert "partition_correlation" in quality
         assert "dcor" in quality
+
+
+class TestComputeCKA:
+    """Tests for Centered Kernel Alignment."""
+
+    def test_compute_cka_identical(self):
+        """CKA of identical matrices should be 1.0."""
+        np.random.seed(42)
+        X = np.random.randn(100, 50)
+
+        cka = compute_cka(X, X)
+
+        assert abs(cka - 1.0) < 1e-6
+
+    def test_compute_cka_orthogonal(self):
+        """CKA of orthogonal matrices should be ~0.0."""
+        np.random.seed(42)
+        n = 200
+        # Create orthogonal features via QR decomposition
+        A = np.random.randn(n, 20)
+        B = np.random.randn(n, 20)
+        # Remove correlation: project B onto orthogonal complement of A
+        Q, _ = np.linalg.qr(A)
+        B_orth = B - Q @ (Q.T @ B)
+
+        cka = compute_cka(A, B_orth)
+
+        assert cka < 0.1
+
+    def test_compute_cka_range(self):
+        """CKA should always be in [0, 1]."""
+        np.random.seed(42)
+        for _ in range(10):
+            X = np.random.randn(50, 30)
+            Y = np.random.randn(50, 20)
+
+            cka = compute_cka(X, Y)
+
+            assert 0.0 <= cka <= 1.0
+
+    def test_compute_cka_shape_mismatch_raises(self):
+        """CKA should raise if sample counts differ."""
+        X = np.random.randn(50, 10)
+        Y = np.random.randn(60, 10)
+
+        with pytest.raises(ValueError, match="same number of samples"):
+            compute_cka(X, Y)
+
+
+class TestMMDPermutationTest:
+    """Tests for MMD permutation test."""
+
+    def test_mmd_permutation_identical(self):
+        """p-value should be > 0.05 for identical distributions."""
+        np.random.seed(42)
+        X = np.random.randn(50, 20)
+        Y = np.random.randn(50, 20)
+
+        mmd_val, p_value = mmd_permutation_test(X, Y, n_perm=200)
+
+        assert 0 <= p_value <= 1
+        assert p_value > 0.05  # Not significantly different
+
+    def test_mmd_permutation_shifted(self):
+        """p-value should be < 0.05 for shifted distributions."""
+        np.random.seed(42)
+        X = np.random.randn(50, 20)
+        Y = np.random.randn(50, 20) + 3.0  # Large shift
+
+        mmd_val, p_value = mmd_permutation_test(X, Y, n_perm=200)
+
+        assert mmd_val > 0
+        assert p_value < 0.05  # Significantly different
+
+    def test_mmd_permutation_returns_tuple(self):
+        """Should return (mmd_squared, p_value) tuple."""
+        np.random.seed(42)
+        X = np.random.randn(30, 10)
+        Y = np.random.randn(30, 10)
+
+        result = mmd_permutation_test(X, Y, n_perm=50)
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], float)
+        assert isinstance(result[1], float)

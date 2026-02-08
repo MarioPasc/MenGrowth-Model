@@ -56,6 +56,30 @@ z*(t₀) ──→ ODESolve(f_θ, z*(t₀), t₀, t₁) ──→ ẑ(t₁)
 - Segmentation labels (input): 0=background, 1=NCR, 2=ED, 3=ET
 - Segmentation output (3-ch sigmoid): Ch0=TC, Ch1=WT, Ch2=ET (hierarchical overlapping)
 
+### Module Dependency Chain
+
+```
+module_0 (Data) → module_1 (Domain Gap) → module_2 (LoRA) → module_3 (SDP) → module_4 (Encoding) → module_5 (Neural ODE) → module_6 (Evaluation)
+```
+
+Each module's outputs are the next module's inputs. Do NOT start a module until all predecessor modules pass their BLOCKING tests.
+
+### Error Recovery Protocol
+
+1. If a **BLOCKING** test fails:
+   - Read the failure recovery steps documented in the module spec file
+   - Try each recovery step in order
+   - If all recovery steps fail, stop and report the failure with diagnostics
+2. If a **DIAGNOSTIC** test fails:
+   - Log the warning with full metrics
+   - Continue to the next step
+3. Never skip a BLOCKING test to proceed to the next module
+
+### Reference Documents
+
+- **`docs/Methods/claude_files_BSGNeuralODE/DECISIONS.md`** — 15 resolved design choices with rationale
+- **`docs/Methods/claude_files_BSGNeuralODE/module_*.md`** — Per-module task specifications
+
 ---
 
 ## 2) Phase 1: LoRA Encoder Adaptation
@@ -150,10 +174,10 @@ SpectralNorm(Linear(512, 128))
        ↓
 z ∈ ℝ^128 = [z_vol(24) | z_loc(8) | z_shape(12) | z_residual(84)]
        ↓                ↓               ↓
-   π_vol(24→4)     π_loc(8→3)     π_shape(12→6)
+   π_vol(24→4)     π_loc(8→3)     π_shape(12→3)
 ```
 
-Spectral normalization on the final layer ensures Lipschitz continuity, which propagates to Neural ODE dynamics.
+Spectral normalization on ALL SDP linear layers ensures Lipschitz continuity (see DECISIONS.md D13), which propagates to Neural ODE dynamics.
 
 Total trainable parameters: ~500K (projection MLP) + ~3K (semantic heads) ≈ 503K.
 
@@ -163,7 +187,7 @@ Total trainable parameters: ~500K (projection MLP) + ~3K (semantic heads) ≈ 50
 |-----------|------|---------|-----------------|
 | z_vol | 24 | 0–23 | V_total, V_NCR, V_ED, V_ET (log-transformed) |
 | z_loc | 8 | 24–31 | Centroid c_x, c_y, c_z |
-| z_shape | 12 | 32–43 | Sphericity, surface area, solidity, aspect ratios |
+| z_shape | 12 | 32–43 | Sphericity, surface_area_log, solidity (3 targets) |
 | z_residual | 84 | 44–127 | Unsupervised (texture, context, scanner) |
 
 ### Loss Function
@@ -184,7 +208,7 @@ Four complementary mechanisms replace all VAE-based disentanglement:
 Computed by `src/growth/data/semantic_features.py`:
 - **Volumes** (mm³): Total tumor, NCR, ED, ET — log-transformed: log(V+1)
 - **Location**: Center of mass (3D), normalized or physical coordinates
-- **Shape**: Sphericity, surface area, solidity, aspect ratios — via scipy
+- **Shape**: Sphericity, surface_area_log, solidity (3 features) — via scipy. See DECISIONS.md D12.
 
 ### Hyperparameters
 
@@ -466,11 +490,14 @@ The `experiments/lora_ablation/` directory contains a systematic ablation study 
 ### Data Splits
 
 ```yaml
-lora_train: 200      # LoRA training
-lora_val: 100        # Early stopping
+# Ablation experiment (v2 server configs):
+lora_train: 250      # LoRA training
+lora_val: 50         # Early stopping
 probe_train: 200     # Probe training (separate from LoRA)
 test: 500            # Final evaluation
 ```
+
+Note: actual server configs in `experiments/lora_ablation/config/server/` may use different splits (e.g., 525/100/225/150 for the main pipeline).
 
 ### Key Finding
 
@@ -505,7 +532,7 @@ Guiding rule: **MONAI for data + SwinUNETR**, **PyTorch for core ML**, **Lightni
 
 - Gradient clipping: `gradient_clip_val: 1.0`
 - Mixed precision: `bf16-mixed` (preferred) or `16-mixed`
-- Spectral normalization on SDP final layer for Lipschitz continuity
+- Spectral normalization on ALL SDP linear layers for Lipschitz continuity (D13)
 - Semantic targets normalized to μ=0, σ=1 during training
 
 ### Logging Keys

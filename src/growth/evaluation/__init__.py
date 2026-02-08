@@ -26,6 +26,8 @@ from .latent_quality import (
     # Domain shift metrics
     compute_effective_rank,
     compute_mmd,
+    compute_cka,
+    mmd_permutation_test,
     compute_domain_classifier_accuracy,
     compute_proxy_a_distance,
     DomainShiftMetrics,
@@ -88,6 +90,8 @@ __all__ = [
     # Domain shift metrics
     "compute_effective_rank",
     "compute_mmd",
+    "compute_cka",
+    "mmd_permutation_test",
     "compute_domain_classifier_accuracy",
     "compute_proxy_a_distance",
     "DomainShiftMetrics",

@@ -68,6 +68,8 @@ GLIOMA_TEST_SIZE=200
 SKIP_EXTRACTION=false
 SKIP_PROBES=false
 SKIP_DICE=false
+DOMAIN_METRICS=false
+DOMAIN_METRICS_ONLY=false
 GPU_ID=""
 
 # =============================================================================
@@ -120,6 +122,14 @@ while [[ $# -gt 0 ]]; do
             SKIP_DICE=true
             shift
             ;;
+        --domain-metrics)
+            DOMAIN_METRICS=true
+            shift
+            ;;
+        --domain-metrics-only)
+            DOMAIN_METRICS_ONLY=true
+            shift
+            ;;
         --dry-run)
             DRY_RUN=true
             shift
@@ -139,6 +149,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-extraction    Skip feature extraction (use existing)"
             echo "  --skip-probes        Skip probe evaluation (use existing)"
             echo "  --skip-dice          Skip Dice evaluation (use existing)"
+            echo "  --domain-metrics     Also run domain gap metrics (MMD, CKA, PAD)"
+            echo "  --domain-metrics-only Run ONLY domain gap metrics (skip all other steps)"
             echo "  --dry-run            Show commands without executing"
             echo "  -h, --help           Show this help message"
             echo ""
@@ -225,6 +237,35 @@ run_analysis() {
     log_info "Analysis complete for $name!"
 }
 
+run_domain_metrics() {
+    local config=$1
+    local name=$2
+
+    log_header "DOMAIN METRICS: $name"
+    echo "Config: $config"
+    echo ""
+
+    local cmd="python -m experiments.lora_ablation.compute_domain_metrics --config $config"
+
+    if [ "$RUN_ALL" = true ]; then
+        cmd="$cmd --all"
+    fi
+
+    echo "Command:"
+    echo "  $cmd"
+    echo ""
+
+    if [ "$DRY_RUN" = true ]; then
+        echo "[DRY RUN] Would execute the above command"
+        echo ""
+        return 0
+    fi
+
+    eval "$cmd"
+
+    log_info "Domain metrics complete for $name!"
+}
+
 # =============================================================================
 # Verify environment
 # =============================================================================
@@ -255,13 +296,43 @@ echo "  - Domain features: $DOMAIN_FEATURES"
 echo "  - Skip extraction: $SKIP_EXTRACTION"
 echo "  - Skip probes: $SKIP_PROBES"
 echo "  - Skip dice: $SKIP_DICE"
+echo "  - Domain metrics: $DOMAIN_METRICS"
+echo "  - Domain metrics only: $DOMAIN_METRICS_ONLY"
 echo "  - Dry run: $DRY_RUN"
 
 # =============================================================================
 # Run analysis
 # =============================================================================
 
-if [ "$RUN_ALL" = true ]; then
+if [ "$DOMAIN_METRICS_ONLY" = true ]; then
+    # Run ONLY domain metrics (no feature extraction, probes, dice, etc.)
+    if [ "$RUN_ALL" = true ]; then
+        log_info "Running domain metrics on all 4 experiments..."
+        # Use one config as entry point; --all auto-discovers siblings
+        if [ -f "$CONFIG_LORA_SEMANTIC" ]; then
+            run_domain_metrics "$CONFIG_LORA_SEMANTIC" "All experiments"
+        fi
+    elif [ -n "$CONFIG_FILE" ]; then
+        # Handle relative paths
+        if [[ ! "$CONFIG_FILE" = /* ]]; then
+            if [ -f "$CONFIG_DIR/$CONFIG_FILE" ]; then
+                CONFIG_FILE="$CONFIG_DIR/$CONFIG_FILE"
+            elif [ -f "$PROJECT_ROOT/$CONFIG_FILE" ]; then
+                CONFIG_FILE="$PROJECT_ROOT/$CONFIG_FILE"
+            fi
+        fi
+        if [ ! -f "$CONFIG_FILE" ]; then
+            echo "ERROR: Config file not found: $CONFIG_FILE"
+            exit 1
+        fi
+        run_domain_metrics "$CONFIG_FILE" "$(basename $CONFIG_FILE .yaml)"
+    else
+        echo "ERROR: Must specify --config FILE or --all"
+        echo "Run with -h for help"
+        exit 1
+    fi
+
+elif [ "$RUN_ALL" = true ]; then
     # Run all 4 experiments
     log_info "Running analysis on all 4 experiments..."
 
@@ -279,6 +350,13 @@ if [ "$RUN_ALL" = true ]; then
 
     if [ -f "$CONFIG_DORA_NO_SEMANTIC" ]; then
         run_analysis "$CONFIG_DORA_NO_SEMANTIC" "DoRA + No Semantic Heads"
+    fi
+
+    # Run domain metrics after all analysis if flag set
+    if [ "$DOMAIN_METRICS" = true ]; then
+        if [ -f "$CONFIG_LORA_SEMANTIC" ]; then
+            run_domain_metrics "$CONFIG_LORA_SEMANTIC" "All experiments"
+        fi
     fi
 
 elif [ -n "$CONFIG_FILE" ]; then
@@ -300,6 +378,11 @@ elif [ -n "$CONFIG_FILE" ]; then
     fi
 
     run_analysis "$CONFIG_FILE" "$(basename $CONFIG_FILE .yaml)"
+
+    # Run domain metrics after analysis if flag set
+    if [ "$DOMAIN_METRICS" = true ]; then
+        run_domain_metrics "$CONFIG_FILE" "$(basename $CONFIG_FILE .yaml)"
+    fi
 
 else
     echo "ERROR: Must specify --config FILE or --all"
@@ -330,3 +413,11 @@ echo "  - diagnostics_probes.csv (probe quality analysis)"
 echo "  - diagnostics_loss.csv (loss dynamics)"
 echo "  - diagnostics_issues.csv (detected issues)"
 echo "  - diagnostics_report.txt (comprehensive report)"
+echo ""
+echo "Domain metrics files (if --domain-metrics used):"
+echo "  - conditions/<cond>/domain_metrics.json (per-condition)"
+echo "  - domain_metrics_summary.csv (all conditions)"
+echo "  - figures/domain_gap_metrics.{pdf,png}"
+echo "  - figures/domain_effective_rank.{pdf,png}"
+echo "  - figures/domain_adaptation_tradeoff.{pdf,png}"
+echo "  - figures/domain_umap_*.{pdf,png}"

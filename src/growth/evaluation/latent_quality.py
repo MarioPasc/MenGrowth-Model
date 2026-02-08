@@ -561,6 +561,97 @@ def compute_mmd(
     return max(0.0, float(mmd2))  # Clamp to non-negative
 
 
+def compute_cka(
+    X: np.ndarray,
+    Y: np.ndarray,
+) -> float:
+    """Centered Kernel Alignment between two feature matrices.
+
+    CKA measures representation similarity between two sets of features.
+    Uses linear kernel: CKA(X,Y) = ||Y^T X||_F^2 / (||X^T X||_F * ||Y^T Y||_F).
+
+    Args:
+        X: First feature matrix [N, D1].
+        Y: Second feature matrix [N, D2].
+
+    Returns:
+        CKA score in [0, 1]. 1.0 means identical representations
+        (up to linear transform), 0.0 means orthogonal.
+
+    References:
+        Kornblith et al. (2019). "Similarity of Neural Network Representations
+        Revisited." ICML.
+    """
+    if X.shape[0] != Y.shape[0]:
+        raise ValueError(
+            f"X and Y must have same number of samples: {X.shape[0]} vs {Y.shape[0]}"
+        )
+
+    # Center both matrices
+    X = X - X.mean(axis=0, keepdims=True)
+    Y = Y - Y.mean(axis=0, keepdims=True)
+
+    # Compute HSIC terms with linear kernel
+    YtX = Y.T @ X
+    XtX = X.T @ X
+    YtY = Y.T @ Y
+
+    hsic_xy = np.linalg.norm(YtX, "fro") ** 2
+    hsic_xx = np.linalg.norm(XtX, "fro")
+    hsic_yy = np.linalg.norm(YtY, "fro")
+
+    denom = hsic_xx * hsic_yy
+    if denom == 0:
+        return 0.0
+
+    return float(np.clip(hsic_xy / denom, 0.0, 1.0))
+
+
+def mmd_permutation_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    n_perm: int = 1000,
+    kernel: str = "rbf",
+    gamma: Optional[float] = None,
+) -> Tuple[float, float]:
+    """MMD with permutation test for statistical significance.
+
+    Computes MMD² between X and Y, then estimates the p-value by
+    repeatedly permuting the combined samples and recomputing MMD².
+
+    Args:
+        X: First sample [N1, D].
+        Y: Second sample [N2, D].
+        n_perm: Number of permutations for p-value estimation.
+        kernel: Kernel type for MMD ("rbf" or "linear").
+        gamma: RBF kernel bandwidth. If None, uses median heuristic.
+
+    Returns:
+        Tuple of (mmd_squared, p_value). p_value < 0.05 indicates
+        statistically significant distributional difference.
+    """
+    observed_mmd = compute_mmd(X, Y, kernel=kernel, gamma=gamma)
+
+    # Pool samples for permutation test
+    combined = np.vstack([X, Y])
+    n = len(X)
+    total = len(combined)
+
+    rng = np.random.RandomState(42)
+    count_ge = 0
+
+    for _ in range(n_perm):
+        perm = rng.permutation(total)
+        X_perm = combined[perm[:n]]
+        Y_perm = combined[perm[n:]]
+        perm_mmd = compute_mmd(X_perm, Y_perm, kernel=kernel, gamma=gamma)
+        if perm_mmd >= observed_mmd:
+            count_ge += 1
+
+    p_value = (count_ge + 1) / (n_perm + 1)  # +1 for continuity correction
+    return float(observed_mmd), float(p_value)
+
+
 def compute_domain_classifier_accuracy(
     source_features: np.ndarray,
     target_features: np.ndarray,
@@ -628,6 +719,8 @@ class DomainShiftMetrics:
     proxy_a_distance: float
     source_effective_rank: float
     target_effective_rank: float
+    cka: Optional[float] = None
+    mmd_pvalue: Optional[float] = None
 
 
 def compute_domain_shift_metrics(
@@ -653,8 +746,12 @@ def compute_domain_shift_metrics(
         idx = np.random.choice(len(target_features), max_samples, replace=False)
         target_features = target_features[idx]
 
+    mmd_val, mmd_pval = mmd_permutation_test(
+        source_features, target_features, n_perm=100
+    )
+
     return DomainShiftMetrics(
-        mmd=compute_mmd(source_features, target_features),
+        mmd=mmd_val,
         domain_classifier_accuracy=compute_domain_classifier_accuracy(
             source_features, target_features
         ),
@@ -663,6 +760,8 @@ def compute_domain_shift_metrics(
         ),
         source_effective_rank=compute_effective_rank(source_features),
         target_effective_rank=compute_effective_rank(target_features),
+        cka=compute_cka(source_features, target_features),
+        mmd_pvalue=mmd_pval,
     )
 
 
