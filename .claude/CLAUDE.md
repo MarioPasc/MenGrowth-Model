@@ -4,6 +4,8 @@ Foundation model pipeline for **meningioma growth forecasting** from multi-modal
 BrainSegFounder (SwinUNETR, pretrained on 41K+ subjects) → LoRA adaptation → Supervised Disentangled Projection → Neural ODE.
 B.Sc. thesis project.
 
+>[!IMPORTANT] For full context of the project (only read if asked to gather all context for a complex task), read the file: `docs/Methods/methodology_refined.md`
+
 ## Environment
 
 - Conda: `~/.conda/envs/growth/bin`

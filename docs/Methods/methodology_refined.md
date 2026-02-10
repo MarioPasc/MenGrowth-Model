@@ -303,6 +303,38 @@ where $A$ is initialized from $\mathcal{N}(0, \sigma^2)$ and $B$ is initialized 
 
 **LoRA target modules**: Q, K, V projection matrices in all self-attention layers of Stages 3 and 4. Stages 0–2 are frozen to preserve low-level anatomical features learned from 41,400 UK Biobank subjects. LoRA scaling: $\alpha = 16$, effective scale $\alpha / r = 2.0$.
 
+Targeted layers: Stages 3 and 4 only, specifically the attn.qkv projections                 
+                
+The function _find_lora_targets() (lora_adapter.py:66) walks the model and matches modules  
+where the name contains both layers{stage} and attn.qkv. The concrete targets are:
+
+```
+swinViT.layers3.0.blocks.0.attn.qkv   # Stage 3, Block 0 — dim 192→576
+swinViT.layers3.0.blocks.1.attn.qkv   # Stage 3, Block 1
+swinViT.layers4.0.blocks.0.attn.qkv   # Stage 4, Block 0 — dim 384→1152
+swinViT.layers4.0.blocks.1.attn.qkv   # Stage 4, Block 1
+```
+
+That's 4 QKV linear layers total, each getting a low-rank A/B pair.
+
+```
+What's frozen
+Component: Stages 1–2 (layers1, layers2)
+Trainable?: Frozen — preserves low-level anatomical features
+────────────────────────────────────────
+Component: Stages 3–4 QKV (layers3, layers4)
+Trainable?: LoRA adapters only (base weights frozen)
+────────────────────────────────────────
+Component: Bottleneck (encoder10)
+Trainable?: Frozen
+────────────────────────────────────────
+Component: Decoder (decoder1-5, out)
+Trainable?: Trainable but not LoRA-adapted — uses pretrained original decoder weights
+────────────────────────────────────────
+Component: Semantic heads (aux)
+Trainable?: Trainable (if enabled)
+```
+
 **DoRA** (Liu et al., "DoRA: Weight-Decomposed Low-Rank Adaptation of Pre-Trained Models," ICML, 2024) decomposes weights into magnitude and direction components and applies LoRA only to direction. Both LoRA and DoRA are evaluated as ablation conditions (A2). The primary pipeline uses standard LoRA; DoRA comparison is deferred to the ablation study.
 
 **Auxiliary Semantic Heads.** During Phase 1, optional auxiliary regression heads predict volume, location, and shape features from the encoder bottleneck. These provide multi-task learning signal that enriches the feature space for downstream SDP. The auxiliary loss is ramped in after a warmup period:

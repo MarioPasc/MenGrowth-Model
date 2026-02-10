@@ -47,11 +47,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIG_DIR="$SCRIPT_DIR/config"
 
+LOCATION="local"  # "local" or "server"
+
 # Config files for all experiments
-CONFIG_LORA_SEMANTIC="$CONFIG_DIR/server/LoRA_semantic_heads_icai.yaml"
-CONFIG_LORA_NO_SEMANTIC="$CONFIG_DIR/server/LoRA_no_semantic_heads_icai.yaml"
-CONFIG_DORA_SEMANTIC="$CONFIG_DIR/server/DoRA_semantic_heads_icai.yaml"
-CONFIG_DORA_NO_SEMANTIC="$CONFIG_DIR/server/DoRA_no_semantic_heads_icai.yaml"
+CONFIG_LORA_SEMANTIC="$CONFIG_DIR/$LOCATION/LoRA_semantic_heads_icai.yaml"
+CONFIG_LORA_NO_SEMANTIC="$CONFIG_DIR/$LOCATION/LoRA_no_semantic_heads_icai.yaml"
+CONFIG_DORA_SEMANTIC="$CONFIG_DIR/$LOCATION/DoRA_semantic_heads_icai.yaml"
+CONFIG_DORA_NO_SEMANTIC="$CONFIG_DIR/$LOCATION/DoRA_no_semantic_heads_icai.yaml"
 
 # Conda environment
 CONDA_ENV="growth"
@@ -62,9 +64,9 @@ RUN_ALL=false
 CONFIG_FILE=""
 DEVICE="cuda"
 DOMAIN_FEATURES=false
-N_GLIOMA=200
-N_MENINGIOMA=200
-GLIOMA_TEST_SIZE=200
+N_GLIOMA=150
+N_MENINGIOMA=150
+GLIOMA_TEST_SIZE=150
 SKIP_EXTRACTION=false
 SKIP_PROBES=false
 SKIP_DICE=false

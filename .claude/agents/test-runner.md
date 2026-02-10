@@ -1,7 +1,7 @@
 ---
 name: test-runner
 description: Run pytest tests for the MenGrowth project and report results
-model: haiku
+model: sonnet
 tools:
   - Bash
   - Read

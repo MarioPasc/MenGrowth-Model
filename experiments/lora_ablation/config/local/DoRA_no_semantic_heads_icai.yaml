@@ -1,0 +1,149 @@
+# experiments/lora_ablation/config/server/dora_no_semantic_heads_icai.yaml
+# DoRA Ablation Experiment Configuration - WITHOUT Semantic Heads
+#
+# This config disables auxiliary semantic prediction losses.
+# Training uses only segmentation loss (Dice + CE).
+# This is the control experiment for measuring the effect of semantic heads with DoRA.
+
+experiment:
+  name: dora_ablation_no_semantic_heads
+  seed: 42
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/BrainSegFounder_adaptation/LoRA_Adaptation/dora_ablation_no_semantic_heads
+
+paths:
+  checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+  glioma_root: /media/mpascual/PortableSSD/BraTS_GLI/BraTS-GLI-100
+
+# Updated splits (300/50/150/500)
+data_splits:
+  lora_train: 525
+  lora_val: 100
+  sdp_train: 225
+  test: 150
+
+# Experimental conditions - DoRA only
+# NOTE: Using 3-channel output with sigmoid activation preserves the FULL pretrained
+# decoder weights from BrainSegFounder, making baseline_frozen evaluation valid.
+conditions:
+  - name: baseline_frozen
+    lora_rank: null
+    skip_training: true
+    description: Original BrainSegFounder (completely frozen, test only)
+
+  - name: baseline
+    lora_rank: null
+    description: Frozen encoder + trainable decoder (no adaptation)
+
+  - name: dora_r2
+    lora_rank: 2
+    lora_alpha: 4
+    use_dora: true
+    description: DoRA rank 2 (weight-decomposed)
+
+  - name: dora_r4
+    lora_rank: 4
+    lora_alpha: 8
+    use_dora: true
+    description: DoRA rank 4 (weight-decomposed)
+
+  - name: dora_r8
+    lora_rank: 8
+    lora_alpha: 16
+    use_dora: true
+    description: DoRA rank 8 (weight-decomposed, recommended)
+
+  - name: dora_r16
+    lora_rank: 16
+    lora_alpha: 32
+    use_dora: true
+    description: DoRA rank 16 (weight-decomposed)
+
+  - name: dora_r32
+    lora_rank: 32
+    lora_alpha: 64
+    use_dora: true
+    description: DoRA rank 32 (weight-decomposed, saturation test)
+
+# Training hyperparameters
+training:
+  max_epochs: 100
+  early_stopping_patience: 25
+  batch_size: 2            # Reduced from 4 (128³ ROI requires ~2.4x more memory than 96³)
+  lr_encoder: 1.0e-4
+  lr_decoder: 5.0e-4
+  weight_decay: 1.0e-5
+  num_workers: 4
+  lora_dropout: 0.1
+  gradient_clip: 1.0
+
+  # Decoder configuration
+  decoder_type: "original"
+  freeze_decoder: false
+
+  # Semantic heads configuration - DISABLED
+  use_semantic_heads: false
+  lambda_aux: 0.0
+
+  # Warmup not needed when semantic heads disabled
+  aux_warmup_epochs: 0
+  aux_warmup_duration: 0
+
+  # Gradient monitoring (for diagnostics - always enabled for analysis)
+  enable_gradient_monitoring: true
+  gradient_monitor_freq: 50
+
+# Segmentation loss
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+
+  # These are not used when use_semantic_heads: false
+  lambda_volume: 1.0
+  lambda_location: 1.0
+  lambda_shape: 0.5
+
+# Probe evaluation
+probe:
+  alpha_linear: 1.0
+  use_mlp_probes: true
+  alpha_mlp: 0.01
+  hidden_sizes: [128]
+  normalize_features: true
+  normalize_targets: true
+
+# Feature extraction
+feature_extraction:
+  level: encoder10
+  batch_size: 1              # Reduced from 4 to avoid OOM on local GPU (128³ ROI)
+
+# Domain analysis
+domain_analysis:
+  enabled: true
+  num_samples: 200
+
+# Visualization
+visualization:
+  umap_n_neighbors: 15
+  umap_min_dist: 0.1
+  color_by_semantic: true
+  show_variance_per_dim: true
+  show_scatter_plots: true
+
+# Logging
+logging:
+  log_every_n_steps: 10
+  val_check_interval: 1.0
+
+# Model card generation
+model_card:
+  enabled: true
+
+# =============================================================================
+# EXPERIMENT NOTES
+# =============================================================================
+#
+# This is the CONTROL experiment without semantic heads for DoRA.
+#
+# Compare results with dora_semantic_heads_icai.yaml to measure the effect of
+# auxiliary semantic prediction on DoRA-adapted representations.

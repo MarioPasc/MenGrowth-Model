@@ -746,6 +746,11 @@ def compute_domain_shift_metrics(
         idx = np.random.choice(len(target_features), max_samples, replace=False)
         target_features = target_features[idx]
 
+    # Align to same size for CKA (requires equal N)
+    n_min = min(len(source_features), len(target_features))
+    source_aligned = source_features[:n_min]
+    target_aligned = target_features[:n_min]
+
     mmd_val, mmd_pval = mmd_permutation_test(
         source_features, target_features, n_perm=100
     )
@@ -760,7 +765,7 @@ def compute_domain_shift_metrics(
         ),
         source_effective_rank=compute_effective_rank(source_features),
         target_effective_rank=compute_effective_rank(target_features),
-        cka=compute_cka(source_features, target_features),
+        cka=compute_cka(source_aligned, target_aligned),
         mmd_pvalue=mmd_pval,
     )
 

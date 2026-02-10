@@ -176,7 +176,7 @@ def extract_features_for_split(
     subject_ids: List[str],
     data_root: str,
     device: str,
-    batch_size: int = 8,
+    batch_size: int = 2,
     num_workers: int = 4,
     feature_level: str = "multi_scale",
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], List[str]]:

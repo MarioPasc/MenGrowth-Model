@@ -181,7 +181,7 @@ def extract_features_subset(
     dataset: torch.utils.data.Dataset,
     n_samples: int,
     device: str,
-    batch_size: int = 8,
+    batch_size: int = 2,
     num_workers: int = 4,
     seed: int = 42,
 ) -> Tuple[np.ndarray, List[str]]:
@@ -287,11 +287,13 @@ def extract_glioma_features(
     encoder = load_encoder_for_condition(condition_name, config, device)
 
     # Extract features
+    batch_size = config.get("feature_extraction", {}).get("batch_size", 2)
     features, subject_ids = extract_features_subset(
         encoder=encoder,
         dataset=dataset,
         n_samples=n_samples,
         device=device,
+        batch_size=batch_size,
         seed=config["experiment"]["seed"],
     )
 
@@ -348,11 +350,13 @@ def extract_meningioma_subset_features(
     encoder = load_encoder_for_condition(condition_name, config, device)
 
     # Extract features
+    batch_size = config.get("feature_extraction", {}).get("batch_size", 2)
     features, subject_ids = extract_features_subset(
         encoder=encoder,
         dataset=dataset,
         n_samples=n_samples,
         device=device,
+        batch_size=batch_size,
         seed=config["experiment"]["seed"],
     )
 
