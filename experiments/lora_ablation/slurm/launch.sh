@@ -31,7 +31,7 @@ echo ""
 # ========================================================================
 export REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 export CONDA_ENV_NAME="growth"
-export RESULTS_BASE="/mnt/home/users/tic_163_uma/mpascual/execs/MenGrowth-Model/results"
+export RESULTS_BASE="/mnt/home/users/tic_163_uma/mpascual/execs/growth/results"
 
 CONFIGS_DIR="${REPO_SRC}/experiments/lora_ablation/config/picasso"
 
