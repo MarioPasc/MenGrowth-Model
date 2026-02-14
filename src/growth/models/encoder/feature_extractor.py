@@ -6,7 +6,7 @@ fixed-size feature vectors for downstream tasks.
 """
 
 import logging
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Literal
 
 import torch
 from torch import nn
@@ -19,10 +19,10 @@ FeatureLevel = Literal["encoder10", "layers4", "multi_scale"]
 
 # Output dimensions for each level (with feature_size=48)
 # Note: MONAI 1.5+ SwinUNETR hidden states have doubled channel counts at each stage
-LEVEL_DIMS: Dict[str, int] = {
-    "encoder10": 768,      # After encoder10 (same as layers4 output)
-    "layers4": 768,        # Raw swinViT.layers4 output (hidden_states[4])
-    "multi_scale": 1344,   # layers2(192) + layers3(384) + layers4(768)
+LEVEL_DIMS: dict[str, int] = {
+    "encoder10": 768,  # After encoder10 (same as layers4 output)
+    "layers4": 768,  # Raw swinViT.layers4 output (hidden_states[4])
+    "multi_scale": 1344,  # layers2(192) + layers3(384) + layers4(768)
 }
 
 
@@ -39,16 +39,16 @@ class FeatureExtractor(nn.Module):
         encoder: SwinUNETR model (with or without decoder).
         level: Feature extraction level:
             - "encoder10": 768-dim from encoder10 bottleneck (default)
-            - "layers4": 384-dim from swinViT.layers4 output
-            - "multi_scale": 672-dim concatenation of layers2+3+4
+            - "layers4": 768-dim from swinViT.layers4 output
+            - "multi_scale": 1344-dim concatenation of layers2+3+4
         normalize: Whether to apply layer normalization after GAP.
 
     Example:
         >>> from growth.models.encoder.swin_loader import load_swin_encoder
         >>> encoder = load_swin_encoder("checkpoint.pt")
         >>> extractor = FeatureExtractor(encoder, level="layers4")
-        >>> x = torch.randn(2, 4, 96, 96, 96)
-        >>> features = extractor(x)  # [2, 384]
+        >>> x = torch.randn(2, 4, 128, 128, 128)
+        >>> features = extractor(x)  # [2, 768]
     """
 
     def __init__(
@@ -65,8 +65,7 @@ class FeatureExtractor(nn.Module):
         # Validate level
         if level not in LEVEL_DIMS:
             raise ValueError(
-                f"Unknown feature level: {level}. "
-                f"Choose from: {list(LEVEL_DIMS.keys())}"
+                f"Unknown feature level: {level}. Choose from: {list(LEVEL_DIMS.keys())}"
             )
 
         self._output_dim = LEVEL_DIMS[level]
@@ -107,19 +106,21 @@ class FeatureExtractor(nn.Module):
 
         return features
 
-    def _get_swin_hidden_states(self, x: torch.Tensor) -> List[torch.Tensor]:
+    def _get_swin_hidden_states(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Get hidden states from all swinViT stages.
 
         Args:
             x: Input tensor [B, C, D, H, W].
 
         Returns:
-            List of hidden states from each stage:
-            - hidden_states[0]: After patch_embed [B, 48, 48, 48, 48]
-            - hidden_states[1]: After layers1 [B, 48, 24, 24, 24]
-            - hidden_states[2]: After layers2 [B, 96, 12, 12, 12]
-            - hidden_states[3]: After layers3 [B, 192, 6, 6, 6]
-            - hidden_states[4]: After layers4 [B, 384, 3, 3, 3]
+            List of hidden states from each stage (MONAI 1.5+).
+            Spatial dims depend on input size (each stage halves spatial):
+              With 128^3 input:                  With 192^3 input:
+            - [0]: [B, 48,  64, 64, 64]        [B, 48,  96, 96, 96]
+            - [1]: [B, 96,  32, 32, 32]        [B, 96,  48, 48, 48]
+            - [2]: [B, 192, 16, 16, 16]        [B, 192, 24, 24, 24]
+            - [3]: [B, 384,  8,  8,  8]        [B, 384, 12, 12, 12]
+            - [4]: [B, 768,  4,  4,  4]        [B, 768,  6,  6,  6]
         """
         return self.encoder.swinViT(x, self.encoder.normalize)
 
@@ -129,19 +130,19 @@ class FeatureExtractor(nn.Module):
         Uses encoder10 to process the deepest swinViT features,
         then applies GAP to get a 768-dim vector.
 
-        For 96^3 input: layers4 output is [B, 384, 3, 3, 3].
-        After encoder10: [B, 768, 3, 3, 3].
-        After GAP: [B, 768].
+        Spatial dims depend on input size (GAP normalizes to [B, 768]):
+          128^3 input: [B, 768, 4, 4, 4] → GAP → [B, 768]
+          192^3 input: [B, 768, 6, 6, 6] → GAP → [B, 768]
         """
         # Get swinViT hidden states
         hidden_states = self._get_swin_hidden_states(x)
 
         # Get deepest features (stage 4)
-        x4 = hidden_states[4]  # [B, 384, 3, 3, 3]
+        x4 = hidden_states[4]  # [B, 768, 4, 4, 4]
 
         # Process through encoder10 (bottleneck processor)
-        # encoder10 doubles channels: 384 -> 768
-        enc10 = self.encoder.encoder10(x4)  # [B, 768, 3, 3, 3]
+        # encoder10 preserves channels: 768 -> 768
+        enc10 = self.encoder.encoder10(x4)  # [B, 768, 4, 4, 4]
 
         # Global Average Pooling
         features = F.adaptive_avg_pool3d(enc10, 1).flatten(1)  # [B, 768]
@@ -152,12 +153,15 @@ class FeatureExtractor(nn.Module):
         """Extract features from layers4 (768-dim).
 
         Uses swinViT.layers4 output directly with GAP.
-        Same as encoder10 output since encoder10 preserves dimensions.
+
+        Spatial dims depend on input size (GAP normalizes to [B, 768]):
+          128^3 input: [B, 768, 4, 4, 4] → GAP → [B, 768]
+          192^3 input: [B, 768, 6, 6, 6] → GAP → [B, 768]
         """
         # Get swinViT hidden states
         hidden_states = self._get_swin_hidden_states(x)
 
-        # Stage 4 output: [B, 768, 3, 3, 3]
+        # Stage 4 output: [B, 768, 4, 4, 4]
         x4 = hidden_states[4]
 
         # Global Average Pooling
@@ -234,8 +238,5 @@ def get_feature_dim(level: str) -> int:
         ValueError: If level is unknown.
     """
     if level not in LEVEL_DIMS:
-        raise ValueError(
-            f"Unknown feature level: {level}. "
-            f"Choose from: {list(LEVEL_DIMS.keys())}"
-        )
+        raise ValueError(f"Unknown feature level: {level}. Choose from: {list(LEVEL_DIMS.keys())}")
     return LEVEL_DIMS[level]

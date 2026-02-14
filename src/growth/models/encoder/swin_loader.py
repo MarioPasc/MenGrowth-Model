@@ -7,7 +7,6 @@ Extracts only encoder components (swinViT + encoder1-4 + encoder10).
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -15,22 +14,20 @@ from torch import nn
 try:
     from monai.networks.nets import SwinUNETR
 except ImportError:
-    raise ImportError(
-        "MONAI is required for SwinUNETR. Install with: pip install monai>=1.3.0"
-    )
+    raise ImportError("MONAI is required for SwinUNETR. Install with: pip install monai>=1.3.0")
 
 from growth.utils.checkpoint import (
-    load_checkpoint,
     extract_encoder_weights,
     get_checkpoint_stats,
+    load_checkpoint,
 )
 
 logger = logging.getLogger(__name__)
 
 # BrainSegFounder architecture constants
-BRAINSEGFOUNDER_FEATURE_SIZE = 48   # Base channel count
-BRAINSEGFOUNDER_IN_CHANNELS = 4     # [FLAIR, T1ce, T1, T2] = [t2f, t1c, t1n, t2w]
-BRAINSEGFOUNDER_OUT_CHANNELS = 3    # BraTS segmentation classes (TC, WT, ET)
+BRAINSEGFOUNDER_FEATURE_SIZE = 48  # Base channel count
+BRAINSEGFOUNDER_IN_CHANNELS = 4  # [FLAIR, T1ce, T1, T2] = [t2f, t1c, t1n, t2w]
+BRAINSEGFOUNDER_OUT_CHANNELS = 3  # BraTS segmentation classes (TC, WT, ET)
 BRAINSEGFOUNDER_DEPTHS = (2, 2, 2, 2)
 BRAINSEGFOUNDER_NUM_HEADS = (3, 6, 12, 24)
 
@@ -39,8 +36,8 @@ def create_swinunetr(
     in_channels: int = BRAINSEGFOUNDER_IN_CHANNELS,
     out_channels: int = BRAINSEGFOUNDER_OUT_CHANNELS,
     feature_size: int = BRAINSEGFOUNDER_FEATURE_SIZE,
-    depths: Tuple[int, ...] = BRAINSEGFOUNDER_DEPTHS,
-    num_heads: Tuple[int, ...] = BRAINSEGFOUNDER_NUM_HEADS,
+    depths: tuple[int, ...] = BRAINSEGFOUNDER_DEPTHS,
+    num_heads: tuple[int, ...] = BRAINSEGFOUNDER_NUM_HEADS,
     use_checkpoint: bool = False,
     spatial_dims: int = 3,
 ) -> SwinUNETR:
@@ -60,10 +57,10 @@ def create_swinunetr(
 
     Example:
         >>> model = create_swinunetr()
-        >>> x = torch.randn(1, 4, 96, 96, 96)
+        >>> x = torch.randn(1, 4, 128, 128, 128)
         >>> out = model(x)
         >>> out.shape
-        torch.Size([1, 3, 96, 96, 96])
+        torch.Size([1, 3, 128, 128, 128])
     """
     model = SwinUNETR(
         in_channels=in_channels,
@@ -89,11 +86,11 @@ def create_swinunetr(
 
 
 def load_swin_encoder(
-    ckpt_path: Union[str, Path],
+    ckpt_path: str | Path,
     include_encoder10: bool = True,
     freeze: bool = True,
     use_checkpoint: bool = False,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
     strict_load: bool = False,
 ) -> SwinUNETR:
     """Load BrainSegFounder SwinUNETR encoder from checkpoint.
@@ -124,7 +121,7 @@ def load_swin_encoder(
         ...     freeze=True
         ... )
         >>> encoder.eval()
-        >>> x = torch.randn(1, 4, 96, 96, 96)
+        >>> x = torch.randn(1, 4, 128, 128, 128)
         >>> with torch.no_grad():
         ...     hidden = encoder.swinViT(x, encoder.normalize)
     """
@@ -166,7 +163,7 @@ def load_swin_encoder(
     encoder_params = sum(p.numel() for p in model.parameters())
     logger.info(
         f"Loaded encoder: {len(encoder_state_dict)} keys, "
-        f"{encoder_params/1e6:.2f}M params, "
+        f"{encoder_params / 1e6:.2f}M params, "
         f"{len(expected_missing)} decoder keys not loaded (expected)"
     )
 
@@ -186,7 +183,7 @@ def load_swin_encoder(
 
 def get_swin_feature_dims(
     feature_size: int = BRAINSEGFOUNDER_FEATURE_SIZE,
-) -> Dict[str, Tuple[int, int]]:
+) -> dict[str, tuple[int, int]]:
     """Get feature dimensions at each Swin stage.
 
     Args:
@@ -204,12 +201,12 @@ def get_swin_feature_dims(
     # MONAI 1.5+ SwinUNETR hidden states dimensions
     # Note: channels double at each stage after patch_embed
     return {
-        "patch_embed": (feature_size, 2),          # 48, input/2
-        "layers1": (feature_size * 2, 4),          # 96, input/4
-        "layers2": (feature_size * 4, 8),          # 192, input/8
-        "layers3": (feature_size * 8, 16),         # 384, input/16
-        "layers4": (feature_size * 16, 32),        # 768, input/32
-        "encoder10": (feature_size * 16, 32),      # 768, input/32 (same as layers4)
+        "patch_embed": (feature_size, 2),  # 48, input/2
+        "layers1": (feature_size * 2, 4),  # 96, input/4
+        "layers2": (feature_size * 4, 8),  # 192, input/8
+        "layers3": (feature_size * 8, 16),  # 384, input/16
+        "layers4": (feature_size * 16, 32),  # 768, input/32
+        "encoder10": (feature_size * 16, 32),  # 768, input/32 (same as layers4)
     }
 
 
@@ -260,12 +257,12 @@ def count_parameters(model: nn.Module, trainable_only: bool = False) -> int:
 
 
 def load_full_swinunetr(
-    ckpt_path: Union[str, Path],
+    ckpt_path: str | Path,
     freeze_encoder: bool = True,
     freeze_decoder: bool = False,
     out_channels: int = 3,
     use_checkpoint: bool = False,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
 ) -> SwinUNETR:
     """Load FULL BrainSegFounder SwinUNETR with ALL pretrained weights.
 
@@ -320,7 +317,7 @@ def load_full_swinunetr(
         logger.warning(f"Unexpected keys ({len(unexpected)}): {unexpected[:5]}...")
 
     total_params = sum(p.numel() for p in model.parameters())
-    logger.info(f"Loaded full model: {len(state_dict)} keys, {total_params/1e6:.2f}M params")
+    logger.info(f"Loaded full model: {len(state_dict)} keys, {total_params / 1e6:.2f}M params")
 
     # Modify output layer if needed (BrainSegFounder: 3 classes, BraTS-MEN: 4 classes)
     if out_channels != 3:
@@ -340,9 +337,17 @@ def load_full_swinunetr(
     # Freeze decoder if requested
     if freeze_decoder:
         decoder_modules = [
-            model.encoder1, model.encoder2, model.encoder3, model.encoder4,
-            model.encoder10, model.decoder5, model.decoder4, model.decoder3,
-            model.decoder2, model.decoder1, model.out
+            model.encoder1,
+            model.encoder2,
+            model.encoder3,
+            model.encoder4,
+            model.encoder10,
+            model.decoder5,
+            model.decoder4,
+            model.decoder3,
+            model.decoder2,
+            model.decoder1,
+            model.out,
         ]
         for module in decoder_modules:
             for param in module.parameters():

@@ -1,37 +1,32 @@
-# experiments/lora_ablation/config/server/dora_semantic_heads_icai.yaml
-# DoRA Ablation Experiment Configuration - WITH Semantic Heads
+# experiments/lora_ablation/config/picasso/DoRA_semantic_heads_icai.yaml
+# DoRA Ablation — WITH Semantic Heads — Picasso A100 80GB
 #
-# DoRA (Weight-Decomposed LoRA) decomposes weights into magnitude and direction,
-# often providing better performance than standard LoRA.
-#
-# This config enables auxiliary semantic prediction losses during training.
+# DoRA (Weight-Decomposed LoRA) with auxiliary semantic prediction.
+# Hardware-optimized for Picasso A100 80GB (see LoRA_semantic_heads for rationale).
 
 experiment:
   name: dora_ablation_semantic_heads
   seed: 42
-  output_dir: /media/hddb/mario/results/growth/dora_ablation_semantic_heads
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/dora_ablation_semantic_heads
 
 paths:
-  checkpoint: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
-  data_root: /media/hddb/mario/data/BraTS-MEN
-  glioma_root: /media/hddb/mario/data/BraTS-GLI-100
+  checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  data_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
+  glioma_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/glioma/high_resolution
 
 # Spatial configuration
 data:
-  roi_size: [128, 128, 128]           # LoRA training (matches BrainSegFounder fine-tuning)
-  feature_roi_size: [192, 192, 192]   # Feature extraction & eval (100% tumor containment)
-  spacing: [1.0, 1.0, 1.0]           # Isotropic 1mm (BraTS native resolution)
+  roi_size: [128, 128, 128]
+  feature_roi_size: [192, 192, 192]
+  spacing: [1.0, 1.0, 1.0]
 
-# Updated splits (300/50/150/500)
 data_splits:
   lora_train: 525
   lora_val: 100
   sdp_train: 225
   test: 150
 
-# Experimental conditions - DoRA only
-# NOTE: Using 3-channel output with sigmoid activation preserves the FULL pretrained
-# decoder weights from BrainSegFounder, making baseline_frozen evaluation valid.
+# Experimental conditions — DoRA only
 conditions:
   - name: baseline_frozen
     lora_rank: null
@@ -72,17 +67,21 @@ conditions:
     use_dora: true
     description: DoRA rank 32 (weight-decomposed, saturation test)
 
-# Training hyperparameters
+# Training hyperparameters — A100 optimized
 training:
-  max_epochs: 100
-  early_stopping_patience: 25
-  batch_size: 2            # 128³ LoRA training ROI
+  max_epochs: 200
+  early_stopping_patience: 40
+  batch_size: 4
   lr_encoder: 1.0e-4
   lr_decoder: 5.0e-4
   weight_decay: 1.0e-5
-  num_workers: 4
+  num_workers: 16
   lora_dropout: 0.1
   gradient_clip: 1.0
+
+  # Mixed precision (A100 native bf16 tensor cores)
+  use_amp: true
+  grad_accum_steps: 1
 
   # Decoder configuration
   decoder_type: "original"
@@ -92,9 +91,9 @@ training:
   use_semantic_heads: true
   lambda_aux: 0.1
 
-  # Auxiliary loss warmup
-  aux_warmup_epochs: 5
-  aux_warmup_duration: 10
+  # Auxiliary loss warmup (scaled for 2× epochs)
+  aux_warmup_epochs: 10
+  aux_warmup_duration: 20
 
   # Gradient monitoring
   enable_gradient_monitoring: true
@@ -117,10 +116,10 @@ probe:
   normalize_features: true
   normalize_targets: true
 
-# Feature extraction
+# Feature extraction — A100 optimized
 feature_extraction:
   level: encoder10
-  batch_size: 2              # 192³ feature ROI uses ~3.4x more memory than 128³
+  batch_size: 4
 
 # Domain analysis
 domain_analysis:
@@ -143,15 +142,3 @@ logging:
 # Model card generation
 model_card:
   enabled: true
-
-# =============================================================================
-# EXPERIMENT NOTES
-# =============================================================================
-#
-# DoRA (Weight-Decomposed Low-Rank Adaptation) separates the weight matrix into
-# magnitude and direction components, allowing for more effective adaptation.
-#
-# Reference: Liu et al. (2024). "DoRA: Weight-Decomposed Low-Rank Adaptation."
-# arXiv:2402.09353
-#
-# Compare with LoRA_semantic_heads_icai.yaml to assess DoRA benefits.

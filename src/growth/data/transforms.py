@@ -9,26 +9,24 @@ Matches BrainSegFounder's preprocessing pipeline:
 """
 
 import logging
-from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from monai.transforms import (
     Compose,
-    LoadImaged,
-    EnsureChannelFirstd,
-    Orientationd,
-    Spacingd,
-    NormalizeIntensityd,
     ConcatItemsd,
     CropForegroundd,
-    RandSpatialCropd,
-    SpatialPadd,
-    ResizeWithPadOrCropd,
-    ToTensord,
+    EnsureChannelFirstd,
+    EnsureTyped,
+    LoadImaged,
+    NormalizeIntensityd,
+    Orientationd,
     RandFlipd,
     RandRotate90d,
     RandScaleIntensityd,
     RandShiftIntensityd,
-    EnsureTyped,
+    RandSpatialCropd,
+    ResizeWithPadOrCropd,
+    Spacingd,
+    SpatialPadd,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,20 +34,24 @@ logger = logging.getLogger(__name__)
 # Default keys for BraTS data
 # Channel order matches BrainSegFounder training: [FLAIR, T1ce, T1, T2]
 # This order is critical — wrong order causes near-zero Dice scores.
-MODALITY_KEYS: List[str] = ["t2f", "t1c", "t1n", "t2w"]
+MODALITY_KEYS: list[str] = ["t2f", "t1c", "t1n", "t2w"]
 SEG_KEY: str = "seg"
 IMAGE_KEY: str = "image"
 
 # Default spatial settings matching BrainSegFounder fine-tuning
-DEFAULT_ROI_SIZE: Tuple[int, int, int] = (128, 128, 128)
-DEFAULT_SPACING: Tuple[float, float, float] = (1.0, 1.0, 1.0)
+# 128³ for LoRA training (matches BrainSegFounder fine-tuning)
+DEFAULT_ROI_SIZE: tuple[int, int, int] = (128, 128, 128)
+# 192³ for feature extraction — guarantees 100% tumor containment
+# (128³ center crop only captures 38.8% MEN / 30.0% GLI tumors fully)
+FEATURE_ROI_SIZE: tuple[int, int, int] = (192, 192, 192)
+DEFAULT_SPACING: tuple[float, float, float] = (1.0, 1.0, 1.0)
 DEFAULT_ORIENTATION: str = "RAS"
 
 
 def get_load_transforms(
-    modality_keys: List[str] = None,
+    modality_keys: list[str] = None,
     include_seg: bool = True,
-) -> List:
+) -> list:
     """Get transforms for loading NIfTI files.
 
     Args:
@@ -73,13 +75,13 @@ def get_load_transforms(
 
 
 def get_spatial_transforms(
-    modality_keys: List[str] = None,
+    modality_keys: list[str] = None,
     include_seg: bool = True,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
     orientation: str = DEFAULT_ORIENTATION,
-    roi_size: Tuple[int, int, int] = DEFAULT_ROI_SIZE,
+    roi_size: tuple[int, int, int] = DEFAULT_ROI_SIZE,
     random_crop: bool = False,
-) -> List:
+) -> list:
     """Get spatial preprocessing transforms.
 
     Matches BrainSegFounder pipeline:
@@ -111,9 +113,7 @@ def get_spatial_transforms(
     transforms = []
 
     # Reorient to standard orientation
-    transforms.append(
-        Orientationd(keys=all_keys, axcodes=orientation)
-    )
+    transforms.append(Orientationd(keys=all_keys, axcodes=orientation))
 
     # Resample images to target spacing (bilinear interpolation)
     transforms.append(
@@ -135,37 +135,40 @@ def get_spatial_transforms(
         )
 
     # Crop to brain foreground (removes background/air around skull-stripped brain)
+    # k_divisible ensures cropped region is at least roi_size, matching BrainSegFounder
     transforms.append(
-        CropForegroundd(keys=all_keys, source_key=modality_keys[0])
+        CropForegroundd(
+            keys=all_keys,
+            source_key=modality_keys[0],
+            k_divisible=list(roi_size),
+        )
     )
 
     # Ensure volume is at least roi_size (pad with zeros if brain is smaller)
-    transforms.append(
-        SpatialPadd(keys=all_keys, spatial_size=roi_size)
-    )
+    transforms.append(SpatialPadd(keys=all_keys, spatial_size=roi_size))
 
     if random_crop:
         # Training: random crop within brain volume
         transforms.append(
             RandSpatialCropd(
-                keys=all_keys, roi_size=roi_size, random_size=False,
+                keys=all_keys,
+                roi_size=roi_size,
+                random_size=False,
             )
         )
     else:
         # Validation: deterministic center crop within brain
-        transforms.append(
-            ResizeWithPadOrCropd(keys=all_keys, spatial_size=roi_size)
-        )
+        transforms.append(ResizeWithPadOrCropd(keys=all_keys, spatial_size=roi_size))
 
     return transforms
 
 
 def get_reorient_and_spacing_transforms(
-    modality_keys: List[str] = None,
+    modality_keys: list[str] = None,
     include_seg: bool = True,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
     orientation: str = DEFAULT_ORIENTATION,
-) -> List:
+) -> list:
     """Get orientation + spacing transforms only (no crop).
 
     Used by sliding window transforms where no spatial cropping is applied.
@@ -188,9 +191,7 @@ def get_reorient_and_spacing_transforms(
 
     transforms = []
 
-    transforms.append(
-        Orientationd(keys=all_keys, axcodes=orientation)
-    )
+    transforms.append(Orientationd(keys=all_keys, axcodes=orientation))
 
     transforms.append(
         Spacingd(
@@ -213,8 +214,8 @@ def get_reorient_and_spacing_transforms(
 
 
 def get_intensity_transforms(
-    modality_keys: List[str] = None,
-) -> List:
+    modality_keys: list[str] = None,
+) -> list:
     """Get intensity normalization transforms.
 
     Applies z-score normalization per modality, using only
@@ -239,9 +240,9 @@ def get_intensity_transforms(
 
 
 def get_concat_transforms(
-    modality_keys: List[str] = None,
+    modality_keys: list[str] = None,
     output_key: str = IMAGE_KEY,
-) -> List:
+) -> list:
     """Get transforms to concatenate modalities into single tensor.
 
     Args:
@@ -270,7 +271,7 @@ def get_augmentation_transforms(
     rotate_prob: float = 0.5,
     intensity_scale: float = 0.1,
     intensity_shift: float = 0.1,
-) -> List:
+) -> list:
     """Get data augmentation transforms.
 
     Args:
@@ -298,30 +299,28 @@ def get_augmentation_transforms(
     # Random flipping along each spatial axis
     if include_flip:
         for axis in [0, 1, 2]:  # D, H, W
-            transforms.append(
-                RandFlipd(keys=spatial_keys, prob=flip_prob, spatial_axis=axis)
-            )
+            transforms.append(RandFlipd(keys=spatial_keys, prob=flip_prob, spatial_axis=axis))
 
-    # Random 90-degree rotations
+    # Random 90-degree rotations (not in BrainSegFounder's original pipeline,
+    # which only uses flips; kept as additional augmentation for domain adaptation)
     if include_rotate:
-        transforms.append(
-            RandRotate90d(keys=spatial_keys, prob=rotate_prob, max_k=3)
-        )
+        transforms.append(RandRotate90d(keys=spatial_keys, prob=rotate_prob, max_k=3))
 
     # Intensity augmentation (only on image, not segmentation)
+    # prob=1.0 matches BrainSegFounder's data_utils.py (lines 132-133)
     if include_intensity:
         transforms.append(
             RandScaleIntensityd(
                 keys=[image_key],
                 factors=intensity_scale,
-                prob=0.5,
+                prob=1.0,
             )
         )
         transforms.append(
             RandShiftIntensityd(
                 keys=[image_key],
                 offsets=intensity_shift,
-                prob=0.5,
+                prob=1.0,
             )
         )
 
@@ -332,7 +331,7 @@ def get_finalize_transforms(
     image_key: str = IMAGE_KEY,
     include_seg: bool = True,
     seg_key: str = SEG_KEY,
-) -> List:
+) -> list:
     """Get final transforms for tensor conversion.
 
     Args:
@@ -353,10 +352,10 @@ def get_finalize_transforms(
 
 
 def get_train_transforms(
-    modality_keys: List[str] = None,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    modality_keys: list[str] = None,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
     orientation: str = DEFAULT_ORIENTATION,
-    roi_size: Tuple[int, int, int] = DEFAULT_ROI_SIZE,
+    roi_size: tuple[int, int, int] = DEFAULT_ROI_SIZE,
     include_seg: bool = True,
     augment: bool = True,
 ) -> Compose:
@@ -401,10 +400,16 @@ def get_train_transforms(
     transforms.extend(get_load_transforms(modality_keys, include_seg))
 
     # Spatial preprocessing (CropForeground + random crop)
-    transforms.extend(get_spatial_transforms(
-        modality_keys, include_seg, spacing, orientation, roi_size,
-        random_crop=True,
-    ))
+    transforms.extend(
+        get_spatial_transforms(
+            modality_keys,
+            include_seg,
+            spacing,
+            orientation,
+            roi_size,
+            random_crop=True,
+        )
+    )
 
     # Intensity normalization
     transforms.extend(get_intensity_transforms(modality_keys))
@@ -414,11 +419,13 @@ def get_train_transforms(
 
     # Augmentation (training only)
     if augment:
-        transforms.extend(get_augmentation_transforms(
-            image_key=IMAGE_KEY,
-            seg_key=SEG_KEY,
-            include_seg=include_seg,
-        ))
+        transforms.extend(
+            get_augmentation_transforms(
+                image_key=IMAGE_KEY,
+                seg_key=SEG_KEY,
+                include_seg=include_seg,
+            )
+        )
 
     # Final tensor conversion
     transforms.extend(get_finalize_transforms(IMAGE_KEY, include_seg))
@@ -436,10 +443,10 @@ def get_train_transforms(
 
 
 def get_val_transforms(
-    modality_keys: List[str] = None,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    modality_keys: list[str] = None,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
     orientation: str = DEFAULT_ORIENTATION,
-    roi_size: Tuple[int, int, int] = DEFAULT_ROI_SIZE,
+    roi_size: tuple[int, int, int] = DEFAULT_ROI_SIZE,
     include_seg: bool = True,
 ) -> Compose:
     """Get validation transform pipeline.
@@ -465,10 +472,16 @@ def get_val_transforms(
     transforms.extend(get_load_transforms(modality_keys, include_seg))
 
     # Spatial preprocessing (CropForeground + deterministic center crop)
-    transforms.extend(get_spatial_transforms(
-        modality_keys, include_seg, spacing, orientation, roi_size,
-        random_crop=False,
-    ))
+    transforms.extend(
+        get_spatial_transforms(
+            modality_keys,
+            include_seg,
+            spacing,
+            orientation,
+            roi_size,
+            random_crop=False,
+        )
+    )
 
     transforms.extend(get_intensity_transforms(modality_keys))
     transforms.extend(get_concat_transforms(modality_keys))
@@ -487,8 +500,8 @@ def get_val_transforms(
 
 
 def get_sliding_window_transforms(
-    modality_keys: List[str] = None,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    modality_keys: list[str] = None,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
     orientation: str = DEFAULT_ORIENTATION,
     include_seg: bool = True,
 ) -> Compose:
@@ -518,9 +531,14 @@ def get_sliding_window_transforms(
     transforms.extend(get_load_transforms(modality_keys, include_seg))
 
     # Orientation + spacing only (no crop)
-    transforms.extend(get_reorient_and_spacing_transforms(
-        modality_keys, include_seg, spacing, orientation,
-    ))
+    transforms.extend(
+        get_reorient_and_spacing_transforms(
+            modality_keys,
+            include_seg,
+            spacing,
+            orientation,
+        )
+    )
 
     transforms.extend(get_intensity_transforms(modality_keys))
     transforms.extend(get_concat_transforms(modality_keys))
@@ -539,10 +557,10 @@ def get_sliding_window_transforms(
 
 
 def get_inference_transforms(
-    modality_keys: List[str] = None,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    modality_keys: list[str] = None,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
     orientation: str = DEFAULT_ORIENTATION,
-    roi_size: Tuple[int, int, int] = DEFAULT_ROI_SIZE,
+    roi_size: tuple[int, int, int] = DEFAULT_ROI_SIZE,
 ) -> Compose:
     """Get inference-only transform pipeline (no segmentation).
 
@@ -565,11 +583,16 @@ def get_inference_transforms(
     transforms = []
     transforms.extend(get_load_transforms(modality_keys, include_seg=False))
 
-    transforms.extend(get_spatial_transforms(
-        modality_keys, include_seg=False, spacing=spacing,
-        orientation=orientation, roi_size=roi_size,
-        random_crop=False,
-    ))
+    transforms.extend(
+        get_spatial_transforms(
+            modality_keys,
+            include_seg=False,
+            spacing=spacing,
+            orientation=orientation,
+            roi_size=roi_size,
+            random_crop=False,
+        )
+    )
 
     transforms.extend(get_intensity_transforms(modality_keys))
     transforms.extend(get_concat_transforms(modality_keys))

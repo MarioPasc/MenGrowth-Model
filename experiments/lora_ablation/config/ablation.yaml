@@ -16,6 +16,12 @@ paths:
   # Optional: glioma data for domain shift analysis (required for --domain-features)
   glioma_root: /media/hddb/mario/data/BraTS-GLI-100
 
+# Spatial configuration
+data:
+  roi_size: [128, 128, 128]           # LoRA training (matches BrainSegFounder fine-tuning)
+  feature_roi_size: [192, 192, 192]   # Feature extraction & eval (100% tumor containment)
+  spacing: [1.0, 1.0, 1.0]           # Isotropic 1mm (BraTS native resolution)
+
 # Conservative splits for robust evaluation
 data_splits:
   lora_train: 200      # Train LoRA adaptation
@@ -109,7 +115,7 @@ feature_extraction:
   # - "encoder10": Single-scale 768-dim (matches SDP Phase 2)
   # - "multi_scale": layers2+3+4 (192+384+768=1344-dim)
   level: encoder10
-  batch_size: 8
+  batch_size: 2              # 192³ feature ROI uses ~3.4x more memory than 128³
 
 # Domain analysis (glioma vs meningioma)
 domain_analysis:

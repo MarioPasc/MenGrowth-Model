@@ -19,17 +19,15 @@ Usage:
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
+import yaml
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset
-from growth.data.transforms import get_val_transforms
+from growth.data.transforms import FEATURE_ROI_SIZE, get_val_transforms
 from growth.models.encoder.feature_extractor import FeatureExtractor
 from growth.models.encoder.lora_adapter import LoRASwinViT
 from growth.models.encoder.swin_loader import load_swin_encoder
@@ -38,8 +36,7 @@ from growth.utils.seed import set_seed
 from .data_splits import load_splits
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -64,7 +61,7 @@ class BraTSGLIDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         data_root: str,
-        subject_ids: Optional[List[str]] = None,
+        subject_ids: list[str] | None = None,
         transform=None,
     ):
         self.data_root = Path(data_root)
@@ -78,7 +75,7 @@ class BraTSGLIDataset(torch.utils.data.Dataset):
 
         logger.info(f"BraTSGLIDataset initialized with {len(self.subject_ids)} subjects")
 
-    def _discover_subjects(self) -> List[str]:
+    def _discover_subjects(self) -> list[str]:
         """Discover all subject IDs in the glioma dataset."""
         subject_ids = []
         for item in self.data_root.iterdir():
@@ -89,7 +86,7 @@ class BraTSGLIDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.subject_ids)
 
-    def __getitem__(self, idx: int) -> Dict:
+    def __getitem__(self, idx: int) -> dict:
         subject_id = self.subject_ids[idx]
         subject_dir = self.data_root / subject_id
 
@@ -184,7 +181,7 @@ def extract_features_subset(
     batch_size: int = 2,
     num_workers: int = 4,
     seed: int = 42,
-) -> Tuple[np.ndarray, List[str]]:
+) -> tuple[np.ndarray, list[str]]:
     """Extract features from a random subset of the dataset.
 
     Args:
@@ -277,10 +274,10 @@ def extract_glioma_features(
 
     logger.info(f"Loading glioma dataset from {glioma_root}")
 
-    # Create dataset
+    # Create dataset (192³ for feature extraction — 100% tumor containment)
     dataset = BraTSGLIDataset(
         data_root=glioma_root,
-        transform=get_val_transforms(),
+        transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
     )
 
     # Load encoder
@@ -302,12 +299,15 @@ def extract_glioma_features(
     condition_dir = output_dir / "conditions" / condition_name
 
     output_path = condition_dir / "features_glioma.pt"
-    torch.save({
-        "features": torch.from_numpy(features),
-        "subject_ids": subject_ids,
-        "domain": "glioma",
-        "n_samples": len(subject_ids),
-    }, output_path)
+    torch.save(
+        {
+            "features": torch.from_numpy(features),
+            "subject_ids": subject_ids,
+            "domain": "glioma",
+            "n_samples": len(subject_ids),
+        },
+        output_path,
+    )
 
     logger.info(f"Saved glioma features to {output_path}")
     return output_path
@@ -338,11 +338,11 @@ def extract_meningioma_subset_features(
     test_subjects = splits["test"]
     logger.info(f"Test set has {len(test_subjects)} subjects")
 
-    # Create dataset with test subjects only
+    # Create dataset with test subjects only (192³ for feature extraction)
     dataset = BraTSMENDataset(
         data_root=config["paths"]["data_root"],
         subject_ids=test_subjects,
-        transform=get_val_transforms(),
+        transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
         compute_semantic=False,
     )
 
@@ -365,12 +365,15 @@ def extract_meningioma_subset_features(
     condition_dir = output_dir / "conditions" / condition_name
 
     output_path = condition_dir / "features_meningioma_subset.pt"
-    torch.save({
-        "features": torch.from_numpy(features),
-        "subject_ids": subject_ids,
-        "domain": "meningioma",
-        "n_samples": len(subject_ids),
-    }, output_path)
+    torch.save(
+        {
+            "features": torch.from_numpy(features),
+            "subject_ids": subject_ids,
+            "domain": "meningioma",
+            "n_samples": len(subject_ids),
+        },
+        output_path,
+    )
 
     logger.info(f"Saved meningioma subset features to {output_path}")
     return output_path
@@ -382,7 +385,7 @@ def extract_domain_features(
     n_glioma: int = 200,
     n_meningioma: int = 200,
     device: str = "cuda",
-) -> Dict[str, Path]:
+) -> dict[str, Path]:
     """Extract features for domain comparison UMAP.
 
     Args:
@@ -403,21 +406,19 @@ def extract_domain_features(
     paths = {}
 
     # Extract glioma features
-    logger.info(f"\n{'='*50}")
+    logger.info(f"\n{'=' * 50}")
     logger.info(f"Extracting {n_glioma} glioma features")
-    logger.info(f"{'='*50}")
+    logger.info(f"{'=' * 50}")
     try:
-        paths["glioma"] = extract_glioma_features(
-            config, condition_name, n_glioma, device
-        )
+        paths["glioma"] = extract_glioma_features(config, condition_name, n_glioma, device)
     except Exception as e:
         logger.error(f"Failed to extract glioma features: {e}")
         paths["glioma"] = None
 
     # Extract meningioma subset features
-    logger.info(f"\n{'='*50}")
+    logger.info(f"\n{'=' * 50}")
     logger.info(f"Extracting {n_meningioma} meningioma features")
-    logger.info(f"{'='*50}")
+    logger.info(f"{'=' * 50}")
     paths["meningioma"] = extract_meningioma_subset_features(
         config, condition_name, n_meningioma, device, config_path
     )
@@ -427,9 +428,7 @@ def extract_domain_features(
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Extract features for domain shift visualization"
-    )
+    parser = argparse.ArgumentParser(description="Extract features for domain shift visualization")
     parser.add_argument(
         "--config",
         type=str,
@@ -464,6 +463,7 @@ def main():
     args = parser.parse_args()
 
     import torch
+
     if args.device == "cuda" and not torch.cuda.is_available():
         logger.warning("CUDA not available, using CPU")
         args.device = "cpu"

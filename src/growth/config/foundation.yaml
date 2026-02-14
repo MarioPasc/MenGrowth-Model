@@ -44,7 +44,8 @@ data:
     - t2w   # T2-weighted (channel 3)
 
   # Spatial configuration (matches BrainSegFounder fine-tuning)
-  roi_size: [128, 128, 128]   # Matches BrainSegFounder training ROI
+  roi_size: [128, 128, 128]           # LoRA training (matches BrainSegFounder fine-tuning)
+  feature_roi_size: [192, 192, 192]  # Feature extraction (100% tumor containment)
   spacing: [1.0, 1.0, 1.0]    # Isotropic 1mm spacing
   orientation: RAS            # Standard neuroimaging orientation
 

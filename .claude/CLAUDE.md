@@ -4,7 +4,7 @@ Foundation model pipeline for **meningioma growth forecasting** from multi-modal
 BrainSegFounder (SwinUNETR, pretrained on 41K+ subjects) → LoRA adaptation → Supervised Disentangled Projection → Neural ODE.
 B.Sc. thesis project.
 
->[!IMPORTANT] For full context of the project (only read if asked to gather all context for a complex task), read the file: `docs/Methods/methodology_refined.md`
+>[!IMPORTANT] For full context of the project (only read if asked to gather all context for a complex task), read the file: `docs/growth-related/methodology_refined.md`
 
 ## Environment
 
@@ -69,11 +69,11 @@ The VAE approach (Exp1–3, `src/vae/`) is preserved for reference. It was aband
 
 ## Detailed Specifications (read on demand)
 
-@docs/Methods/claude_files_BSGNeuralODE/DECISIONS.md
-@docs/Methods/claude_files_BSGNeuralODE/module_0_data.md
-@docs/Methods/claude_files_BSGNeuralODE/module_1_domain_gap.md
-@docs/Methods/claude_files_BSGNeuralODE/module_2_lora.md
-@docs/Methods/claude_files_BSGNeuralODE/module_3_sdp.md
-@docs/Methods/claude_files_BSGNeuralODE/module_4_encoding.md
-@docs/Methods/claude_files_BSGNeuralODE/module_5_neural_ode.md
-@docs/Methods/claude_files_BSGNeuralODE/module_6_evaluation.md
+@docs/growth-related/claude_files_BSGNeuralODE/DECISIONS.md
+@docs/growth-related/claude_files_BSGNeuralODE/module_0_data.md
+@docs/growth-related/claude_files_BSGNeuralODE/module_1_domain_gap.md
+@docs/growth-related/claude_files_BSGNeuralODE/module_2_lora.md
+@docs/growth-related/claude_files_BSGNeuralODE/module_3_sdp.md
+@docs/growth-related/claude_files_BSGNeuralODE/module_4_encoding.md
+@docs/growth-related/claude_files_BSGNeuralODE/module_5_neural_ode.md
+@docs/growth-related/claude_files_BSGNeuralODE/module_6_evaluation.md

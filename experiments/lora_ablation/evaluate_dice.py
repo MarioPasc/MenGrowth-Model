@@ -22,25 +22,23 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
+import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset
+from growth.data.transforms import FEATURE_ROI_SIZE, get_val_transforms
 from growth.losses.segmentation import DiceMetric3Ch
-from growth.evaluation.segmentation_metrics import SegmentationEvaluator
 
 from .extract_domain_features import BraTSGLIDataset
 from .model_factory import create_ablation_model, get_condition_config
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -117,12 +115,14 @@ class TestDiceEvaluator:
     def _create_dataloader(
         self,
         data_root: str,
-        subject_ids: List[str],
+        subject_ids: list[str],
     ) -> DataLoader:
         """Create data loader for evaluation."""
+        # 192³ center crop for evaluation (100% tumor containment)
         dataset = BraTSMENDataset(
             data_root=data_root,
             subject_ids=subject_ids,
+            transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
             compute_semantic=False,
         )
 
@@ -140,7 +140,7 @@ class TestDiceEvaluator:
         model: nn.Module,
         dataloader: DataLoader,
         desc: str = "Evaluating",
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Evaluate model on a dataset.
 
         Returns:
@@ -154,9 +154,9 @@ class TestDiceEvaluator:
             segs = batch["seg"].to(self.device)
 
             # Forward pass
-            if hasattr(model, 'forward_with_semantics'):
+            if hasattr(model, "forward_with_semantics"):
                 outputs = model.forward_with_semantics(images)
-                pred = outputs['logits']
+                pred = outputs["logits"]
             else:
                 pred = model(images)
 
@@ -182,8 +182,8 @@ class TestDiceEvaluator:
         condition_name: str,
         config: dict,
         dataset_name: str = "men",
-        subject_ids: Optional[List[str]] = None,
-    ) -> Dict[str, float]:
+        subject_ids: list[str] | None = None,
+    ) -> dict[str, float]:
         """Evaluate Dice for a single condition on specified dataset.
 
         Args:
@@ -213,6 +213,7 @@ class TestDiceEvaluator:
                         f"Splits not found at {splits_path}. Run splits generation first."
                     )
                 import json
+
                 with open(splits_path) as f:
                     splits = json.load(f)
                 subject_ids = splits["test"]
@@ -224,10 +225,13 @@ class TestDiceEvaluator:
                 # Use all available glioma subjects for test
                 # Filter out hidden directories (like .semantic_cache)
                 glioma_path = Path(data_root)
-                subject_ids = sorted([
-                    d.name for d in glioma_path.iterdir()
-                    if d.is_dir() and not d.name.startswith('.')
-                ])
+                subject_ids = sorted(
+                    [
+                        d.name
+                        for d in glioma_path.iterdir()
+                        if d.is_dir() and not d.name.startswith(".")
+                    ]
+                )
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}. Use 'men' or 'gli'.")
 
@@ -238,9 +242,13 @@ class TestDiceEvaluator:
         # Load model
         model = self._load_model(condition_config, training_config, condition_dir)
 
-        # Create dataloader (use appropriate dataset class)
+        # Create dataloader (use appropriate dataset class, 192³ for full tumor coverage)
         if dataset_name == "gli":
-            dataset = BraTSGLIDataset(data_root=data_root, subject_ids=subject_ids)
+            dataset = BraTSGLIDataset(
+                data_root=data_root,
+                subject_ids=subject_ids,
+                transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
+            )
             dataloader = DataLoader(
                 dataset,
                 batch_size=self.batch_size,
@@ -268,8 +276,8 @@ class TestDiceEvaluator:
         self,
         config: dict,
         include_glioma: bool = True,
-        glioma_test_size: Optional[int] = None,
-    ) -> Tuple[Dict[str, Dict], Dict[str, Dict]]:
+        glioma_test_size: int | None = None,
+    ) -> tuple[dict[str, dict], dict[str, dict]]:
         """Evaluate all conditions on BraTS-MEN and optionally BraTS-GLI.
 
         Args:
@@ -290,10 +298,13 @@ class TestDiceEvaluator:
             if glioma_root and Path(glioma_root).exists():
                 glioma_path = Path(glioma_root)
                 # Filter out hidden directories (like .semantic_cache)
-                gli_subjects = sorted([
-                    d.name for d in glioma_path.iterdir()
-                    if d.is_dir() and not d.name.startswith('.')
-                ])
+                gli_subjects = sorted(
+                    [
+                        d.name
+                        for d in glioma_path.iterdir()
+                        if d.is_dir() and not d.name.startswith(".")
+                    ]
+                )
                 if glioma_test_size is not None:
                     gli_subjects = gli_subjects[:glioma_test_size]
                 logger.info(f"Glioma test set: {len(gli_subjects)} subjects")
@@ -318,8 +329,7 @@ class TestDiceEvaluator:
             if include_glioma and gli_subjects:
                 try:
                     gli_results[condition_name] = self.evaluate_condition(
-                        condition_name, config, dataset_name="gli",
-                        subject_ids=gli_subjects
+                        condition_name, config, dataset_name="gli", subject_ids=gli_subjects
                     )
                 except Exception as e:
                     logger.warning(f"Failed to evaluate {condition_name} on GLI: {e}")
@@ -329,7 +339,7 @@ class TestDiceEvaluator:
 
 
 def save_dice_results(
-    results: Dict[str, float],
+    results: dict[str, float],
     output_path: Path,
 ) -> None:
     """Save Dice results to JSON file."""
@@ -340,8 +350,8 @@ def save_dice_results(
 
 def generate_dice_summary(
     config: dict,
-    men_results: Dict[str, Dict],
-    gli_results: Optional[Dict[str, Dict]] = None,
+    men_results: dict[str, dict],
+    gli_results: dict[str, dict] | None = None,
 ) -> str:
     """Generate summary CSV of Dice results.
 
@@ -381,9 +391,9 @@ def generate_dice_summary(
 
 def main(
     config_path: str,
-    condition: Optional[str] = None,
+    condition: str | None = None,
     dataset: str = "men",
-    glioma_test_size: Optional[int] = None,
+    glioma_test_size: int | None = None,
     device: str = "cuda",
 ) -> None:
     """Main entry point for Dice evaluation.
@@ -416,9 +426,7 @@ def main(
 
     if condition is not None:
         # Evaluate single condition
-        results = evaluator.evaluate_condition(
-            condition, config, dataset_name=dataset
-        )
+        results = evaluator.evaluate_condition(condition, config, dataset_name=dataset)
 
         # Save results
         cond_dir = output_dir / "conditions" / condition
@@ -466,14 +474,16 @@ def main(
             name = cond["name"]
             men_dice = men_results.get(name, {}).get("dice_mean", float("nan"))
             gli_dice = gli_results.get(name, {}).get("dice_mean", float("nan"))
-            delta = gli_dice - men_dice if not (np.isnan(men_dice) or np.isnan(gli_dice)) else float("nan")
+            delta = (
+                gli_dice - men_dice
+                if not (np.isnan(men_dice) or np.isnan(gli_dice))
+                else float("nan")
+            )
             print(f"{name:<15} {men_dice:>10.4f} {gli_dice:>10.4f} {delta:>+12.4f}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Evaluate Test Dice for LoRA ablation conditions"
-    )
+    parser = argparse.ArgumentParser(description="Evaluate Test Dice for LoRA ablation conditions")
     parser.add_argument(
         "--config",
         type=str,

@@ -15,17 +15,16 @@ Usage:
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset
-from growth.data.transforms import get_val_transforms
+from growth.data.transforms import FEATURE_ROI_SIZE, get_val_transforms
 from growth.models.encoder.lora_adapter import LoRASwinViT
 from growth.models.encoder.swin_loader import load_swin_encoder
 from growth.utils.seed import set_seed
@@ -33,8 +32,7 @@ from growth.utils.seed import set_seed
 from .data_splits import load_splits
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -65,11 +63,11 @@ class MultiScaleFeatureExtractor:
     def extract(
         self,
         x: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Extract multi-scale features.
 
         Args:
-            x: Input tensor [B, 4, 96, 96, 96].
+            x: Input tensor [B, 4, D, H, W] (e.g. [B, 4, 192, 192, 192]).
 
         Returns:
             Dict with 'layers2', 'layers3', 'layers4', 'encoder10', 'multi_scale'.
@@ -81,32 +79,27 @@ class MultiScaleFeatureExtractor:
 
         # Stage outputs with GAP
         # hidden_states[2]: layers2 output [B, 192, 12, 12, 12]
-        features['layers2'] = F.adaptive_avg_pool3d(
-            hidden_states[2], 1
-        ).flatten(1)  # [B, 192]
+        features["layers2"] = F.adaptive_avg_pool3d(hidden_states[2], 1).flatten(1)  # [B, 192]
 
         # hidden_states[3]: layers3 output [B, 384, 6, 6, 6]
-        features['layers3'] = F.adaptive_avg_pool3d(
-            hidden_states[3], 1
-        ).flatten(1)  # [B, 384]
+        features["layers3"] = F.adaptive_avg_pool3d(hidden_states[3], 1).flatten(1)  # [B, 384]
 
         # hidden_states[4]: layers4 output [B, 768, 3, 3, 3]
-        features['layers4'] = F.adaptive_avg_pool3d(
-            hidden_states[4], 1
-        ).flatten(1)  # [B, 768]
+        features["layers4"] = F.adaptive_avg_pool3d(hidden_states[4], 1).flatten(1)  # [B, 768]
 
         # encoder10: bottleneck [B, 768, 3, 3, 3]
         enc10 = self.encoder.encoder10(hidden_states[4])
-        features['encoder10'] = F.adaptive_avg_pool3d(
-            enc10, 1
-        ).flatten(1)  # [B, 768]
+        features["encoder10"] = F.adaptive_avg_pool3d(enc10, 1).flatten(1)  # [B, 768]
 
         # Multi-scale concatenation
-        features['multi_scale'] = torch.cat([
-            features['layers2'],
-            features['layers3'],
-            features['layers4'],
-        ], dim=1)  # [B, 1344]
+        features["multi_scale"] = torch.cat(
+            [
+                features["layers2"],
+                features["layers3"],
+                features["layers4"],
+            ],
+            dim=1,
+        )  # [B, 1344]
 
         return features
 
@@ -173,13 +166,13 @@ def load_encoder_for_condition(
 @torch.no_grad()
 def extract_features_for_split(
     encoder: torch.nn.Module,
-    subject_ids: List[str],
+    subject_ids: list[str],
     data_root: str,
     device: str,
     batch_size: int = 2,
     num_workers: int = 4,
     feature_level: str = "multi_scale",
-) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], List[str]]:
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], list[str]]:
     """Extract features and semantic targets for a split.
 
     Args:
@@ -194,10 +187,11 @@ def extract_features_for_split(
     Returns:
         Tuple of (features_dict, targets_dict, subject_ids).
     """
+    # 192³ center crop for feature extraction (100% tumor containment)
     dataset = BraTSMENDataset(
         data_root=data_root,
         subject_ids=subject_ids,
-        transform=get_val_transforms(),
+        transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
         compute_semantic=True,
         cache_semantic=True,
     )
@@ -214,11 +208,11 @@ def extract_features_for_split(
 
     # Storage
     all_features = {
-        'encoder10': [],
-        'multi_scale': [],
-        'layers2': [],
-        'layers3': [],
-        'layers4': [],
+        "encoder10": [],
+        "multi_scale": [],
+        "layers2": [],
+        "layers3": [],
+        "layers4": [],
     }
     all_volumes = []
     all_locations = []
@@ -246,10 +240,7 @@ def extract_features_for_split(
         all_ids.extend(ids)
 
     # Concatenate
-    features_dict = {
-        key: np.concatenate(vals, axis=0)
-        for key, vals in all_features.items()
-    }
+    features_dict = {key: np.concatenate(vals, axis=0) for key, vals in all_features.items()}
 
     targets_dict = {
         "volume": np.concatenate(all_volumes, axis=0),
@@ -269,9 +260,9 @@ def extract_features_for_split(
 
 
 def save_features(
-    features_dict: Dict[str, np.ndarray],
-    targets_dict: Dict[str, np.ndarray],
-    subject_ids: List[str],
+    features_dict: dict[str, np.ndarray],
+    targets_dict: dict[str, np.ndarray],
+    subject_ids: list[str],
     save_dir: Path,
     split_name: str,
 ) -> None:
@@ -285,10 +276,7 @@ def save_features(
         logger.info(f"Saved {key} features to {path}")
 
     # Save primary features (for backwards compatibility)
-    torch.save(
-        torch.from_numpy(features_dict['encoder10']),
-        save_dir / f"features_{split_name}.pt"
-    )
+    torch.save(torch.from_numpy(features_dict["encoder10"]), save_dir / f"features_{split_name}.pt")
 
     # Save targets
     targets_path = save_dir / f"targets_{split_name}.pt"
@@ -306,7 +294,7 @@ def extract_features(
     config: dict,
     splits: dict,
     device: str = "cuda",
-) -> Dict[str, Path]:
+) -> dict[str, Path]:
     """Extract features for a condition."""
     logger.info(f"Extracting features for condition: {condition_name}")
 

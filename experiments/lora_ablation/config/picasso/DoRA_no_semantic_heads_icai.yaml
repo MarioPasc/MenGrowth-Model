@@ -1,36 +1,32 @@
-# experiments/lora_ablation/config/server/dora_no_semantic_heads_icai.yaml
-# DoRA Ablation Experiment Configuration - WITHOUT Semantic Heads
+# experiments/lora_ablation/config/picasso/DoRA_no_semantic_heads_icai.yaml
+# DoRA Ablation — WITHOUT Semantic Heads — Picasso A100 80GB
 #
-# This config disables auxiliary semantic prediction losses.
-# Training uses only segmentation loss (Dice + CE).
-# This is the control experiment for measuring the effect of semantic heads with DoRA.
+# Control experiment: DoRA with segmentation loss only.
+# Hardware-optimized for Picasso A100 80GB (see LoRA_semantic_heads for rationale).
 
 experiment:
   name: dora_ablation_no_semantic_heads
   seed: 42
-  output_dir: /media/hddb/mario/results/growth/dora_ablation_no_semantic_heads
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/dora_ablation_no_semantic_heads
 
 paths:
-  checkpoint: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
-  data_root: /media/hddb/mario/data/BraTS-MEN
-  glioma_root: /media/hddb/mario/data/BraTS-GLI-100
+  checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  data_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
+  glioma_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/glioma/high_resolution
 
 # Spatial configuration
 data:
-  roi_size: [128, 128, 128]           # LoRA training (matches BrainSegFounder fine-tuning)
-  feature_roi_size: [192, 192, 192]   # Feature extraction & eval (100% tumor containment)
-  spacing: [1.0, 1.0, 1.0]           # Isotropic 1mm (BraTS native resolution)
+  roi_size: [128, 128, 128]
+  feature_roi_size: [192, 192, 192]
+  spacing: [1.0, 1.0, 1.0]
 
-# Updated splits (300/50/150/500)
 data_splits:
   lora_train: 525
   lora_val: 100
   sdp_train: 225
   test: 150
 
-# Experimental conditions - DoRA only
-# NOTE: Using 3-channel output with sigmoid activation preserves the FULL pretrained
-# decoder weights from BrainSegFounder, making baseline_frozen evaluation valid.
+# Experimental conditions — DoRA only
 conditions:
   - name: baseline_frozen
     lora_rank: null
@@ -71,23 +67,27 @@ conditions:
     use_dora: true
     description: DoRA rank 32 (weight-decomposed, saturation test)
 
-# Training hyperparameters
+# Training hyperparameters — A100 optimized
 training:
-  max_epochs: 100
-  early_stopping_patience: 25
-  batch_size: 2            # 128³ LoRA training ROI
+  max_epochs: 200
+  early_stopping_patience: 40
+  batch_size: 4
   lr_encoder: 1.0e-4
   lr_decoder: 5.0e-4
   weight_decay: 1.0e-5
-  num_workers: 4
+  num_workers: 16
   lora_dropout: 0.1
   gradient_clip: 1.0
+
+  # Mixed precision (A100 native bf16 tensor cores)
+  use_amp: true
+  grad_accum_steps: 1
 
   # Decoder configuration
   decoder_type: "original"
   freeze_decoder: false
 
-  # Semantic heads configuration - DISABLED
+  # Semantic heads configuration — DISABLED
   use_semantic_heads: false
   lambda_aux: 0.0
 
@@ -95,7 +95,7 @@ training:
   aux_warmup_epochs: 0
   aux_warmup_duration: 0
 
-  # Gradient monitoring (for diagnostics - always enabled for analysis)
+  # Gradient monitoring
   enable_gradient_monitoring: true
   gradient_monitor_freq: 50
 
@@ -103,8 +103,6 @@ training:
 loss:
   lambda_dice: 1.0
   lambda_ce: 1.0
-
-  # These are not used when use_semantic_heads: false
   lambda_volume: 1.0
   lambda_location: 1.0
   lambda_shape: 0.5
@@ -118,10 +116,10 @@ probe:
   normalize_features: true
   normalize_targets: true
 
-# Feature extraction
+# Feature extraction — A100 optimized
 feature_extraction:
   level: encoder10
-  batch_size: 2              # 192³ feature ROI uses ~3.4x more memory than 128³
+  batch_size: 4
 
 # Domain analysis
 domain_analysis:
@@ -144,12 +142,3 @@ logging:
 # Model card generation
 model_card:
   enabled: true
-
-# =============================================================================
-# EXPERIMENT NOTES
-# =============================================================================
-#
-# This is the CONTROL experiment without semantic heads for DoRA.
-#
-# Compare results with dora_semantic_heads_icai.yaml to measure the effect of
-# auxiliary semantic prediction on DoRA-adapted representations.

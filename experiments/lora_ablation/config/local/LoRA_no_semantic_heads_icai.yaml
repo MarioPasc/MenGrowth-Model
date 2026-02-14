@@ -16,6 +16,12 @@ paths:
   # Optional: glioma data for domain shift analysis (required for --domain-features)
   glioma_root: /media/mpascual/PortableSSD/BraTS_GLI/BraTS-GLI-100
 
+# Spatial configuration
+data:
+  roi_size: [128, 128, 128]           # LoRA training (matches BrainSegFounder fine-tuning)
+  feature_roi_size: [192, 192, 192]   # Feature extraction & eval (100% tumor containment)
+  spacing: [1.0, 1.0, 1.0]           # Isotropic 1mm (BraTS native resolution)
+
 # Updated splits (300/50/150/500)
 data_splits:
   lora_train: 525
@@ -65,7 +71,7 @@ conditions:
 training:
   max_epochs: 100
   early_stopping_patience: 25  # Increased patience for stable training
-  batch_size: 2            # Reduced from 4 (128³ ROI requires ~2.4x more memory than 96³)
+  batch_size: 2            # 128³ LoRA training ROI
   lr_encoder: 1.0e-4      # For LoRA params
   lr_decoder: 5.0e-4      # For decoder (if trainable)
   weight_decay: 1.0e-5
@@ -111,7 +117,7 @@ probe:
 # Feature extraction
 feature_extraction:
   level: encoder10            # 768-dim (matches SDP Phase 2)
-  batch_size: 1              # Reduced from 4 to avoid OOM on local GPU (128³ ROI)
+  batch_size: 1              # 192³ feature ROI; kept at 1 for local GPU memory
 
 # Domain analysis (glioma vs meningioma)
 domain_analysis:

@@ -10,7 +10,7 @@ Diagnostics per dataset:
   2. Channel target coverage after _convert_target() conversion
   3. Model output activations (mean sigmoid, positive fraction)
   4. Spatial analysis (tumor retention after center-crop)
-  5. Dice evaluation: center-crop (128^3) + sliding window (full resolution)
+  5. Dice evaluation: center-crop (192^3) + sliding window (full resolution)
      GLI also tests remapped labels.
 
 Reads paths (checkpoint, glioma_root, data_root) from any server config YAML.
@@ -28,27 +28,26 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
+import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import yaml
 
-from growth.losses.segmentation import DiceMetric3Ch
-from growth.models.encoder.swin_loader import load_full_swinunetr
+from experiments.lora_ablation.data_splits import load_splits
+from experiments.lora_ablation.extract_domain_features import BraTSGLIDataset
 from growth.data.bratsmendata import BraTSMENDataset
 from growth.data.transforms import (
-    get_val_transforms,
-    get_sliding_window_transforms,
     DEFAULT_ROI_SIZE,
+    FEATURE_ROI_SIZE,
+    get_sliding_window_transforms,
+    get_val_transforms,
 )
 from growth.inference.sliding_window import sliding_window_segment
-
-from experiments.lora_ablation.extract_domain_features import BraTSGLIDataset
-from experiments.lora_ablation.data_splits import load_splits
+from growth.losses.segmentation import DiceMetric3Ch
+from growth.models.encoder.swin_loader import load_full_swinunetr
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,6 +65,7 @@ DEFAULT_NUM_WORKERS = 4
 # Label Remapping
 # =========================================================================
 
+
 def remap_gli_labels(seg: torch.Tensor) -> torch.Tensor:
     """Remap BraTS-GLI labels {0, 2, 4} -> {0, 2, 3}.
 
@@ -82,10 +82,11 @@ def remap_gli_labels(seg: torch.Tensor) -> torch.Tensor:
 # Diagnostics
 # =========================================================================
 
+
 def collect_label_statistics(
     dataloader: DataLoader,
     n_subjects: int = 10,
-) -> List[Dict]:
+) -> list[dict]:
     """Collect per-sample label statistics for the first n subjects."""
     stats = []
     count = 0
@@ -101,10 +102,7 @@ def collect_label_statistics(
             s = seg[b].squeeze(0)  # [D, H, W]
             unique_vals = sorted(torch.unique(s).tolist())
             total_voxels = s.numel()
-            fractions = {
-                int(v): float((s == v).sum()) / total_voxels
-                for v in unique_vals
-            }
+            fractions = {int(v): float((s == v).sum()) / total_voxels for v in unique_vals}
             sid = subject_ids[b] if isinstance(subject_ids, list) else subject_ids
 
             # Bounding box of non-background
@@ -130,14 +128,12 @@ def collect_label_statistics(
     return stats
 
 
-def log_label_statistics(stats: List[Dict], dataset_name: str) -> None:
+def log_label_statistics(stats: list[dict], dataset_name: str) -> None:
     """Log collected label statistics."""
     logger.info(f"\n  Label statistics ({len(stats)} {dataset_name} subjects):")
     logger.info("  " + "-" * 78)
     for entry in stats:
-        frac_str = ", ".join(
-            f"{k}: {v:.4f}" for k, v in sorted(entry["volume_fractions"].items())
-        )
+        frac_str = ", ".join(f"{k}: {v:.4f}" for k, v in sorted(entry["volume_fractions"].items()))
         logger.info(
             f"    {entry['subject_id']}: "
             f"labels={entry['unique_labels']}, "
@@ -152,7 +148,7 @@ def log_label_statistics(stats: List[Dict], dataset_name: str) -> None:
 def analyze_channel_targets(
     dataloader: DataLoader,
     remap: bool = False,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Analyze what _convert_target produces for data."""
     metric = DiceMetric3Ch()
 
@@ -191,7 +187,7 @@ def analyze_model_activations(
     dataloader: DataLoader,
     device: str,
     max_batches: int = 10,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Analyze model output activations."""
     model.eval()
     ch_names = ["TC", "WT", "ET"]
@@ -223,7 +219,7 @@ def analyze_model_activations(
 
 def analyze_spatial_coverage(
     dataloader: DataLoader,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Analyze tumor bounding boxes and edge-touching fraction."""
     bbox_sizes_all = []
     exceeds_roi = 0
@@ -278,6 +274,7 @@ def analyze_spatial_coverage(
 # Evaluation
 # =========================================================================
 
+
 @torch.no_grad()
 def evaluate_dice(
     model: nn.Module,
@@ -286,7 +283,7 @@ def evaluate_dice(
     device: str,
     remap: bool = False,
     desc: str = "Evaluating",
-) -> Tuple[torch.Tensor, Dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, float]]:
     """Evaluate Dice with center-crop patches."""
     model.eval()
     all_dice = []
@@ -312,12 +309,12 @@ def evaluate_dice_sliding_window(
     dataloader: DataLoader,
     dice_metric: DiceMetric3Ch,
     device: str,
-    roi_size: Tuple[int, int, int] = (128, 128, 128),
+    roi_size: tuple[int, int, int] = (128, 128, 128),
     sw_batch_size: int = 4,
     overlap: float = 0.5,
     remap: bool = False,
     desc: str = "SW Eval",
-) -> Tuple[torch.Tensor, Dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, float]]:
     """Evaluate Dice using sliding window on full-resolution volumes.
 
     Requires batch_size=1 dataloader with get_sliding_window_transforms.
@@ -327,14 +324,17 @@ def evaluate_dice_sliding_window(
 
     for batch in tqdm(dataloader, desc=desc, leave=False):
         images = batch["image"].to(device)  # [1, 4, D, H, W]
-        segs = batch["seg"].to(device)       # [1, 1, D, H, W]
+        segs = batch["seg"].to(device)  # [1, 1, D, H, W]
 
         if remap:
             segs = remap_gli_labels(segs)
 
         pred = sliding_window_segment(
-            model, images, roi_size=roi_size,
-            sw_batch_size=sw_batch_size, overlap=overlap,
+            model,
+            images,
+            roi_size=roi_size,
+            sw_batch_size=sw_batch_size,
+            overlap=overlap,
         )
         dice = dice_metric(pred, segs)  # [1, 3]
         all_dice.append(dice.cpu())
@@ -343,7 +343,7 @@ def evaluate_dice_sliding_window(
     return dice_all, _summarize(dice_all)
 
 
-def _summarize(dice_all: torch.Tensor) -> Dict[str, float]:
+def _summarize(dice_all: torch.Tensor) -> dict[str, float]:
     """Summarize per-sample Dice tensor [N, 3] -> dict."""
     return {
         "dice_mean": float(dice_all.mean()),
@@ -364,16 +364,17 @@ def _summarize(dice_all: torch.Tensor) -> Dict[str, float]:
 # Per-dataset diagnostic runner
 # =========================================================================
 
+
 def run_diagnostics(
     model: nn.Module,
     dataloader: DataLoader,
-    sw_dataloader: Optional[DataLoader],
+    sw_dataloader: DataLoader | None,
     dataset_name: str,
     out_dir: Path,
     device: str,
     is_gli: bool,
-    roi_size: Tuple[int, int, int] = (128, 128, 128),
-) -> Dict:
+    roi_size: tuple[int, int, int] = (128, 128, 128),
+) -> dict:
     """Run all diagnostics for a single dataset.
 
     Args:
@@ -395,9 +396,9 @@ def run_diagnostics(
     # ==================================================================
     # Diagnostic 1: Label Statistics
     # ==================================================================
-    logger.info(f"\n  {'='*66}")
+    logger.info(f"\n  {'=' * 66}")
     logger.info(f"  DIAGNOSTIC 1: Label Statistics ({dataset_name})")
-    logger.info(f"  {'='*66}")
+    logger.info(f"  {'=' * 66}")
 
     label_stats = collect_label_statistics(dataloader, n_subjects=10)
     log_label_statistics(label_stats, dataset_name)
@@ -415,9 +416,9 @@ def run_diagnostics(
     # ==================================================================
     # Diagnostic 2: Channel Target Coverage
     # ==================================================================
-    logger.info(f"\n  {'='*66}")
+    logger.info(f"\n  {'=' * 66}")
     logger.info(f"  DIAGNOSTIC 2: Channel Target Coverage ({dataset_name})")
-    logger.info(f"  {'='*66}")
+    logger.info(f"  {'=' * 66}")
 
     coverage_modes = [("standard", False)]
     if is_gli:
@@ -432,7 +433,7 @@ def run_diagnostics(
         for ch in ["TC", "WT", "ET"]:
             logger.info(
                 f"      {ch}: "
-                f"non-empty in {coverage[f'{ch}_nonempty_frac']*100:.1f}% of samples, "
+                f"non-empty in {coverage[f'{ch}_nonempty_frac'] * 100:.1f}% of samples, "
                 f"mean vol fraction={coverage[f'{ch}_mean_vol_frac']:.6f}"
             )
 
@@ -442,9 +443,9 @@ def run_diagnostics(
     # ==================================================================
     # Diagnostic 3: Model Activations
     # ==================================================================
-    logger.info(f"\n  {'='*66}")
+    logger.info(f"\n  {'=' * 66}")
     logger.info(f"  DIAGNOSTIC 3: Model Activations ({dataset_name}, first 10 batches)")
-    logger.info(f"  {'='*66}")
+    logger.info(f"  {'=' * 66}")
 
     activations = analyze_model_activations(model, dataloader, device, max_batches=10)
     all_results["activations"] = activations
@@ -461,19 +462,24 @@ def run_diagnostics(
     # ==================================================================
     # Diagnostic 4: Spatial / Tumor Retention Analysis
     # ==================================================================
-    logger.info(f"\n  {'='*66}")
+    logger.info(f"\n  {'=' * 66}")
     logger.info(f"  DIAGNOSTIC 4: Spatial Analysis ({dataset_name})")
-    logger.info(f"  {'='*66}")
+    logger.info(f"  {'=' * 66}")
 
     spatial = analyze_spatial_coverage(dataloader)
     all_results["spatial"] = spatial
 
-    logger.info(f"    Mean tumor bbox (D,H,W): "
-                f"({spatial['mean_bbox_D']:.1f}, {spatial['mean_bbox_H']:.1f}, {spatial['mean_bbox_W']:.1f})")
-    logger.info(f"    Max tumor bbox (D,H,W): "
-                f"({spatial['max_bbox_D']}, {spatial['max_bbox_H']}, {spatial['max_bbox_W']})")
-    logger.info(f"    Tumor touches edge: "
-                f"{spatial['bbox_touches_edge_frac']*100:.1f}% of samples")
+    logger.info(
+        f"    Mean tumor bbox (D,H,W): "
+        f"({spatial['mean_bbox_D']:.1f}, {spatial['mean_bbox_H']:.1f}, {spatial['mean_bbox_W']:.1f})"
+    )
+    logger.info(
+        f"    Max tumor bbox (D,H,W): "
+        f"({spatial['max_bbox_D']}, {spatial['max_bbox_H']}, {spatial['max_bbox_W']})"
+    )
+    logger.info(
+        f"    Tumor touches edge: {spatial['bbox_touches_edge_frac'] * 100:.1f}% of samples"
+    )
     logger.info(f"    Mean tumor vol fraction: {spatial['mean_tumor_vol_frac']:.6f}")
     logger.info(f"    Median tumor vol fraction: {spatial['median_tumor_vol_frac']:.6f}")
 
@@ -483,9 +489,9 @@ def run_diagnostics(
     # ==================================================================
     # Diagnostic 5: Dice Evaluation
     # ==================================================================
-    logger.info(f"\n  {'='*66}")
+    logger.info(f"\n  {'=' * 66}")
     logger.info(f"  DIAGNOSTIC 5: Dice Evaluation ({dataset_name})")
-    logger.info(f"  {'='*66}")
+    logger.info(f"  {'=' * 66}")
 
     dice_metric = DiceMetric3Ch()
     dice_results = {}
@@ -498,7 +504,10 @@ def run_diagnostics(
     for label, remap in conditions:
         t0 = time.time()
         dice_all, summary = evaluate_dice(
-            model, dataloader, dice_metric, device,
+            model,
+            dataloader,
+            dice_metric,
+            device,
             remap=remap,
             desc=f"{dataset_name} Dice ({label})",
         )
@@ -526,7 +535,10 @@ def run_diagnostics(
         for label, remap in sw_conditions:
             t0 = time.time()
             dice_all, summary = evaluate_dice_sliding_window(
-                model, sw_dataloader, dice_metric, device,
+                model,
+                sw_dataloader,
+                dice_metric,
+                device,
                 roi_size=roi_size,
                 remap=remap,
                 desc=f"{dataset_name} SW Dice ({label})",
@@ -559,9 +571,10 @@ def run_diagnostics(
 # Comparative Analysis
 # =========================================================================
 
+
 def generate_comparison(
-    gli_results: Optional[Dict],
-    men_results: Optional[Dict],
+    gli_results: dict | None,
+    men_results: dict | None,
     output_dir: Path,
     config_path: str,
     checkpoint_path: str,
@@ -599,9 +612,9 @@ def generate_comparison(
         for mode, cov in results.get("channel_coverage", {}).items():
             lines.append(
                 f"   {name:<8} {mode:<18} "
-                f"{cov['TC_nonempty_frac']*100:>6.1f}% "
-                f"{cov['WT_nonempty_frac']*100:>6.1f}% "
-                f"{cov['ET_nonempty_frac']*100:>6.1f}%   "
+                f"{cov['TC_nonempty_frac'] * 100:>6.1f}% "
+                f"{cov['WT_nonempty_frac'] * 100:>6.1f}% "
+                f"{cov['ET_nonempty_frac'] * 100:>6.1f}%   "
                 f"{cov['TC_mean_vol_frac']:>10.6f} "
                 f"{cov['WT_mean_vol_frac']:>10.6f} "
                 f"{cov['ET_mean_vol_frac']:>10.6f}"
@@ -611,7 +624,9 @@ def generate_comparison(
     # ---- Activations ----
     lines.append("3. MODEL OUTPUT ACTIVATIONS")
     lines.append("-" * 50)
-    lines.append(f"   {'Dataset':<8} {'TC sig':>8} {'WT sig':>8} {'ET sig':>8}   {'TC pos%':>8} {'WT pos%':>8} {'ET pos%':>8}")
+    lines.append(
+        f"   {'Dataset':<8} {'TC sig':>8} {'WT sig':>8} {'ET sig':>8}   {'TC pos%':>8} {'WT pos%':>8} {'ET pos%':>8}"
+    )
 
     for name, results in [("GLI", gli_results), ("MEN", men_results)]:
         if results is None:
@@ -622,27 +637,31 @@ def generate_comparison(
             f"{act.get('TC_mean_activation', 0):>8.4f} "
             f"{act.get('WT_mean_activation', 0):>8.4f} "
             f"{act.get('ET_mean_activation', 0):>8.4f}   "
-            f"{act.get('TC_positive_frac', 0)*100:>7.4f}% "
-            f"{act.get('WT_positive_frac', 0)*100:>7.4f}% "
-            f"{act.get('ET_positive_frac', 0)*100:>7.4f}%"
+            f"{act.get('TC_positive_frac', 0) * 100:>7.4f}% "
+            f"{act.get('WT_positive_frac', 0) * 100:>7.4f}% "
+            f"{act.get('ET_positive_frac', 0) * 100:>7.4f}%"
         )
     lines.append("")
 
     # ---- Spatial ----
     lines.append("4. SPATIAL ANALYSIS")
     lines.append("-" * 50)
-    lines.append(f"   {'Dataset':<8} {'Mean bbox':>20} {'Max bbox':>20} {'Edge %':>8} {'Tumor vol%':>10}")
+    lines.append(
+        f"   {'Dataset':<8} {'Mean bbox':>20} {'Max bbox':>20} {'Edge %':>8} {'Tumor vol%':>10}"
+    )
 
     for name, results in [("GLI", gli_results), ("MEN", men_results)]:
         if results is None:
             continue
         sp = results.get("spatial", {})
-        mean_bbox = f"({sp.get('mean_bbox_D',0):.0f},{sp.get('mean_bbox_H',0):.0f},{sp.get('mean_bbox_W',0):.0f})"
-        max_bbox = f"({sp.get('max_bbox_D',0)},{sp.get('max_bbox_H',0)},{sp.get('max_bbox_W',0)})"
+        mean_bbox = f"({sp.get('mean_bbox_D', 0):.0f},{sp.get('mean_bbox_H', 0):.0f},{sp.get('mean_bbox_W', 0):.0f})"
+        max_bbox = (
+            f"({sp.get('max_bbox_D', 0)},{sp.get('max_bbox_H', 0)},{sp.get('max_bbox_W', 0)})"
+        )
         lines.append(
             f"   {name:<8} {mean_bbox:>20} {max_bbox:>20} "
-            f"{sp.get('bbox_touches_edge_frac',0)*100:>7.1f}% "
-            f"{sp.get('mean_tumor_vol_frac',0)*100:>9.4f}%"
+            f"{sp.get('bbox_touches_edge_frac', 0) * 100:>7.1f}% "
+            f"{sp.get('mean_tumor_vol_frac', 0) * 100:>9.4f}%"
         )
     lines.append("")
 
@@ -663,10 +682,13 @@ def generate_comparison(
                 f"{d['dice_WT']:>7.4f} "
                 f"{d['dice_ET']:>7.4f}"
             )
-            csv_rows.append({
-                "dataset": name, "label_mode": mode,
-                **{k: f"{v:.4f}" if isinstance(v, float) else v for k, v in d.items()},
-            })
+            csv_rows.append(
+                {
+                    "dataset": name,
+                    "label_mode": mode,
+                    **{k: f"{v:.4f}" if isinstance(v, float) else v for k, v in d.items()},
+                }
+            )
     lines.append("")
 
     # ---- Interpretation ----
@@ -682,14 +704,10 @@ def generate_comparison(
 
         if gli_sw and gli_cc:
             sw_delta = gli_sw.get("dice_mean", 0) - gli_cc.get("dice_mean", 0)
-            lines.append(
-                f"   GLI sliding window vs center crop: {sw_delta:+.4f} Dice"
-            )
+            lines.append(f"   GLI sliding window vs center crop: {sw_delta:+.4f} Dice")
         if men_sw and men_cc:
             sw_delta = men_sw.get("dice_mean", 0) - men_cc.get("dice_mean", 0)
-            lines.append(
-                f"   MEN sliding window vs center crop: {sw_delta:+.4f} Dice"
-            )
+            lines.append(f"   MEN sliding window vs center crop: {sw_delta:+.4f} Dice")
 
         # Domain gap assessment
         gli_best = gli_sw.get("dice_mean", 0) if gli_sw else gli_cc.get("dice_mean", 0)
@@ -697,22 +715,18 @@ def generate_comparison(
 
         if gli_best > 0.5 and men_best < gli_best:
             gap = gli_best - men_best
-            lines.append(
-                f"\n   Domain gap (GLI -> MEN): {gap:.4f} Dice drop"
-            )
-            lines.append(
-                "   -> LoRA adaptation targets this gap."
-            )
+            lines.append(f"\n   Domain gap (GLI -> MEN): {gap:.4f} Dice drop")
+            lines.append("   -> LoRA adaptation targets this gap.")
 
         # Label remapping
         gli_std = gli_results.get("dice", {}).get("sliding_window", {}).get("dice_mean", 0)
-        gli_remap = gli_results.get("dice", {}).get("sliding_window_remapped", {}).get("dice_mean", 0)
+        gli_remap = (
+            gli_results.get("dice", {}).get("sliding_window_remapped", {}).get("dice_mean", 0)
+        )
         if gli_std and gli_remap:
             remap_delta = gli_remap - gli_std
             if abs(remap_delta) > 0.01:
-                lines.append(
-                    f"\n   GLI label remapping effect (SW): {remap_delta:+.4f}"
-                )
+                lines.append(f"\n   GLI label remapping effect (SW): {remap_delta:+.4f}")
 
     lines.append("")
 
@@ -739,44 +753,63 @@ def generate_comparison(
 # Main
 # =========================================================================
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Diagnose frozen BrainSegFounder segmentation on GLI and/or MEN"
     )
     parser.add_argument(
-        "--config", type=str, required=True,
+        "--config",
+        type=str,
+        required=True,
         help="Path to a server config YAML",
     )
     parser.add_argument(
-        "--output-dir", type=str, required=True,
+        "--output-dir",
+        type=str,
+        required=True,
         help="Directory to save diagnosis results",
     )
     parser.add_argument(
-        "--dataset", type=str, default="both", choices=["gli", "men", "both"],
+        "--dataset",
+        type=str,
+        default="both",
+        choices=["gli", "men", "both"],
         help="Which dataset(s) to diagnose (default: both)",
     )
     parser.add_argument(
-        "--max-subjects", type=int, default=DEFAULT_MAX_SUBJECTS,
+        "--max-subjects",
+        type=int,
+        default=DEFAULT_MAX_SUBJECTS,
         help=f"Max subjects per dataset (default: {DEFAULT_MAX_SUBJECTS})",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
         help=f"Batch size for center-crop eval (default: {DEFAULT_BATCH_SIZE})",
     )
     parser.add_argument(
-        "--num-workers", type=int, default=DEFAULT_NUM_WORKERS,
+        "--num-workers",
+        type=int,
+        default=DEFAULT_NUM_WORKERS,
         help=f"DataLoader workers (default: {DEFAULT_NUM_WORKERS})",
     )
     parser.add_argument(
-        "--device", type=str, default="cuda",
+        "--device",
+        type=str,
+        default="cuda",
         help="Device (default: cuda)",
     )
     parser.add_argument(
-        "--no-sliding-window", action="store_true",
+        "--no-sliding-window",
+        action="store_true",
         help="Skip sliding window evaluation (faster, center-crop only)",
     )
     parser.add_argument(
-        "--sw-max-subjects", type=int, default=50,
+        "--sw-max-subjects",
+        type=int,
+        default=50,
         help="Max subjects for sliding window eval (default: 50, slower than center-crop)",
     )
     args = parser.parse_args()
@@ -822,20 +855,24 @@ def main() -> None:
 
     # Save resolved config for reproducibility
     with open(output_dir / "resolved_config.yaml", "w") as f:
-        yaml.dump({
-            "source_config": str(config_path),
-            "checkpoint": checkpoint_path,
-            "data_root": data_root,
-            "glioma_root": glioma_root,
-            "dataset": args.dataset,
-            "roi_size": list(roi_size),
-            "sliding_window": run_sw,
-            "sw_max_subjects": args.sw_max_subjects,
-            "max_subjects": args.max_subjects,
-            "batch_size": args.batch_size,
-            "num_workers": args.num_workers,
-            "device": device,
-        }, f, default_flow_style=False)
+        yaml.dump(
+            {
+                "source_config": str(config_path),
+                "checkpoint": checkpoint_path,
+                "data_root": data_root,
+                "glioma_root": glioma_root,
+                "dataset": args.dataset,
+                "roi_size": list(roi_size),
+                "sliding_window": run_sw,
+                "sw_max_subjects": args.sw_max_subjects,
+                "max_subjects": args.max_subjects,
+                "batch_size": args.batch_size,
+                "num_workers": args.num_workers,
+                "device": device,
+            },
+            f,
+            default_flow_style=False,
+        )
 
     # ---- Load model (once, shared) ----
     logger.info("\nLoading frozen BrainSegFounder model...")
@@ -859,39 +896,52 @@ def main() -> None:
         if not gli_path.exists():
             raise FileNotFoundError(f"GLI data not found: {gli_path}")
 
-        all_gli = sorted([
-            d.name for d in gli_path.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
-        ])
-        gli_subjects = all_gli[:args.max_subjects]
+        all_gli = sorted(
+            [d.name for d in gli_path.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        )
+        gli_subjects = all_gli[: args.max_subjects]
         logger.info(f"GLI subjects: {len(gli_subjects)} (from {len(all_gli)} available)")
 
-        # Center-crop dataloader
+        # Center-crop dataloader (192³ for full tumor containment)
         gli_dataset = BraTSGLIDataset(
-            data_root=str(glioma_root), subject_ids=gli_subjects,
-            transform=get_val_transforms(),
+            data_root=str(glioma_root),
+            subject_ids=gli_subjects,
+            transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
         )
         gli_loader = DataLoader(
-            gli_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.num_workers, pin_memory=True,
+            gli_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
         )
 
         # Sliding window dataloader (subset, batch_size=1)
         sw_gli_loader = None
         if run_sw:
-            sw_gli_subjects = gli_subjects[:args.sw_max_subjects]
+            sw_gli_subjects = gli_subjects[: args.sw_max_subjects]
             sw_gli_dataset = BraTSGLIDataset(
-                data_root=str(glioma_root), subject_ids=sw_gli_subjects,
+                data_root=str(glioma_root),
+                subject_ids=sw_gli_subjects,
                 transform=get_sliding_window_transforms(),
             )
             sw_gli_loader = DataLoader(
-                sw_gli_dataset, batch_size=1, shuffle=False,
-                num_workers=args.num_workers, pin_memory=True,
+                sw_gli_dataset,
+                batch_size=1,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
             )
 
         gli_results = run_diagnostics(
-            model, gli_loader, sw_gli_loader, "GLI",
-            output_dir / "gli", device, is_gli=True, roi_size=roi_size,
+            model,
+            gli_loader,
+            sw_gli_loader,
+            "GLI",
+            output_dir / "gli",
+            device,
+            is_gli=True,
+            roi_size=roi_size,
         )
 
     # ---- MEN diagnostics ----
@@ -904,34 +954,36 @@ def main() -> None:
         # Load test split subjects
         try:
             splits = load_splits(str(config_path))
-            men_subjects = splits["test"][:args.max_subjects]
+            men_subjects = splits["test"][: args.max_subjects]
             logger.info(f"MEN subjects: {len(men_subjects)} (from test split)")
         except (FileNotFoundError, KeyError):
             logger.warning("No data_splits.json found, discovering subjects from data_root")
             men_path = Path(data_root)
-            all_men = sorted([
-                d.name for d in men_path.iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ])
-            men_subjects = all_men[:args.max_subjects]
+            all_men = sorted(
+                [d.name for d in men_path.iterdir() if d.is_dir() and not d.name.startswith(".")]
+            )
+            men_subjects = all_men[: args.max_subjects]
             logger.info(f"MEN subjects: {len(men_subjects)} (discovered from {data_root})")
 
-        # Center-crop dataloader
+        # Center-crop dataloader (192³ for full tumor containment)
         men_dataset = BraTSMENDataset(
             data_root=data_root,
             subject_ids=men_subjects,
             compute_semantic=False,
-            transform=get_val_transforms(),
+            transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
         )
         men_loader = DataLoader(
-            men_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.num_workers, pin_memory=True,
+            men_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
         )
 
         # Sliding window dataloader (subset, batch_size=1)
         sw_men_loader = None
         if run_sw:
-            sw_men_subjects = men_subjects[:args.sw_max_subjects]
+            sw_men_subjects = men_subjects[: args.sw_max_subjects]
             sw_men_dataset = BraTSMENDataset(
                 data_root=data_root,
                 subject_ids=sw_men_subjects,
@@ -939,13 +991,22 @@ def main() -> None:
                 transform=get_sliding_window_transforms(),
             )
             sw_men_loader = DataLoader(
-                sw_men_dataset, batch_size=1, shuffle=False,
-                num_workers=args.num_workers, pin_memory=True,
+                sw_men_dataset,
+                batch_size=1,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
             )
 
         men_results = run_diagnostics(
-            model, men_loader, sw_men_loader, "MEN",
-            output_dir / "men", device, is_gli=False, roi_size=roi_size,
+            model,
+            men_loader,
+            sw_men_loader,
+            "MEN",
+            output_dir / "men",
+            device,
+            is_gli=False,
+            roi_size=roi_size,
         )
 
     # ---- Comparative analysis ----
@@ -954,8 +1015,11 @@ def main() -> None:
     logger.info("#" * 72)
 
     analysis = generate_comparison(
-        gli_results, men_results, output_dir,
-        str(config_path), checkpoint_path,
+        gli_results,
+        men_results,
+        output_dir,
+        str(config_path),
+        checkpoint_path,
     )
     print("\n" + analysis)
 
