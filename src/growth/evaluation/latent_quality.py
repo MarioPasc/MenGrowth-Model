@@ -18,11 +18,10 @@ Key Components:
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from sklearn.linear_model import Ridge
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
@@ -98,13 +97,9 @@ class LinearProbe:
             Self for method chaining.
         """
         if X.shape[1] != self.input_dim:
-            raise ValueError(
-                f"Expected input_dim={self.input_dim}, got {X.shape[1]}"
-            )
+            raise ValueError(f"Expected input_dim={self.input_dim}, got {X.shape[1]}")
         if y.shape[1] != self.output_dim:
-            raise ValueError(
-                f"Expected output_dim={self.output_dim}, got {y.shape[1]}"
-            )
+            raise ValueError(f"Expected output_dim={self.output_dim}, got {y.shape[1]}")
 
         # Normalize inputs
         if self.scaler is not None:
@@ -154,10 +149,7 @@ class LinearProbe:
         r2 = r2_score(y, predictions)
 
         # Per-dimension R²
-        r2_per_dim = np.array([
-            r2_score(y[:, i], predictions[:, i])
-            for i in range(y.shape[1])
-        ])
+        r2_per_dim = np.array([r2_score(y[:, i], predictions[:, i]) for i in range(y.shape[1])])
 
         # MSE
         mse = mean_squared_error(y, predictions)
@@ -207,9 +199,9 @@ class SemanticProbes:
 
     # Standard dimensions for BraTS semantic features
     FEATURE_DIMS = {
-        "volume": 4,   # total, NCR, ED, ET
+        "volume": 4,  # total, NCR, ED, ET
         "location": 3,  # centroid x, y, z
-        "shape": 3,    # sphericity, surface_area_log, solidity
+        "shape": 3,  # sphericity, surface_area_log, solidity
     }
 
     def __init__(
@@ -228,7 +220,7 @@ class SemanticProbes:
     def fit(
         self,
         X: np.ndarray,
-        targets: Dict[str, np.ndarray],
+        targets: dict[str, np.ndarray],
     ) -> "SemanticProbes":
         """Fit all probes on training data.
 
@@ -250,8 +242,8 @@ class SemanticProbes:
     def evaluate(
         self,
         X: np.ndarray,
-        targets: Dict[str, np.ndarray],
-    ) -> Dict[str, ProbeResults]:
+        targets: dict[str, np.ndarray],
+    ) -> dict[str, ProbeResults]:
         """Evaluate all probes on test data.
 
         Args:
@@ -269,7 +261,7 @@ class SemanticProbes:
 
         return results
 
-    def get_summary(self, results: Dict[str, ProbeResults]) -> Dict[str, float]:
+    def get_summary(self, results: dict[str, ProbeResults]) -> dict[str, float]:
         """Get summary R² scores from results.
 
         Args:
@@ -278,10 +270,7 @@ class SemanticProbes:
         Returns:
             Dict with R² for each feature type and overall.
         """
-        summary = {
-            f"r2_{name}": res.r2
-            for name, res in results.items()
-        }
+        summary = {f"r2_{name}": res.r2 for name, res in results.items()}
         summary["r2_mean"] = np.mean([res.r2 for res in results.values()])
         return summary
 
@@ -292,7 +281,7 @@ def compute_r2_scores(
     alpha: float = 1.0,
     test_split: float = 0.2,
     random_state: int = 42,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute R² scores using train/test split.
 
     Convenience function for quick R² evaluation.
@@ -330,7 +319,7 @@ def compute_r2_scores(
 
 def compute_cross_correlation(
     features: np.ndarray,
-    partition_indices: Optional[Dict[str, Tuple[int, int]]] = None,
+    partition_indices: dict[str, tuple[int, int]] | None = None,
 ) -> np.ndarray:
     """Compute cross-correlation matrix between partitions.
 
@@ -347,8 +336,8 @@ def compute_cross_correlation(
 
 def compute_partition_correlation(
     features: np.ndarray,
-    partition_indices: Dict[str, Tuple[int, int]],
-) -> Dict[str, float]:
+    partition_indices: dict[str, tuple[int, int]],
+) -> dict[str, float]:
     """Compute mean absolute correlation between partitions.
 
     Args:
@@ -363,7 +352,7 @@ def compute_partition_correlation(
 
     partition_names = list(partition_indices.keys())
     for i, name_i in enumerate(partition_names):
-        for j, name_j in enumerate(partition_names[i + 1:], i + 1):
+        for j, name_j in enumerate(partition_names[i + 1 :], i + 1):
             start_i, end_i = partition_indices[name_i]
             start_j, end_j = partition_indices[name_j]
 
@@ -421,9 +410,9 @@ def distance_correlation(
 
 def compute_dcor_matrix(
     features: np.ndarray,
-    partition_indices: Dict[str, Tuple[int, int]],
+    partition_indices: dict[str, tuple[int, int]],
     max_samples: int = 500,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute distance correlation between partitions.
 
     Distance correlation is computationally expensive O(n²), so we
@@ -448,7 +437,7 @@ def compute_dcor_matrix(
     partition_names = list(partition_indices.keys())
 
     for i, name_i in enumerate(partition_names):
-        for j, name_j in enumerate(partition_names[i + 1:], i + 1):
+        for j, name_j in enumerate(partition_names[i + 1 :], i + 1):
             start_i, end_i = partition_indices[name_i]
             start_j, end_j = partition_indices[name_j]
 
@@ -512,7 +501,7 @@ def compute_mmd(
     X: np.ndarray,
     Y: np.ndarray,
     kernel: str = "rbf",
-    gamma: Optional[float] = None,
+    gamma: float | None = None,
 ) -> float:
     """Compute Maximum Mean Discrepancy between two distributions.
 
@@ -583,9 +572,7 @@ def compute_cka(
         Revisited." ICML.
     """
     if X.shape[0] != Y.shape[0]:
-        raise ValueError(
-            f"X and Y must have same number of samples: {X.shape[0]} vs {Y.shape[0]}"
-        )
+        raise ValueError(f"X and Y must have same number of samples: {X.shape[0]} vs {Y.shape[0]}")
 
     # Center both matrices
     X = X - X.mean(axis=0, keepdims=True)
@@ -612,8 +599,8 @@ def mmd_permutation_test(
     Y: np.ndarray,
     n_perm: int = 1000,
     kernel: str = "rbf",
-    gamma: Optional[float] = None,
-) -> Tuple[float, float]:
+    gamma: float | None = None,
+) -> tuple[float, float]:
     """MMD with permutation test for statistical significance.
 
     Computes MMD² between X and Y, then estimates the p-value by
@@ -719,8 +706,8 @@ class DomainShiftMetrics:
     proxy_a_distance: float
     source_effective_rank: float
     target_effective_rank: float
-    cka: Optional[float] = None
-    mmd_pvalue: Optional[float] = None
+    cka: float | None = None
+    mmd_pvalue: float | None = None
 
 
 def compute_domain_shift_metrics(
@@ -751,18 +738,14 @@ def compute_domain_shift_metrics(
     source_aligned = source_features[:n_min]
     target_aligned = target_features[:n_min]
 
-    mmd_val, mmd_pval = mmd_permutation_test(
-        source_features, target_features, n_perm=100
-    )
+    mmd_val, mmd_pval = mmd_permutation_test(source_features, target_features, n_perm=100)
 
     return DomainShiftMetrics(
         mmd=mmd_val,
         domain_classifier_accuracy=compute_domain_classifier_accuracy(
             source_features, target_features
         ),
-        proxy_a_distance=compute_proxy_a_distance(
-            source_features, target_features
-        ),
+        proxy_a_distance=compute_proxy_a_distance(source_features, target_features),
         source_effective_rank=compute_effective_rank(source_features),
         target_effective_rank=compute_effective_rank(target_features),
         cka=compute_cka(source_aligned, target_aligned),
@@ -770,13 +753,151 @@ def compute_domain_shift_metrics(
     )
 
 
+@dataclass
+class DCIResults:
+    """Results from DCI disentanglement evaluation.
+
+    Attributes:
+        disentanglement: Weighted-average disentanglement D in [0, 1].
+        completeness: Weighted-average completeness C in [0, 1].
+        informativeness: Mean LASSO R² across factors.
+        importance_matrix: LASSO importance matrix [n_factors, n_latent_dims].
+        r2_per_factor: R² per target factor from LASSO.
+    """
+
+    disentanglement: float
+    completeness: float
+    informativeness: float
+    importance_matrix: np.ndarray
+    r2_per_factor: np.ndarray
+
+
+def compute_dci(
+    z: np.ndarray,
+    targets: np.ndarray,
+    alpha: float = 0.01,
+    max_iter: int = 5000,
+) -> DCIResults:
+    """Compute DCI disentanglement, completeness, and informativeness.
+
+    Implements Eastwood & Williams (2018): "A framework for the quantitative
+    evaluation of disentangled representations."
+
+    Algorithm:
+        1. For each target factor, train LASSO from all latent dims.
+        2. Extract importance matrix R[j, d] = |coef_j[d]|.
+        3. Disentanglement D_d = 1 - H(R_norm[:, d]) / log(n_factors).
+        4. Completeness C_j = 1 - H(R_norm[j, :]) / log(n_dims).
+        5. Informativeness = mean R² of LASSO predictions.
+
+    Args:
+        z: Latent representations [N, D].
+        targets: Target factors [N, K].
+        alpha: LASSO regularization strength.
+        max_iter: Maximum iterations for LASSO.
+
+    Returns:
+        DCIResults with D, C, informativeness, and importance matrix.
+    """
+    from sklearn.linear_model import Lasso
+
+    n_samples, n_dims = z.shape
+    n_factors = targets.shape[1]
+
+    # Standardize inputs
+    scaler_z = StandardScaler()
+    z_scaled = scaler_z.fit_transform(z)
+
+    scaler_t = StandardScaler()
+    targets_scaled = scaler_t.fit_transform(targets)
+
+    # Build importance matrix: train LASSO for each factor
+    importance = np.zeros((n_factors, n_dims))
+    r2_per_factor = np.zeros(n_factors)
+
+    for j in range(n_factors):
+        y = targets_scaled[:, j]
+
+        # Skip constant targets
+        if np.std(y) < 1e-10:
+            continue
+
+        lasso = Lasso(alpha=alpha, max_iter=max_iter, random_state=42)
+        lasso.fit(z_scaled, y)
+
+        importance[j, :] = np.abs(lasso.coef_)
+
+        # R² on training data (informativeness)
+        y_pred = lasso.predict(z_scaled)
+        ss_res = np.sum((y - y_pred) ** 2)
+        ss_tot = np.sum((y - y.mean()) ** 2)
+        r2_per_factor[j] = 1.0 - ss_res / (ss_tot + 1e-10) if ss_tot > 1e-10 else 0.0
+
+    # Disentanglement: per latent dim, then weighted average
+    # D_d = 1 - H(importance_norm[:, d]) / log(n_factors)
+    col_sums = importance.sum(axis=0)  # [n_dims]
+    active_dims = col_sums > 1e-10
+    n_active = active_dims.sum()
+
+    if n_active == 0 or n_factors < 2:
+        return DCIResults(
+            disentanglement=0.0,
+            completeness=0.0,
+            informativeness=float(r2_per_factor.mean()),
+            importance_matrix=importance,
+            r2_per_factor=r2_per_factor,
+        )
+
+    # Normalize columns for disentanglement
+    importance_col_norm = importance[:, active_dims] / col_sums[active_dims][np.newaxis, :]
+    # Clamp for numerical stability
+    importance_col_norm = np.clip(importance_col_norm, 1e-10, 1.0)
+
+    # Per-dim entropy
+    log_n_factors = np.log(n_factors)
+    H_d = -np.sum(importance_col_norm * np.log(importance_col_norm), axis=0) / log_n_factors
+    D_d = 1.0 - H_d  # [n_active]
+
+    # Weighted average by column importance
+    weights_d = col_sums[active_dims] / col_sums[active_dims].sum()
+    disentanglement = float(np.sum(weights_d * D_d))
+
+    # Completeness: per factor, then weighted average
+    # C_j = 1 - H(importance_norm[j, :]) / log(n_dims)
+    row_sums = importance.sum(axis=1)  # [n_factors]
+    active_factors = row_sums > 1e-10
+
+    if active_factors.sum() == 0 or n_dims < 2:
+        completeness = 0.0
+    else:
+        importance_row_norm = importance[active_factors, :] / row_sums[active_factors, np.newaxis]
+        importance_row_norm = np.clip(importance_row_norm, 1e-10, 1.0)
+
+        log_n_dims = np.log(n_dims)
+        H_j = -np.sum(importance_row_norm * np.log(importance_row_norm), axis=1) / log_n_dims
+        C_j = 1.0 - H_j
+
+        weights_j = row_sums[active_factors] / row_sums[active_factors].sum()
+        completeness = float(np.sum(weights_j * C_j))
+
+    informativeness = float(r2_per_factor.mean())
+
+    return DCIResults(
+        disentanglement=disentanglement,
+        completeness=completeness,
+        informativeness=informativeness,
+        importance_matrix=importance,
+        r2_per_factor=r2_per_factor,
+    )
+
+
 def evaluate_latent_quality(
     features: np.ndarray,
-    semantic_targets: Dict[str, np.ndarray],
-    partition_indices: Optional[Dict[str, Tuple[int, int]]] = None,
+    semantic_targets: dict[str, np.ndarray],
+    partition_indices: dict[str, tuple[int, int]] | None = None,
     alpha: float = 1.0,
     test_split: float = 0.2,
-) -> Dict[str, Union[float, Dict, np.ndarray]]:
+) -> dict[str, float | dict | np.ndarray]:
     """Comprehensive latent space quality evaluation.
 
     Args:
@@ -797,9 +918,7 @@ def evaluate_latent_quality(
 
     # Split data
     indices = np.arange(len(features))
-    train_idx, test_idx = train_test_split(
-        indices, test_size=test_split, random_state=42
-    )
+    train_idx, test_idx = train_test_split(indices, test_size=test_split, random_state=42)
 
     X_train, X_test = features[train_idx], features[test_idx]
 
@@ -825,9 +944,7 @@ def evaluate_latent_quality(
         results["partition_correlation"] = compute_partition_correlation(
             features, partition_indices
         )
-        results["dcor"] = compute_dcor_matrix(
-            features, partition_indices
-        )
+        results["dcor"] = compute_dcor_matrix(features, partition_indices)
 
     # Variance analysis
     results["variance_per_dim"] = compute_variance_per_dim(features).tolist()

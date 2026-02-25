@@ -1,3 +1,94 @@
 # src/growth/config/phase2_sdp.yaml
-# Phase 2: Supervised Disentangled Projection (SDP) training.
-# Trains lightweight MLP to map frozen encoder features to disentangled latent space.
+# =============================================================================
+# Phase 2: Supervised Disentangled Projection (SDP) Configuration
+# =============================================================================
+# Maps frozen encoder features (768-dim) to a structured 128-dim latent space
+# with semantic partitions for volume, location, shape, and residual.
+#
+# Usage (via experiment script):
+#   python -m experiments.sdp.train_sdp --config experiments/sdp/config/sdp_default.yaml
+
+# =============================================================================
+# SDP Architecture
+# =============================================================================
+sdp:
+  in_dim: 768          # Encoder output dimension (encoder10)
+  hidden_dim: 512      # Hidden layer dimension
+  out_dim: 128         # Latent space dimension
+  dropout: 0.1         # Dropout rate after GELU
+  spectral_norm: all   # Spectral normalization on all linear layers
+
+# =============================================================================
+# Latent Partition Layout (128 dims total)
+# =============================================================================
+partition:
+  vol_dim: 24          # Volume: dims 0-23
+  loc_dim: 8           # Location: dims 24-31
+  shape_dim: 12        # Shape: dims 32-43
+  residual_dim: 84     # Residual: dims 44-127
+
+# =============================================================================
+# Semantic Targets
+# =============================================================================
+targets:
+  n_vol: 4             # Log-volumes (total, NCR, ED, ET)
+  n_loc: 3             # Centroid coordinates (cz, cy, cx)
+  n_shape: 3           # Shape features (sphericity, surface_area_log, solidity)
+
+# =============================================================================
+# Loss Configuration
+# =============================================================================
+loss:
+  lambda_vol: 20.0     # Semantic weight for volume
+  lambda_loc: 12.0     # Semantic weight for location
+  lambda_shape: 15.0   # Semantic weight for shape
+  lambda_cov: 5.0      # Cross-partition covariance weight
+  lambda_var: 5.0      # Variance hinge weight
+  lambda_dcor: 2.0     # Distance correlation weight
+  gamma_var: 1.0       # Target minimum std per dimension
+
+# =============================================================================
+# Curriculum Schedule (D5)
+# =============================================================================
+curriculum:
+  enabled: true
+  warmup_end: 10       # Epochs 0-9: L_var only
+  semantic_end: 40     # Epochs 10-39: + L_sem
+  independence_end: 60 # Epochs 40-59: + L_cov, L_dCor; 60+: full
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  seed: 42
+  max_epochs: 100
+  lr: 1.0e-3
+  weight_decay: 0.01
+  batch_size: full     # Full-batch training (D11)
+  optimizer: adamw
+  gradient_clip_val: 1.0
+
+  # Learning rate scheduler
+  scheduler:
+    type: cosine
+    warmup_epochs: 5
+    min_lr: 1.0e-6
+
+  # Hardware
+  precision: 32-true   # Full precision for small model
+  accelerator: auto
+  devices: 1
+
+# =============================================================================
+# Normalization (D14)
+# =============================================================================
+normalization:
+  scope: train_only    # Compute mu, sigma on train set only
+  features: true       # Normalize encoder features
+  targets: true        # Normalize semantic targets
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  log_every_n_steps: 1

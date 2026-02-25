@@ -1,0 +1,109 @@
+# experiments/sdp/config/sdp_default.yaml
+# =============================================================================
+# SDP Experiment Configuration — Default
+# =============================================================================
+# Inherits structure from src/growth/config/phase2_sdp.yaml.
+# Provides real paths and data split configuration.
+
+# =============================================================================
+# Paths (override per machine)
+# =============================================================================
+paths:
+  checkpoint_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS
+  lora_checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/BrainSegFounder_adaptation/LoRA_Adaptation/lora_ablation_semantic_heads/conditions/lora_r8
+  data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+  output_dir: ./results/phase2_sdp
+  features_dir: ${paths.output_dir}/features
+
+# =============================================================================
+# Data Splits
+# =============================================================================
+data:
+  train_splits: [lora_train, sdp_train]  # Combined for SDP training
+  val_split: lora_val                     # Validation
+  test_split: test                        # Held-out evaluation
+  splits_config: experiments/lora_ablation/config/server/LoRA_semantic_heads_icai.yaml
+
+# =============================================================================
+# SDP Architecture (from phase2_sdp.yaml)
+# =============================================================================
+sdp:
+  in_dim: 768
+  hidden_dim: 512
+  out_dim: 128
+  dropout: 0.1
+  spectral_norm: all
+
+partition:
+  vol_dim: 24
+  loc_dim: 8
+  shape_dim: 12
+  residual_dim: 84
+
+targets:
+  n_vol: 4
+  n_loc: 3
+  n_shape: 3
+
+# =============================================================================
+# Loss
+# =============================================================================
+loss:
+  lambda_vol: 20.0
+  lambda_loc: 12.0
+  lambda_shape: 15.0
+  lambda_cov: 5.0
+  lambda_var: 5.0
+  lambda_dcor: 2.0
+  gamma_var: 1.0
+
+# =============================================================================
+# Curriculum
+# =============================================================================
+curriculum:
+  enabled: true
+  warmup_end: 10
+  semantic_end: 40
+  independence_end: 60
+
+# =============================================================================
+# Training
+# =============================================================================
+training:
+  seed: 42
+  max_epochs: 100
+  lr: 1.0e-3
+  weight_decay: 0.01
+  batch_size: full
+  optimizer: adamw
+  gradient_clip_val: 1.0
+  scheduler:
+    type: cosine
+    warmup_epochs: 5
+    min_lr: 1.0e-6
+  precision: 32-true
+  accelerator: auto
+  devices: 1
+
+# =============================================================================
+# Normalization
+# =============================================================================
+normalization:
+  scope: train_only
+  features: true
+  targets: true
+
+# =============================================================================
+# Feature Extraction
+# =============================================================================
+feature_extraction:
+  level: encoder10
+  batch_size: 2
+  num_workers: 4
+  roi_size: [192, 192, 192]
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  log_every_n_steps: 1
