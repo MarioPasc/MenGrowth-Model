@@ -1,0 +1,31 @@
+# Phase 4: GP-based growth prediction configuration.
+# Three-model hierarchy: LME → H-GP → PA-MOGP on SDP latent trajectories.
+
+growth:
+  time_unit: months
+  seed: 42
+
+lme:
+  optimizer: reml
+  # No additional hyperparameters — REML estimates everything
+
+hgp:
+  kernel: matern52              # ablation A9: {matern32, matern52, se}
+  mean_function: linear_from_lme  # ablation A8: {zero, linear, gompertz}
+  optimizer: lbfgsb
+  max_iter: 1000
+  n_restarts: 5                 # random restarts for hyperparameter optimization
+
+pamogp:
+  vol_kernel: matern52
+  loc_kernel: se
+  shape_kernel: matern32
+  coupling_rank: 1              # rank of B_cross
+  optimizer: lbfgsb
+  max_iter: 2000
+  n_restarts: 5
+
+evaluation:
+  cv: lopo                      # leave-one-patient-out
+  metrics: [vol_r2, vol_mae, latent_mse, calibration_95, per_patient_r]
+  prediction_horizon: all       # predict all future timepoints from t_1

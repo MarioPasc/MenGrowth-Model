@@ -1,3 +1,0 @@
-# src/growth/config/phase4_ode.yaml
-# Phase 4: Neural ODE training configuration.
-# Trains Gompertz-informed Neural ODE on longitudinal trajectory pairs.
