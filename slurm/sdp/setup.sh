@@ -18,11 +18,7 @@ set -euo pipefail
 # ---- Configuration ----
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-growth}"
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
-
-# Picasso paths (override via env vars if different)
-H5_FILE="${H5_FILE:-/mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men_train.h5}"
-CHECKPOINT="${CHECKPOINT:-/mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt}"
-LORA_ADAPTER="${LORA_ADAPTER:-/mnt/home/users/tic_163_uma/mpascual/execs/growth/results/lora_ablation_semantic_heads/conditions/lora_r8/adapter}"
+CONFIG_FILE="${CONFIG_FILE:-${REPO_DIR}/experiments/sdp/config/picasso/sdp_default.yaml}"
 
 echo "=========================================="
 echo "SDP MODULE — SETUP"
@@ -30,6 +26,37 @@ echo "=========================================="
 echo "Date:      $(date)"
 echo "Hostname:  $(hostname)"
 echo "Repo:      ${REPO_DIR}"
+echo "Config:    ${CONFIG_FILE}"
+echo ""
+
+# ---- Parse paths from YAML config ----
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "ERROR: Config file not found: ${CONFIG_FILE}"
+    exit 1
+fi
+
+# Use Python to parse YAML (available in conda env, no extra deps)
+read_yaml_key() {
+    python3 -c "
+import yaml, sys
+with open('${CONFIG_FILE}') as f:
+    cfg = yaml.safe_load(f)
+keys = '$1'.split('.')
+val = cfg
+for k in keys:
+    val = val[k]
+print(val)
+"
+}
+
+H5_FILE="${H5_FILE:-$(read_yaml_key paths.h5_file)}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-$(read_yaml_key paths.checkpoint_dir)}"
+LORA_ADAPTER="${LORA_ADAPTER:-$(read_yaml_key paths.lora_checkpoint)}"
+
+echo "Paths (from config):"
+echo "  H5 file:      ${H5_FILE}"
+echo "  Checkpoint:   ${CHECKPOINT_DIR}"
+echo "  LoRA adapter: ${LORA_ADAPTER}"
 echo ""
 
 # ---- Step 1: Git pull ----
@@ -73,7 +100,7 @@ check_file() {
 
 ok=true
 check_file "${H5_FILE}" "H5 dataset" || ok=false
-check_file "${CHECKPOINT}" "BrainSegFounder checkpoint" || ok=false
+check_file "${CHECKPOINT_DIR}" "BrainSegFounder checkpoint dir" || ok=false
 check_file "${LORA_ADAPTER}" "LoRA adapter" || ok=false
 
 if [ "$ok" = false ]; then
