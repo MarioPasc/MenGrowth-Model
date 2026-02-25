@@ -29,6 +29,19 @@ echo "Repo:      ${REPO_DIR}"
 echo "Config:    ${CONFIG_FILE}"
 echo ""
 
+# ---- Step 1: Activate conda environment ----
+echo "[1/5] Activating conda environment: ${CONDA_ENV_NAME}"
+if command -v conda >/dev/null 2>&1; then
+    source "$(conda info --base)/etc/profile.d/conda.sh" || true
+    conda activate "${CONDA_ENV_NAME}" 2>/dev/null || source activate "${CONDA_ENV_NAME}"
+else
+    source activate "${CONDA_ENV_NAME}"
+fi
+
+echo "  Python: $(which python)"
+echo "  Version: $(python --version)"
+echo ""
+
 # ---- Parse paths from YAML config ----
 if [ ! -f "${CONFIG_FILE}" ]; then
     echo "ERROR: Config file not found: ${CONFIG_FILE}"
@@ -59,23 +72,14 @@ echo "  Checkpoint:   ${CHECKPOINT_DIR}"
 echo "  LoRA adapter: ${LORA_ADAPTER}"
 echo ""
 
-# ---- Step 1: Git pull ----
-echo "[1/4] Git pull..."
+# ---- Step 2: Git pull ----
+echo "[2/5] Git pull..."
 cd "${REPO_DIR}"
 git pull --ff-only || echo "  WARNING: git pull failed (offline or conflicts)"
 echo ""
 
-# ---- Step 2: Conda environment ----
-echo "[2/4] Activating conda environment: ${CONDA_ENV_NAME}"
-if command -v conda >/dev/null 2>&1; then
-    source "$(conda info --base)/etc/profile.d/conda.sh" || true
-    conda activate "${CONDA_ENV_NAME}" 2>/dev/null || source activate "${CONDA_ENV_NAME}"
-else
-    source activate "${CONDA_ENV_NAME}"
-fi
-
-echo "  Python: $(which python)"
-echo "  Version: $(python --version)"
+# ---- Step 3: Verify h5py ----
+echo "[3/5] Checking h5py..."
 
 # Ensure h5py is installed
 python -c "import h5py; print(f'  h5py: {h5py.__version__}')" || {
@@ -84,8 +88,8 @@ python -c "import h5py; print(f'  h5py: {h5py.__version__}')" || {
 }
 echo ""
 
-# ---- Step 3: Verify data files ----
-echo "[3/4] Verifying data files..."
+# ---- Step 4: Verify data files ----
+echo "[4/5] Verifying data files..."
 
 check_file() {
     local path="$1"
@@ -110,8 +114,8 @@ if [ "$ok" = false ]; then
 fi
 echo ""
 
-# ---- Step 4: Import checks ----
-echo "[4/4] Import checks..."
+# ---- Step 5: Import checks ----
+echo "[5/5] Import checks..."
 cd "${REPO_DIR}"
 export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 
