@@ -16,29 +16,26 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List
 
-import numpy as np
 import yaml
 
 from growth.data.bratsmendata import BraTSMENDataset, save_splits, split_subjects_multi
 from growth.utils.seed import set_seed
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 
 def split_subjects_four_way(
-    subject_ids: List[str],
+    subject_ids: list[str],
     lora_train_size: int,
     lora_val_size: int,
     sdp_train_size: int,
     test_size: int,
     seed: int = 42,
-) -> Dict[str, List[str]]:
+) -> dict[str, list[str]]:
     """Split subjects into four non-overlapping sets.
 
     This is a convenience wrapper around split_subjects_multi() for the
@@ -70,7 +67,7 @@ def split_subjects_four_way(
     )
 
 
-def main(config_path: str, force: bool = False) -> Dict[str, List[str]]:
+def main(config_path: str, force: bool = False) -> dict[str, list[str]]:
     """Generate and save data splits.
 
     Args:
@@ -136,7 +133,7 @@ def main(config_path: str, force: bool = False) -> Dict[str, List[str]]:
     return splits
 
 
-def _print_split_statistics(splits: Dict[str, List[str]]) -> None:
+def _print_split_statistics(splits: dict[str, list[str]]) -> None:
     """Print split statistics."""
     print("\n" + "=" * 50)
     print("Data Split Statistics")
@@ -160,7 +157,7 @@ def _print_split_statistics(splits: Dict[str, List[str]]) -> None:
     print("=" * 50 + "\n")
 
 
-def load_splits(config_path: str) -> Dict[str, List[str]]:
+def load_splits(config_path: str) -> dict[str, list[str]]:
     """Load existing splits from config's output directory.
 
     Args:
@@ -180,12 +177,31 @@ def load_splits(config_path: str) -> Dict[str, List[str]]:
 
     if not splits_path.exists():
         raise FileNotFoundError(
-            f"Splits not found at {splits_path}. "
-            "Run data_splits.py first to generate them."
+            f"Splits not found at {splits_path}. Run data_splits.py first to generate them."
         )
 
     with open(splits_path) as f:
         return json.load(f)
+
+
+def load_splits_h5(h5_path: str) -> dict[str, list[str]]:
+    """Load data splits from H5 file as subject ID lists.
+
+    Unlike :func:`load_splits` which reads from a JSON file, this reads split
+    indices from the H5 file and resolves them to subject ID strings.
+
+    Args:
+        h5_path: Path to the H5 file with ``splits/`` and ``subject_ids`` groups.
+
+    Returns:
+        Dict mapping split names to subject ID lists.
+    """
+    from growth.data.bratsmendata import BraTSMENDatasetH5
+
+    all_ids = BraTSMENDatasetH5.load_subject_ids_from_h5(h5_path)
+    index_splits = BraTSMENDatasetH5.load_splits_from_h5(h5_path)
+
+    return {name: [all_ids[int(i)] for i in indices] for name, indices in index_splits.items()}
 
 
 if __name__ == "__main__":

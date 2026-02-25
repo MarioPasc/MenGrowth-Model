@@ -12,6 +12,7 @@ experiment:
 paths:
   checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   data_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
+  h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men_train.h5
   glioma_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/glioma/high_resolution
 
 # Spatial configuration

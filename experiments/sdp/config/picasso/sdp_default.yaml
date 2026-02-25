@@ -1,19 +1,19 @@
-# experiments/sdp/config/sdp_default.yaml
+# experiments/sdp/config/picasso/sdp_default.yaml
 # =============================================================================
-# SDP Experiment Configuration — Default
+# SDP Experiment Configuration — Picasso A100 80GB
 # =============================================================================
-# Inherits structure from src/growth/config/phase2_sdp.yaml.
-# Provides real paths and data split configuration.
+# Hardware-optimized for Picasso: A100 80GB GPU, 16 CPUs, 64G RAM.
+# Uses H5 backend for fast I/O (single file vs 5000 NIfTIs).
 
 # =============================================================================
-# Paths (override per machine)
+# Paths (Picasso)
 # =============================================================================
 paths:
-  checkpoint_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS
-  lora_checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/BrainSegFounder_adaptation/LoRA_Adaptation/lora_ablation_semantic_heads/conditions/lora_r8
-  data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
-  h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/brats_men_train.h5
-  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/SDP_Module/runs/sdp_default
+  checkpoint_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS
+  lora_checkpoint: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/lora_ablation_semantic_heads/conditions/lora_r8
+  data_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
+  h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men_train.h5
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/SDP_Module/runs/sdp_default
   features_dir: ${paths.output_dir}/features
 
 # =============================================================================
@@ -23,7 +23,7 @@ data:
   train_splits: [lora_train, sdp_train]  # Combined for SDP training
   val_split: lora_val                     # Validation
   test_split: test                        # Held-out evaluation
-  splits_config: experiments/lora_ablation/config/local/LoRA_semantic_heads_icai.yaml
+  splits_config: experiments/lora_ablation/config/picasso/LoRA_semantic_heads_icai.yaml
 
 # =============================================================================
 # SDP Architecture (from phase2_sdp.yaml)
@@ -95,12 +95,12 @@ normalization:
   targets: true
 
 # =============================================================================
-# Feature Extraction
+# Feature Extraction — A100 optimized
 # =============================================================================
 feature_extraction:
   level: encoder10
-  batch_size: 1
-  num_workers: 4
+  batch_size: 4              # A100 80GB fits 192³×4 at eval+bf16
+  num_workers: 16            # 128 cores / 8 GPUs per node
   roi_size: [192, 192, 192]
 
 # =============================================================================

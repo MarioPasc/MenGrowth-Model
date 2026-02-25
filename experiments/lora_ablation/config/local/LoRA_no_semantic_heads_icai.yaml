@@ -13,6 +13,7 @@ experiment:
 paths:
   checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
+  h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/brats_men_train.h5
   # Optional: glioma data for domain shift analysis (required for --domain-features)
   glioma_root: /media/mpascual/PortableSSD/BraTS_GLI/BraTS-GLI-100
 

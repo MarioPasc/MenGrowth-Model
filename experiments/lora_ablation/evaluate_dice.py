@@ -116,15 +116,28 @@ class TestDiceEvaluator:
         self,
         data_root: str,
         subject_ids: list[str],
+        h5_path: str | None = None,
+        h5_split: str | None = None,
     ) -> DataLoader:
         """Create data loader for evaluation."""
-        # 192³ center crop for evaluation (100% tumor containment)
-        dataset = BraTSMENDataset(
-            data_root=data_root,
-            subject_ids=subject_ids,
-            transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
-            compute_semantic=False,
-        )
+        if h5_path:
+            from growth.data.bratsmendata import BraTSMENDatasetH5
+            from growth.data.transforms import get_h5_val_transforms
+
+            dataset = BraTSMENDatasetH5(
+                h5_path=h5_path,
+                split=h5_split or "test",
+                transform=get_h5_val_transforms(roi_size=FEATURE_ROI_SIZE),
+                compute_semantic=False,
+            )
+        else:
+            # 192³ center crop for evaluation (100% tumor containment)
+            dataset = BraTSMENDataset(
+                data_root=data_root,
+                subject_ids=subject_ids,
+                transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
+                compute_semantic=False,
+            )
 
         return DataLoader(
             dataset,
@@ -257,7 +270,8 @@ class TestDiceEvaluator:
                 pin_memory=True,
             )
         else:
-            dataloader = self._create_dataloader(data_root, subject_ids)
+            h5_path = config.get("paths", {}).get("h5_file")
+            dataloader = self._create_dataloader(data_root, subject_ids, h5_path=h5_path)
 
         # Evaluate
         results = self._evaluate_dataset(

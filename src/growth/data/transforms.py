@@ -556,6 +556,120 @@ def get_sliding_window_transforms(
     return pipeline
 
 
+def get_h5_train_transforms(
+    roi_size: tuple[int, int, int] = DEFAULT_ROI_SIZE,
+    augment: bool = True,
+) -> Compose:
+    """Get training transforms for pre-preprocessed H5 data.
+
+    H5 volumes are already Orient→Resample→CropForeground→SpatialPad→CenterCrop
+    at 192³ but NOT z-score normalized. This pipeline applies:
+      1. Z-score normalization (nonzero, channel-wise)
+      2. RandSpatialCrop to roi_size (e.g., 128³ for LoRA training)
+      3. Augmentation (optional)
+      4. EnsureType
+
+    Input dict: {"image": [4, 192, 192, 192], "seg": [1, 192, 192, 192]}.
+
+    Args:
+        roi_size: Target spatial size for random crop.
+        augment: Whether to apply data augmentation.
+
+    Returns:
+        MONAI Compose transform pipeline.
+    """
+    transforms = []
+
+    # Z-score normalize (nonzero voxels, per-channel)
+    transforms.append(
+        NormalizeIntensityd(
+            keys=[IMAGE_KEY],
+            nonzero=True,
+            channel_wise=True,
+        )
+    )
+
+    # Random crop to target size (e.g., 192→128 for LoRA training)
+    spatial_keys = [IMAGE_KEY, SEG_KEY]
+    if tuple(roi_size) != FEATURE_ROI_SIZE:
+        transforms.append(
+            RandSpatialCropd(
+                keys=spatial_keys,
+                roi_size=roi_size,
+                random_size=False,
+            )
+        )
+
+    # Augmentation
+    if augment:
+        transforms.extend(
+            get_augmentation_transforms(
+                image_key=IMAGE_KEY,
+                seg_key=SEG_KEY,
+                include_seg=True,
+            )
+        )
+
+    # Final tensor conversion
+    transforms.extend(get_finalize_transforms(IMAGE_KEY, include_seg=True))
+
+    pipeline = Compose(transforms)
+
+    logger.info(
+        f"Created H5 training transform pipeline: "
+        f"roi_size={roi_size}, augment={augment}, {len(transforms)} transforms"
+    )
+
+    return pipeline
+
+
+def get_h5_val_transforms(
+    roi_size: tuple[int, int, int] = FEATURE_ROI_SIZE,
+) -> Compose:
+    """Get validation transforms for pre-preprocessed H5 data.
+
+    H5 volumes are already at 192³. This pipeline applies:
+      1. Z-score normalization (nonzero, channel-wise)
+      2. ResizeWithPadOrCrop to roi_size (no-op when roi_size=192³)
+      3. EnsureType
+
+    Input dict: {"image": [4, 192, 192, 192], "seg": [1, 192, 192, 192]}.
+
+    Args:
+        roi_size: Target spatial size (192³ = no-op for feature extraction).
+
+    Returns:
+        MONAI Compose transform pipeline.
+    """
+    transforms = []
+
+    # Z-score normalize (nonzero voxels, per-channel)
+    transforms.append(
+        NormalizeIntensityd(
+            keys=[IMAGE_KEY],
+            nonzero=True,
+            channel_wise=True,
+        )
+    )
+
+    # Center crop/pad to target size (no-op when roi_size matches H5 volume)
+    spatial_keys = [IMAGE_KEY, SEG_KEY]
+    if tuple(roi_size) != FEATURE_ROI_SIZE:
+        transforms.append(ResizeWithPadOrCropd(keys=spatial_keys, spatial_size=roi_size))
+
+    # Final tensor conversion
+    transforms.extend(get_finalize_transforms(IMAGE_KEY, include_seg=True))
+
+    pipeline = Compose(transforms)
+
+    logger.info(
+        f"Created H5 validation transform pipeline: "
+        f"roi_size={roi_size}, {len(transforms)} transforms"
+    )
+
+    return pipeline
+
+
 def get_inference_transforms(
     modality_keys: list[str] = None,
     spacing: tuple[float, float, float] = DEFAULT_SPACING,

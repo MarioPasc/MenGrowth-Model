@@ -30,7 +30,7 @@ from experiments.lora_ablation.extract_features import (
     extract_features_for_split,
     load_encoder_for_condition,
 )
-from src.growth.utils.seed import set_seed
+from growth.utils.seed import set_seed
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -99,10 +99,15 @@ def main(config_path: str, device: str = "cuda") -> None:
 
     # Feature extraction config
     fe_cfg = cfg.get("feature_extraction", {})
-    batch_size = fe_cfg.get("batch_size", 2)
-    num_workers = fe_cfg.get("num_workers", 4)
+    batch_size = fe_cfg.get("batch_size", 1)
+    num_workers = fe_cfg.get("num_workers", 2)
 
     features_dir = Path(cfg.paths.features_dir)
+
+    # H5 path (optional, faster I/O)
+    h5_path = cfg.get("paths", {}).get("h5_file", None)
+    if h5_path:
+        logger.info(f"Using H5 backend: {h5_path}")
 
     # Extract for each split
     all_splits = list(splits.keys())
@@ -122,6 +127,8 @@ def main(config_path: str, device: str = "cuda") -> None:
             batch_size=batch_size,
             num_workers=num_workers,
             feature_level="encoder10",
+            h5_path=h5_path,
+            h5_split=split_name if h5_path else None,
         )
 
         # Save as HDF5

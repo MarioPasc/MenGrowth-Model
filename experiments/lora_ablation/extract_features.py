@@ -172,6 +172,8 @@ def extract_features_for_split(
     batch_size: int = 2,
     num_workers: int = 4,
     feature_level: str = "multi_scale",
+    h5_path: str | None = None,
+    h5_split: str | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], list[str]]:
     """Extract features and semantic targets for a split.
 
@@ -183,18 +185,32 @@ def extract_features_for_split(
         batch_size: Batch size.
         num_workers: Data loading workers.
         feature_level: 'encoder10', 'multi_scale', or 'all'.
+        h5_path: Optional path to H5 file (uses H5 backend if set).
+        h5_split: Optional split name for H5 backend.
 
     Returns:
         Tuple of (features_dict, targets_dict, subject_ids).
     """
-    # 192³ center crop for feature extraction (100% tumor containment)
-    dataset = BraTSMENDataset(
-        data_root=data_root,
-        subject_ids=subject_ids,
-        transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
-        compute_semantic=True,
-        cache_semantic=True,
-    )
+    if h5_path is not None:
+        from growth.data.bratsmendata import BraTSMENDatasetH5
+        from growth.data.transforms import get_h5_val_transforms
+
+        dataset = BraTSMENDatasetH5(
+            h5_path=h5_path,
+            split=h5_split,
+            indices=None if h5_split else np.arange(len(subject_ids)),
+            transform=get_h5_val_transforms(roi_size=FEATURE_ROI_SIZE),
+            compute_semantic=True,
+        )
+    else:
+        # 192³ center crop for feature extraction (100% tumor containment)
+        dataset = BraTSMENDataset(
+            data_root=data_root,
+            subject_ids=subject_ids,
+            transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
+            compute_semantic=True,
+            cache_semantic=True,
+        )
 
     dataloader = DataLoader(
         dataset,

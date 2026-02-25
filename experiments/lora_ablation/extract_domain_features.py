@@ -339,12 +339,24 @@ def extract_meningioma_subset_features(
     logger.info(f"Test set has {len(test_subjects)} subjects")
 
     # Create dataset with test subjects only (192³ for feature extraction)
-    dataset = BraTSMENDataset(
-        data_root=config["paths"]["data_root"],
-        subject_ids=test_subjects,
-        transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
-        compute_semantic=False,
-    )
+    h5_path = config.get("paths", {}).get("h5_file")
+    if h5_path:
+        from growth.data.bratsmendata import BraTSMENDatasetH5
+        from growth.data.transforms import get_h5_val_transforms
+
+        dataset = BraTSMENDatasetH5(
+            h5_path=h5_path,
+            split="test",
+            transform=get_h5_val_transforms(roi_size=FEATURE_ROI_SIZE),
+            compute_semantic=False,
+        )
+    else:
+        dataset = BraTSMENDataset(
+            data_root=config["paths"]["data_root"],
+            subject_ids=test_subjects,
+            transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
+            compute_semantic=False,
+        )
 
     # Load encoder
     encoder = load_encoder_for_condition(condition_name, config, device)

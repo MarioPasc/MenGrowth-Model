@@ -154,6 +154,7 @@ def _run_validation_only(
 
     # Create validation dataloader
     logger.info("Creating validation dataloader...")
+    h5_path = config.get("paths", {}).get("h5_file")
     _, val_loader = create_dataloaders(
         data_root=config["paths"]["data_root"],
         train_ids=splits["lora_train"][:10],  # Minimal train set (not used)
@@ -162,6 +163,7 @@ def _run_validation_only(
         num_workers=training_config["num_workers"],
         compute_semantic=False,
         augment_train=False,
+        h5_path=h5_path,
     )
 
     # Create model (completely frozen)
@@ -852,6 +854,7 @@ def train_condition(
 
     # Create dataloaders (with semantic features if using aux loss)
     logger.info("Creating dataloaders...")
+    h5_path = config.get("paths", {}).get("h5_file")
     train_loader, val_loader = create_dataloaders(
         data_root=config["paths"]["data_root"],
         train_ids=splits["lora_train"],
@@ -860,6 +863,7 @@ def train_condition(
         num_workers=training_config["num_workers"],
         compute_semantic=use_semantic_heads,
         augment_train=True,
+        h5_path=h5_path,
     )
 
     # Create model using the unified factory
