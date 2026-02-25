@@ -10,9 +10,9 @@
 # =============================================================================
 paths:
   checkpoint_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS
-  lora_checkpoint: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/lora_ablation_semantic_heads/conditions/lora_r8
+  lora_checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/LoRA_Growth/lora_semantic_heads/lora_r16
   data_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
-  h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men_train.h5
+  h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men/BraTS_MEN.h5
   output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/SDP_Module/runs/sdp_default
   features_dir: ${paths.output_dir}/features
 
