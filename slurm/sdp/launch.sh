@@ -75,7 +75,7 @@ check_path() {
 }
 
 # ---- 1. Conda environment ----
-echo "[1/4] Conda environment"
+echo "[1/5] Conda environment"
 
 if command -v conda >/dev/null 2>&1; then
     source "$(conda info --base)/etc/profile.d/conda.sh" 2>/dev/null || true
@@ -87,8 +87,13 @@ fi
 echo "  OK   python: $(which python) ($(python --version 2>&1))"
 echo ""
 
+echo "[2/5] Git pull..."
+cd "${REPO_DIR}"
+git pull --ff-only || echo "  WARNING: git pull failed (offline or conflicts)"
+echo ""
+
 # ---- 2. Python packages ----
-echo "[2/4] Python packages"
+echo "[3/5] Python packages"
 
 python -c "
 import sys
@@ -128,7 +133,7 @@ if not ok:
 echo ""
 
 # ---- 3. Critical paths from config ----
-echo "[3/4] Critical paths"
+echo "[4/5] Critical paths"
 
 check_path "${CONFIG_PATH}" "Config YAML"
 
@@ -164,7 +169,7 @@ fi
 echo ""
 
 # ---- 4. Output directory ----
-echo "[4/4] Output directory"
+echo "[5/5] Output directory"
 
 if [ -n "${CFG_OUTPUT_DIR}" ]; then
     mkdir -p "${CFG_OUTPUT_DIR}" 2>/dev/null && echo "  OK   ${CFG_OUTPUT_DIR}" \
