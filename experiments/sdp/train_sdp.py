@@ -111,15 +111,15 @@ def save_latent_vectors_h5(
         # Save as HDF5
         h5_out = output_path / f"latent_{split}.h5"
         with h5py.File(h5_out, "w") as f:
-            f.create_dataset("z", data=z.cpu().numpy(), compression="gzip")
+            f.create_dataset("z", data=z.cpu().float().numpy(), compression="gzip")
 
             part_grp = f.create_group("partitions")
             for name, tensor in partitions.items():
-                part_grp.create_dataset(name, data=tensor.cpu().numpy(), compression="gzip")
+                part_grp.create_dataset(name, data=tensor.cpu().float().numpy(), compression="gzip")
 
             pred_grp = f.create_group("predictions")
             for name, tensor in predictions.items():
-                pred_grp.create_dataset(name, data=tensor.cpu().numpy(), compression="gzip")
+                pred_grp.create_dataset(name, data=tensor.cpu().float().numpy(), compression="gzip")
 
             # Save unnormalized targets for downstream evaluation
             tgt_grp = f.create_group("targets")

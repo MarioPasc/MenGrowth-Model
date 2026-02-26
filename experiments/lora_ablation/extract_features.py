@@ -248,7 +248,7 @@ def extract_features_for_split(
             features = extractor.extract(images)
 
         for key in all_features:
-            all_features[key].append(features[key].cpu().numpy())
+            all_features[key].append(features[key].cpu().float().numpy())
 
         # Semantic targets
         all_volumes.append(batch["semantic_features"]["volume"].numpy())
