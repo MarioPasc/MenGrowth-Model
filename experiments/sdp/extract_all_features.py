@@ -207,6 +207,7 @@ def main(config_path: str, device: str = "cuda") -> None:
     fe_cfg = cfg.get("feature_extraction", {})
     batch_size = fe_cfg.get("batch_size", 1)
     num_workers = fe_cfg.get("num_workers", 2)
+    use_amp = fe_cfg.get("use_amp", False)
 
     features_dir = Path(OmegaConf.to_container(cfg, resolve=True)["paths"]["features_dir"])
 
@@ -214,6 +215,8 @@ def main(config_path: str, device: str = "cuda") -> None:
     data_h5_path = cfg.get("paths", {}).get("h5_file", None)
     if data_h5_path:
         logger.info(f"Using H5 backend: {data_h5_path}")
+    if use_amp:
+        logger.info("Using bf16 autocast for feature extraction")
 
     # Extract for each split
     all_splits = list(splits.keys())
@@ -235,6 +238,7 @@ def main(config_path: str, device: str = "cuda") -> None:
             feature_level="encoder10",
             h5_path=data_h5_path,
             h5_split=split_name if data_h5_path else None,
+            use_amp=use_amp,
         )
 
         # Save as HDF5

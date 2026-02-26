@@ -78,6 +78,7 @@ fi
 
 cd "${REPO_DIR}"
 export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 log_header "ENVIRONMENT"
 echo "[python] $(which python)"

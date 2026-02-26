@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -174,6 +175,7 @@ def extract_features_for_split(
     feature_level: str = "multi_scale",
     h5_path: str | None = None,
     h5_split: str | None = None,
+    use_amp: bool = False,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], list[str]]:
     """Extract features and semantic targets for a split.
 
@@ -187,6 +189,7 @@ def extract_features_for_split(
         feature_level: 'encoder10', 'multi_scale', or 'all'.
         h5_path: Optional path to H5 file (uses H5 backend if set).
         h5_split: Optional split name for H5 backend.
+        use_amp: If True, use bf16 autocast to halve VRAM usage.
 
     Returns:
         Tuple of (features_dict, targets_dict, subject_ids).
@@ -235,11 +238,14 @@ def extract_features_for_split(
     all_shapes = []
     all_ids = []
 
+    amp_ctx = torch.amp.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
+
     for batch in tqdm(dataloader, desc="Extracting features"):
         images = batch["image"].to(device)
 
         # Extract multi-scale features
-        features = extractor.extract(images)
+        with amp_ctx:
+            features = extractor.extract(images)
 
         for key in all_features:
             all_features[key].append(features[key].cpu().numpy())
