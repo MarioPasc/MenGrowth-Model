@@ -99,11 +99,17 @@ def main(config_path: str, force: bool = False) -> dict[str, list[str]]:
         _print_split_statistics(splits)
         return splits
 
-    # Discover all subject IDs
-    data_root = Path(config["paths"]["data_root"])
-    logger.info(f"Discovering subjects in {data_root}")
+    # Discover all subject IDs (prefer H5 over NIfTI directory scan)
+    h5_path = config.get("paths", {}).get("h5_file")
+    if h5_path and Path(h5_path).exists():
+        from growth.data.bratsmendata import BraTSMENDatasetH5
 
-    all_subjects = BraTSMENDataset.get_all_subject_ids(data_root)
+        logger.info(f"Discovering subjects from H5: {h5_path}")
+        all_subjects = BraTSMENDatasetH5.load_subject_ids_from_h5(h5_path)
+    else:
+        data_root = Path(config["paths"]["data_root"])
+        logger.info(f"Discovering subjects in {data_root}")
+        all_subjects = BraTSMENDataset.get_all_subject_ids(data_root)
     logger.info(f"Found {len(all_subjects)} subjects")
 
     # Generate splits
