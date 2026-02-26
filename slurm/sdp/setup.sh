@@ -135,6 +135,6 @@ print('  extract_features_for_split: OK')
 
 echo ""
 echo "=========================================="
-echo "SETUP COMPLETE — Ready to submit:"
-echo "  sbatch slurm/sdp/encode_volumes.sh"
+echo "SETUP COMPLETE — Ready to launch:"
+echo "  bash slurm/sdp/launch.sh"
 echo "=========================================="

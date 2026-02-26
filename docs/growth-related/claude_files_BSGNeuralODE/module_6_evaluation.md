@@ -10,7 +10,7 @@ All prior module outputs:
 - Module 2: `phase1_encoder_merged.pt`, Dice metrics
 - Module 3: `phase2_sdp.pt`, `phase2_quality_report.json`, latent UMAP
 - Module 4: `latent_bratsmen.pt`, `latent_andalusian_harmonized.pt`, `trajectories.json`, `combat_assessment.json`
-- Module 5: `ode_model.pt`, `ode_trajectories.pt`, `gompertz_params.json`, `risk_stratification.json`
+- Module 5: `lme_results.json`, `hgp_results.json`, `pamogp_results.json`, `model_comparison.json`, `growth_figures/`
 
 ## Input Contract
 ```python
@@ -22,15 +22,16 @@ module_outputs: dict = {
     "sdp_quality": dict,                 # phase2_quality_report.json
     "combat_assessment": dict,           # combat_assessment.json
     "trajectories": List[dict],          # trajectories.json
-    "ode_predictions": torch.Tensor,     # ode_trajectories.pt
-    "gompertz_params": dict,             # gompertz_params.json
-    "risk_scores": List[dict],           # risk_stratification.json
+    "lme_results": dict,                 # lme_results.json
+    "hgp_results": dict,                 # hgp_results.json
+    "pamogp_results": dict,              # pamogp_results.json
+    "model_comparison": dict,            # model_comparison.json
 }
 ```
 
 ## Output
 - `final_report.json` — All quality targets, pass/fail, ablation results
-- 11 publication-quality figures (see Figure List below)
+- 13 publication-quality figures (see Figure List below)
 - `ablation_results.json` — Full ablation matrix results
 
 ## Quality Targets
@@ -54,13 +55,14 @@ module_outputs: dict = {
 | Per-dimension variance > 0.5 | ≥ 95% | ≥ 85% |
 | dCor(vol, loc) | < 0.10 | < 0.20 |
 
-### Phase 4 (Neural ODE)
+### Phase 4 (Growth Prediction)
 
 | Metric | Target | Minimum |
 |--------|--------|---------|
-| Volume prediction R² (LOPO-CV) | ≥ 0.70 | ≥ 0.50 |
-| Trajectory MSE | Monotonically decreasing | — |
-| Gompertz α > 0 for all patients | 100% | ≥ 90% |
+| Volume prediction R² (LOPO) — best model | ≥ 0.70 | ≥ 0.50 |
+| Calibration (95% CI coverage) — GP models | 0.90–0.98 | ≥ 0.80 |
+| Per-patient trajectory r (patients n_i ≥ 3) | ≥ 0.80 | ≥ 0.60 |
+| PA-MOGP R² > H-GP R² (coupling improvement) | > 0 | — |
 
 ## Ablation Study Matrix
 
@@ -71,11 +73,13 @@ module_outputs: dict = {
 | A3: Aux semantic heads | Phase 1 aux | {with, without} | Phase 2 R² |
 | A4: SDP dimension | d | {64, 128, 256} | R², dCor |
 | A5: VICReg + dCor | Regularization | {full, no cov, no dCor, no both} | Cross-partition corr |
-| A6: Gompertz prior | ODE architecture | {Gompertz+MLP, MLP only, Gompertz only} | Trajectory MSE, Vol R² |
-| A7: ComBat | Harmonization | {with, without} | Phase 4 trajectory MSE |
-| A8: Residual dynamics | ODE residual | {frozen (default), learned with η=0.001} | Trajectory MSE, overfitting |
+| A6: Growth model comparison | Model | {LME, H-GP, PA-MOGP} | Vol R² (LOPO) |
+| A7: ComBat effect on prediction | Harmonization | {with, without} | Vol R² (LOPO) |
+| A8: GP mean function | Mean function | {zero, linear (from LME), Gompertz fit} | Vol R² (LOPO) |
+| A9: GP kernel selection | Kernel (H-GP) | {Matérn-3/2, Matérn-5/2, SE} | Vol R² (LOPO) |
+| A10: Cross-partition coupling | PA-MOGP structure | {with coupling, without coupling} | Vol R² (LOPO), calibration |
 
-## Figure List (11 publication-quality figures)
+## Figure List (13 publication-quality figures)
 
 1. **Pipeline overview diagram** — Full 4-phase architecture
 2. **Domain gap UMAP** — GLI vs MEN features, frozen encoder (from Module 1)
@@ -84,10 +88,12 @@ module_outputs: dict = {
 5. **Disentanglement matrix** — Cross-partition correlation heatmap (from Module 3)
 6. **Latent UMAP colored by semantics** — Volume, location, shape (from Module 3)
 7. **Cohort distribution comparison** — BraTS-MEN vs Andalusian UMAP (from Module 4)
-8. **Patient trajectories** — 2D latent space with temporal arrows (from Module 4/5)
-9. **Volume prediction** — Predicted vs actual volume change scatter plot (from Module 5)
-10. **Gompertz parameter distribution** — Histogram of growth rates (from Module 5)
-11. **Risk stratification** — Ranked patients by growth rate (from Module 5)
+8. **Patient trajectories in latent space** — 2D UMAP with temporal arrows for 5–10 patients with n_i ≥ 3 (from Module 4)
+9. **Volume prediction scatter** — Predicted vs actual ΔV for all LOPO-CV test pairs, colored by model (LME/H-GP/PA-MOGP) (from Module 5)
+10. **Trajectory prediction with uncertainty** — 3–4 example patients showing predicted trajectory (mean ± 95% CI) overlaid on actual observations, for all three models (from Module 5)
+11. **Model comparison bar chart** — R², MAE, calibration for each model (from Module 5)
+12. **Learned kernel hyperparameters** — Length-scales ℓ per partition (PA-MOGP), revealing characteristic timescales of volume/location/shape dynamics (from Module 5)
+13. **Cross-partition coupling weights** — Heatmap of ww^T showing which volume dimensions most strongly drive location/shape changes (from Module 5)
 
 ## Figure Specifications
 ```python
@@ -125,14 +131,14 @@ figure_config = {
        def run_ablation(self, experiment: str, conditions: List) -> dict:
            """Run one ablation experiment across conditions."""
        def run_all(self) -> dict:
-           """Run all A1-A8 experiments."""
+           """Run all A1-A10 experiments."""
    ```
 
-3. **`FigureGenerator`** — Creates all 11 figures.
+3. **`FigureGenerator`** — Creates all 13 figures.
    ```python
    class FigureGenerator:
        def generate_all(self, data: dict, output_dir: str) -> List[str]:
-           """Generate all 11 figures, return list of file paths."""
+           """Generate all 13 figures, return list of file paths."""
    ```
 
 ## Configuration Snippet
@@ -155,10 +161,11 @@ quality_targets:
     max_cross_corr: 0.30
   phase4:
     vol_prediction_r2_min: 0.50
-    gompertz_positive_pct_min: 0.90
+    calibration_95_min: 0.80
+    per_patient_r_min: 0.60
 
 ablation:
-  experiments: [A1, A2, A3, A4, A5, A6, A7, A8]
+  experiments: [A1, A2, A3, A4, A5, A6, A7, A8, A9, A10]
   a1_ranks: [2, 4, 8, 16, 32]
   a4_dims: [64, 128, 256]
 ```
@@ -171,7 +178,7 @@ import json
 report = {
     "phase1": {"dice_wt": 0.87, "dice_improvement": 0.06, "pass": True},
     "phase2": {"vol_r2": 0.91, "loc_r2": 0.96, "shape_r2": 0.42, "pass": True},
-    "phase4": {"vol_pred_r2": 0.65, "gompertz_positive_pct": 1.0, "pass": True},
+    "phase4": {"vol_pred_r2": 0.65, "calibration_95": 0.93, "best_model": "PA-MOGP", "pass": True},
     "ablations": {"A1": {...}, "A2": {...}, ...},
     "overall_pass": True,
 }
@@ -192,13 +199,13 @@ TEST_6.1: Quality targets assessment [DIAGNOSTIC]
   Note: DIAGNOSTIC — log but don't block; results are what they are
 
 TEST_6.2: Ablation completeness [DIAGNOSTIC]
-  - Verify all 8 ablation experiments have results
+  - Verify all 10 ablation experiments have results
   - Check that each experiment has all specified conditions
   - Report any missing conditions
   Note: Some ablations may be skipped due to compute constraints
 
 TEST_6.3: Figure generation [DIAGNOSTIC]
-  - Generate all 11 figures
+  - Generate all 13 figures
   - Verify each figure file exists and has size > 0
   - Visual inspection is manual (not automated)
   Note: Figure quality is subjective; automated check only verifies generation

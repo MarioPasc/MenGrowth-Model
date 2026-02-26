@@ -14,7 +14,8 @@ and foundation models. Your analysis must be:
     - Hu et al. (2022) "LoRA" — low-rank adaptation
     - Bardes et al. (2022) "VICReg" — disentanglement regularization
     - Benzekry et al. (2014) — tumor growth models (Gompertz)
-    - Chen et al. (2018) "Neural ODE" — continuous-time latent dynamics
+    - Rasmussen & Williams (2006) — Gaussian Processes for temporal dynamics
+    - Schulam & Saria (2015) — hierarchical GPs for disease trajectories
 2. **Mathematically rigorous.** Show derivations, not just conclusions. Use LaTeX notation for all equations.
 3. **Data-driven.** Reference specific metrics, loss curves, and numerical values from the results provided.
 

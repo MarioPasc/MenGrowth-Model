@@ -1,7 +1,7 @@
 # MenGrowth-Model
 
 Foundation model pipeline for **meningioma growth forecasting** from multi-modal 3D MRI.
-BrainSegFounder (SwinUNETR, pretrained on 41K+ subjects) → LoRA adaptation → Supervised Disentangled Projection → Neural ODE.
+BrainSegFounder (SwinUNETR, pretrained on 41K+ subjects) → LoRA adaptation → Supervised Disentangled Projection → GP-based growth prediction (LME → H-GP → PA-MOGP).
 B.Sc. thesis project.
 
 >[!IMPORTANT] For full context of the project (only read if asked to gather all context for a complex task), read the file: `docs/growth-related/methodology_refined.md`
@@ -19,7 +19,7 @@ Phase order: 1 → 2 → 3 → 4. Do NOT start a phase until predecessors pass B
 - **Phase 1 (LoRA Adaptation)**: COMPLETE — code in `experiments/lora_ablation/`
 - **Phase 2 (SDP)**: STUBBED — needs implementation per module_3_sdp spec
 - **Phase 3 (Encoding + ComBat)**: NOT STARTED — per module_4_encoding spec
-- **Phase 4 (Neural ODE)**: STUBBED — per module_5_neural_ode spec
+- **Phase 4 (Growth Prediction)**: STUBBED — per module_5_growth_prediction spec (LME → H-GP → PA-MOGP, LOPO-CV)
 
 ## Dataset: Dual-Mode NIfTI / HDF5
 
@@ -45,7 +45,7 @@ H5 transforms: `get_h5_train_transforms()` / `get_h5_val_transforms()` in `trans
 
 ## Key Libraries
 
-PyTorch 2.0+, MONAI 1.3+, Lightning 2.0+, OmegaConf, peft (LoRA/DoRA), torchdiffeq, scipy
+PyTorch 2.0+, MONAI 1.3+, Lightning 2.0+, OmegaConf, peft (LoRA/DoRA), GPy>=1.13, statsmodels>=0.14, scipy
 
 ## Codebase Layout
 
@@ -54,10 +54,10 @@ src/growth/          # Main pipeline
   config/            # YAML configs (foundation.yaml + phase overrides)
   models/encoder/    # swin_loader, lora_adapter, feature_extractor
   models/projection/ # SDP (sdp.py, partition.py, semantic_heads.py)
-  models/ode/        # Gompertz dynamics, partition ODE
-  losses/            # Dice/CE segmentation, SDP composite, ODE loss
+  models/growth/     # GP growth models (LME, H-GP, PA-MOGP, volume decoder)
+  losses/            # Dice/CE segmentation, SDP composite
   data/              # BraTS-MEN loader, transforms, semantic features
-  training/          # Lightning modules + entry points (train_lora, train_sdp, train_ode)
+  training/          # Lightning modules + entry points (train_lora, train_sdp)
   evaluation/        # Probes, metrics, visualization
   inference/         # Sliding window, ComBat harmonization
 
@@ -72,7 +72,7 @@ src/vae/                    # Legacy VAE code (Exp1-3, superseded)
 
 ```
 module_0 (Data) → module_1 (Domain Gap) → module_2 (LoRA) → module_3 (SDP)
-→ module_4 (Encoding) → module_5 (Neural ODE) → module_6 (Evaluation)
+→ module_4 (Encoding) → module_5 (Growth Prediction) → module_6 (Evaluation)
 ```
 
 ## Error Recovery
@@ -82,7 +82,7 @@ module_0 (Data) → module_1 (Domain Gap) → module_2 (LoRA) → module_3 (SDP)
 
 ## Legacy Note
 
-The VAE approach (Exp1–3, `src/vae/`) is preserved for reference. It was abandoned due to posterior collapse, residual collapse, and KL distortion. The SDP approach directly optimizes for Neural ODE requirements.
+The VAE approach (Exp1–3, `src/vae/`) is preserved for reference. It was abandoned due to posterior collapse, residual collapse, and KL distortion. The SDP approach directly optimizes for downstream growth prediction requirements. The Neural ODE approach (original Phase 4) was also abandoned due to catastrophic overparameterization with only 33 patients / 112 forward pairs — replaced by a GP hierarchy (D16). See `docs/growth-related/phase4_pivot_to_gp_models.md`.
 
 ## Detailed Specifications (read on demand)
 
@@ -92,5 +92,5 @@ The VAE approach (Exp1–3, `src/vae/`) is preserved for reference. It was aband
 @docs/growth-related/claude_files_BSGNeuralODE/module_2_lora.md
 @docs/growth-related/claude_files_BSGNeuralODE/module_3_sdp.md
 @docs/growth-related/claude_files_BSGNeuralODE/module_4_encoding.md
-@docs/growth-related/claude_files_BSGNeuralODE/module_5_neural_ode.md
+@docs/growth-related/claude_files_BSGNeuralODE/module_5_growth_prediction.md
 @docs/growth-related/claude_files_BSGNeuralODE/module_6_evaluation.md

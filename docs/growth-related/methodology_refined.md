@@ -3,7 +3,7 @@
 **Project:** MenGrowth-Model — BSc Thesis  
 **Version:** 3.0 (Modular Agent-Ready)  
 **Date:** February 2026  
-**Objective:** Adapt BrainSegFounder (a glioma-pretrained 3D brain MRI foundation model) into a meningioma-domain encoder with smooth, disentangled latent representations suitable for downstream Neural ODE growth forecasting.
+**Objective:** Adapt BrainSegFounder (a glioma-pretrained 3D brain MRI foundation model) into a meningioma-domain encoder with smooth, disentangled latent representations suitable for downstream GP-based growth prediction (LME → Hierarchical GP → Partition-Aware Multi-Output GP).
 
 ---
 
@@ -29,7 +29,7 @@ Sections are designed to be executed sequentially. Each section's outputs feed i
 - [Section 2: Phase 1 — LoRA Encoder Adaptation](#section-2-phase-1--lora-encoder-adaptation)
 - [Section 3: Phase 2 — Supervised Disentangled Projection](#section-3-phase-2--supervised-disentangled-projection)
 - [Section 4: Phase 3 — Cohort Encoding and Harmonization](#section-4-phase-3--cohort-encoding-and-harmonization)
-- [Section 5: Phase 4 — Neural ODE Growth Forecasting](#section-5-phase-4--neural-ode-growth-forecasting)
+- [Section 5: Phase 4 — GP-Based Growth Prediction](#section-5-phase-4--gp-based-growth-prediction)
 - [Section 6: End-to-End Evaluation Framework](#section-6-end-to-end-evaluation-framework)
 - [Appendix A: Common Configuration Contract](#appendix-a-common-configuration-contract)
 - [Appendix B: References](#appendix-b-references)
@@ -67,11 +67,11 @@ Sections are designed to be executed sequentially. Each section's outputs feed i
 │  │ [all t_k]    │    │ (frozen)   │    │(frozen) │    │       │           │
 │  └──────────────┘    └────────────┘    └─────────┘    └───────┘           │
 │                                                                             │
-│  Section 5: Phase 4 — Neural ODE (Private Cohort trajectories)             │
+│  Section 5: Phase 4 — GP Growth Prediction (Private Cohort trajectories)  │
 │  ┌──────────────────────────────────────────────────────────┐              │
-│  │ z*(t₀) ──→ ODESolve(f_θ, z*(t₀), t₀, t₁) ──→ ẑ(t₁)  │              │
+│  │ z*(t₀) ──→ GP(z_vol|t_obs) ──→ ẑ_vol(t*) ± σ(t*)     │              │
 │  │              ↓                                           │              │
-│  │       Gompertz-informed partition-aware dynamics         │              │
+│  │       LME → H-GP → PA-MOGP (LOPO-CV, 33 folds)         │              │
 │  └──────────────────────────────────────────────────────────┘              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -441,7 +441,7 @@ TEST_2.6: Semantic head predictions (if aux enabled)
 
 ### 3.1 Background
 
-After Phase 1, the encoder produces meningioma-adapted features $h \in \mathbb{R}^{768}$. Phase 2 trains a lightweight projection network that maps these features to a structured, disentangled latent space $z \in \mathbb{R}^{128}$ suitable for Neural ODE dynamics.
+After Phase 1, the encoder produces meningioma-adapted features $h \in \mathbb{R}^{768}$. Phase 2 trains a lightweight projection network that maps these features to a structured, disentangled latent space $z \in \mathbb{R}^{128}$ suitable for downstream GP-based growth prediction.
 
 **Why not jointly train encoder + projection?** Gradient isolation. Joint training would cause semantic regression gradients to flow into the encoder via the projection, shaping encoder features toward the 13 semantic targets at the expense of general meningioma understanding. By decoupling the phases, the encoder learns the richest possible features via dense per-voxel segmentation loss, and the projection independently learns the best disentangled mapping from those features.
 
@@ -733,127 +733,136 @@ TEST_4.6: Scanner consistency verification
 
 ---
 
-## Section 5: Phase 4 — Neural ODE Growth Forecasting
+## Section 5: Phase 4 — GP-Based Growth Prediction
 
 ### 5.1 Background
 
-The Neural ODE (Chen et al., "Neural Ordinary Differential Equations," NeurIPS, 2018) models continuous-time evolution in the disentangled latent space:
+> **Note:** The original Neural ODE approach (Chen et al., NeurIPS 2018) was abandoned due to catastrophic overparameterization. With 33 patients (112 forward pairs, 57.6% having only 2 studies), the Neural ODE's ~3,100+ parameters yielded a parameter-to-observation ratio of ~27.7. See `docs/growth-related/phase4_pivot_to_gp_models.md` for the full motivation.
 
-$$\frac{dz(t)}{dt} = f_\theta(z(t), t)$$
+The replacement approach uses three Gaussian-process-centric models of increasing complexity, evaluated via Leave-One-Patient-Out Cross-Validation (LOPO-CV). The models share three properties suitable for this small-$n$ regime: (1) population-level parameter sharing with per-patient adaptation, (2) closed-form inference, and (3) calibrated uncertainty that grows with extrapolation distance.
 
-Given an initial state $z(t_0)$ and a time horizon $\Delta t$, the ODE solver predicts the future state:
+**Model A — Linear Mixed-Effects Model (LME):** Tests the simplest hypothesis: latent volume trajectories are approximately linear. Per-dimension LME on $z_{\text{vol}} \in \mathbb{R}^{24}$:
 
-$$\hat{z}(t_1) = z(t_0) + \int_{t_0}^{t_1} f_\theta(z(\tau)) \, d\tau = \text{ODESolve}(f_\theta, z(t_0), t_0, t_1)$$
+$$z_{i}^{(d)}(t_{ij}) = (\beta_0^{(d)} + b_{0i}^{(d)}) + (\beta_1^{(d)} + b_{1i}^{(d)}) \cdot t_{ij} + \epsilon_{ij}^{(d)}$$
 
-**Physics-informed architecture.** The latent space partitioning enables a Gompertz-informed Neural ODE where the volume partition follows tumor growth kinetics (Benzekry et al., "Classical Mathematical Models for Description and Prediction of Experimental Tumor Growth," PLOS Computational Biology, 2014):
+with random effects $(b_{0i}, b_{1i}) \sim \mathcal{N}(0, \Omega^{(d)})$ and $\epsilon \sim \mathcal{N}(0, \sigma^{(d)2})$. Estimated via REML. Patient-specific predictions via BLUP with automatic shrinkage for patients with few observations. **144 total population-level parameters** (6 per dimension × 24 dimensions).
 
-**Volume dynamics (decode-then-model):** The Gompertz growth model is applied to decoded physical volumes, not raw latent dimensions. The semantic head $\pi_{\text{vol}}$ decodes $z_{\text{vol}} \to \hat{V} \in \mathbb{R}^4$ (the 4 log-volume predictions). Gompertz dynamics operate on these physical quantities:
+**Model B — Hierarchical Gaussian Process (H-GP):** Per-dimension GP on $z_{\text{vol}} \in \mathbb{R}^{24}$ with population linear mean from LME and Matérn-$\frac{5}{2}$ temporal kernel:
 
-$$\frac{d\hat{V}}{dt} = \underbrace{\alpha \cdot \hat{V} \odot \ln\left(\frac{K}{\hat{V} + \epsilon}\right)}_{\text{Gompertz growth}} + \underbrace{\eta_{\text{vol}} \cdot h_\theta(\hat{V}, z_{\text{other}})}_{\text{Neural correction}}$$
+$$z_i^{(d)}(t) \sim \mathcal{GP}(m^{(d)}(t), k^{(d)}(t, t'))$$
 
-where $\hat{V} = \pi_{\text{vol}}(z_{\text{vol}}) \in \mathbb{R}^4$ (total, NCR, ED, ET log-volumes), $\alpha \in \mathbb{R}^+$ (softplus) is the growth rate, $K \in \mathbb{R}^4_+$ (softplus) is the carrying capacity vector, and $\eta_{\text{vol}} = 0.01$ scales the neural residual. The Neural ODE integrates in decoded volume space, then the volume partition $z_{\text{vol}}$ is updated via the pseudo-inverse of $\pi_{\text{vol}}$ or a learned re-encoder. This reduces Gompertz-governed dimensions from 24 to 4 and maintains biological interpretability.
+$$m^{(d)}(t) = \hat{\beta}_0^{(d)} + \hat{\beta}_1^{(d)} \cdot t$$
 
-**Location partition** (dims 24–31):
+$$k_{\text{M52}}(\Delta t) = \sigma_f^2 \left(1 + \frac{\sqrt{5}\Delta t}{\ell} + \frac{5\Delta t^2}{3\ell^2}\right) \exp\left(-\frac{\sqrt{5}\Delta t}{\ell}\right)$$
 
-$$\frac{dz_{\text{loc}}}{dt} = \eta_{\text{loc}} \cdot \text{MLP}_{\text{loc}}(z_{\text{vol}}, z_{\text{loc}})$$
+Hierarchical hyperparameter sharing across patients (empirical Bayes). **72 total hyperparameters** (3 per dimension × 24). Backed by Schulam & Saria (NeurIPS, 2015).
 
-Location changes are slow and modulated by volume (mass effect). $\eta_{\text{loc}} = 0.01$.
+**Model C — Partition-Aware Multi-Output GP (PA-MOGP):** The thesis's novel contribution. Multi-output GP on $\tilde{z} = [z_{\text{vol}}^{24} | z_{\text{loc}}^{8} | z_{\text{shape}}^{12}] \in \mathbb{R}^{44}$ with partition-specific temporal kernels (Matérn-5/2 for volume, SE for location, Matérn-3/2 for shape) and rank-1 cross-partition coupling via the Intrinsic Coregionalization Model:
 
-**Shape partition** (dims 32–43):
+$$\mathbf{K}(t, t') = \mathbf{B}_{\text{vol}}^{\text{diag}} \otimes k_{\text{vol}} + \mathbf{B}_{\text{loc}}^{\text{diag}} \otimes k_{\text{loc}} + \mathbf{B}_{\text{shape}}^{\text{diag}} \otimes k_{\text{shape}} + \mathbf{B}_{\text{cross}} \otimes k_{\text{vol}} + \sigma_n^2 I_{44} \delta(t, t')$$
 
-$$\frac{dz_{\text{shape}}}{dt} = \eta_{\text{shape}} \cdot \text{MLP}_{\text{shape}}(z_{\text{vol}}, z_{\text{shape}})$$
+where $\mathbf{B}_{\text{cross}} = \mathbf{w}\mathbf{w}^\top$ with $\mathbf{w} \in \mathbb{R}^{44}$ encodes how volume dynamics drive changes in location and shape. **95 total hyperparameters**, estimated from 4,400 observation-dimension pairs (effective ratio: ~46).
 
-Shape changes driven by volume growth. $\eta_{\text{shape}} = 0.01$.
+The residual partition $z_{\text{res}}^{84}$ is frozen at $t_0$ values (carried forward unchanged) — consistent with the original design rationale that residual encodes scanner, texture, and contextual information that does not evolve temporally.
 
-**Residual partition** (dims 44–127):
+**Volume prediction via semantic head.** Since $\pi_{\text{vol}}$ is linear ($W \in \mathbb{R}^{4 \times 24}$, $b \in \mathbb{R}^4$), prediction intervals propagate exactly:
 
-$$\frac{dz_{\text{res}}}{dt} = 0 \quad \text{(frozen)}$$
+$$\hat{V}_{i^*}(t^*) = W \hat{\boldsymbol{\mu}}_{\text{vol},i^*}(t^*) + b, \quad \text{Cov}(\hat{V}) = W \, \text{diag}(\sigma_{i^*}^2(t^*)) \, W^\top$$
 
-The residual partition is carried forward unchanged from the initial state: $z_{\text{res}}(t_1) = z_{\text{res}}(t_0)$. This reduces the effective ODE dimension from 128 to 44 ($z_{\text{vol}}$: 24 + $z_{\text{loc}}$: 8 + $z_{\text{shape}}$: 12), dramatically reducing overfitting risk given the modest training set (~155 forward pairs from 42 patients). The residual state preserves texture, context, and scanner information without requiring the ODE to model their dynamics.
-
-**Training objective:**
-
-$$\mathcal{L}_{\text{ODE}} = \underbrace{\sum_{(i,t_0,t_1)} \|z^*_{i,t_1} - \hat{z}_{i,t_1}\|_2^2}_{\text{Trajectory MSE}} + \underbrace{\lambda_{\text{reg}} \|\theta_{\text{ODE}}\|_2^2}_{\text{Weight decay}} + \underbrace{\lambda_{\text{smooth}} \int_{t_0}^{t_1} \left\|\frac{d^2z}{dt^2}\right\|^2 dt}_{\text{Jerk regularization}}$$
-
-where $\hat{z}_{i,t_1} = \text{ODESolve}(f_\theta, z^*_{i,t_0}, t_0, t_1)$.
-
-**Data augmentation via temporal pairing.** For a patient with $n$ timepoints, all $\binom{n}{2} = n(n-1)/2$ **forward** ordered pairs $(t_i, t_j)$ where $t_i < t_j$ are used. Reverse pairs are excluded because tumor growth is biologically irreversible — the Gompertz prior enforces $dV/dt > 0$, and reverse pairs would force the neural correction to overpower the physics prior. With 42 patients averaging 3.26 timepoints: approximately $42 \times \binom{3.26}{2} \approx 155$ forward training pairs. To compensate for the reduced data, small Gaussian perturbations ($\sigma = 0.01$) are applied to $z(t_0)$ as data augmentation.
+**Scientific narrative:** LME establishes whether linear dynamics suffice → H-GP reveals nonlinear structure → PA-MOGP tests whether the SDP partition structure provides additional predictive power.
 
 ### 5.2 Data
 
-- **Training pairs**: All $\binom{n}{2}$ forward temporal pairs from 42 patients (≈155 pairs). Leave-one-patient-out cross-validation.
-- **Input**: $(z^*_{i,t_0}, z^*_{i,t_1}, \Delta t = t_1 - t_0)$ from Section 4.
-- **Time normalization**: $\Delta t$ in years (or months — specify consistently).
+- **Observations**: 33 patients, 100 total studies, $n_i \in [2, 6]$ per patient. GP models operate on observation-level data directly (not transition pairs).
+- **Input**: Per-patient trajectories $\{(z^*_{i,t_k}, t_k)\}_{k=1}^{n_i}$ from Section 4, with $t_k$ in months from first scan.
+- **Evaluation**: Leave-One-Patient-Out (LOPO-CV), 33 folds.
 
 ### 5.3 Outputs
 
-- `ode_model.pt`: Trained Neural ODE parameters.
-- `ode_trajectories.pt`: Predicted vs. actual trajectories for all patients.
-- `gompertz_params.json`: Per-patient $(\hat{\alpha}_i, \hat{K}_i)$ extracted from the trained model.
-- `risk_stratification.json`: Per-patient risk scores.
+- `lme_results.json`: LME fixed/random effects, per-patient predictions, LOPO metrics.
+- `hgp_results.json`: H-GP hyperparameters, per-patient predictions with uncertainty, LOPO metrics.
+- `pamogp_results.json`: PA-MOGP hyperparameters, cross-partition coupling, predictions with uncertainty, LOPO metrics.
+- `model_comparison.json`: Head-to-head metrics ($R^2$, MAE, calibration) for all three models.
+- `growth_figures/`: Figures 9–13.
 
 ### 5.4 Code Requirements
 
-1. **`GompertzDynamics`** — Decoded volume ODE function operating on $\hat{V} \in \mathbb{R}^4$ with learnable $\alpha$, $K$, and neural correction.
-2. **`PartitionODE`** — Full partition-aware ODE function composing Gompertz (4 decoded volume dims), MLP (location 8, shape 12), frozen residual. Effective ODE dimension: 44.
-3. **`ODEFunc`** — `torchdiffeq`-compatible wrapper for adjoint method.
-4. **`ODELitModule`** (PyTorch Lightning) — Training with `torchdiffeq.odeint_adjoint`. Leave-one-patient-out cross-validation.
-5. **`TrajectoryDataset`** — Generates all temporal pairs from patient trajectories.
-6. **`RiskStratifier`** — Extracts Gompertz parameters, computes risk scores.
+1. **`TrajectoryDataset`** — Loads trajectories.json, organizes into `PatientTrajectory` objects. Supports LOPO splits.
+2. **`LMEGrowthModel`** — Per-dimension LME baseline. Fits via REML (`statsmodels.MixedLM`), predicts via BLUP.
+3. **`HierarchicalGPModel`** — Per-dimension GP with shared hyperparameters. Population linear mean from LME. Matérn-5/2 kernel.
+4. **`PAMOGPModel`** — Multi-output GP with partition-specific kernels and rank-1 cross-partition coupling.
+5. **`VolumeDecoder`** — Decodes $z_{\text{vol}}$ predictions through frozen $\pi_{\text{vol}}$ with uncertainty propagation.
+6. **`LOPOEvaluator`** — Runs LOPO-CV for any model, computes all metrics.
 
 ### 5.5 Verification Tests
 
 ```
-TEST_5.1: ODE forward pass
-  - Given z0 ∈ ℝ^128 and Δt = 1.0 (year)
-  - z1 = ODESolve(f_θ, z0, 0, 1.0)
-  - Assert z1.shape == [128]
-  - Assert ||z1 - z0|| > 0 (dynamics are non-trivial)
-  - Assert no NaN values
+TEST_5.1: LME fitting [BLOCKING]
+  - Fit LME on all 33 patients for 1 latent dimension
+  - Assert β₀, β₁ are finite; Ω is PSD; σ² > 0
+  Recovery: Reduce to random intercept only
 
-TEST_5.2: Gompertz stability
-  - Initialize z_vol > 0 (all positive)
-  - Integrate for 10 years
-  - Assert z_vol remains bounded (carrying capacity constraint)
-  - Assert z_vol > 0 (no negative volumes)
+TEST_5.2: LME prediction [BLOCKING]
+  - For held-out patient with n_i = 2: predict at t₂ from t₁
+  - Assert prediction is finite and within 3σ of population mean
+  - Assert prediction with n_i = 4 has smaller error than n_i = 2 (shrinkage)
+  Recovery: Check BLUP computation
 
-TEST_5.3: Reversibility
-  - z1 = ODESolve(f_θ, z0, 0, Δt)
-  - z0_hat = ODESolve(f_θ, z1, Δt, 0)
-  - Assert ||z0 - z0_hat|| < 1e-3 (ODE reversibility)
+TEST_5.3: GP hyperparameter fitting [BLOCKING]
+  - Fit shared hyperparameters for 1 dimension
+  - Assert ℓ > 0, σ_f > 0, σ_n > 0; ℓ ∈ [1, 120] months
+  Recovery: Initialize from data range; add jitter to kernel diagonal
 
-TEST_5.4: Training step
-  - Run 1 training step on a batch of pairs
-  - Assert loss is finite and > 0
-  - Assert gradients are nonzero for ODE parameters
+TEST_5.4: GP predictive distribution [BLOCKING]
+  - Condition GP on 3 observations, predict at intermediate and extrapolation points
+  - Assert predictive variance at observed times < variance at extrapolation times
+  Recovery: Check kernel conditioning; increase σ_n lower bound
 
-TEST_5.5: Partition-aware dynamics
-  - Assert ||dz_vol/dt|| >> ||dz_res/dt|| (volume changes faster than residual)
-  - This follows from η_vol >> η_res
+TEST_5.5: PA-MOGP cross-partition coupling [BLOCKING]
+  - Assert coupling weights w ∈ ℝ^44 are finite
+  - Assert B_cross = ww^T is PSD
+  - Assert full kernel matrix K is positive definite for all patients
+  Recovery: Add diagonal jitter; reduce rank or disable coupling
+
+TEST_5.6: LOPO-CV completeness [BLOCKING]
+  - Run LOPO-CV for LME model (fastest)
+  - Assert 33 folds completed; per-fold predictions finite; aggregated R² finite
+  Recovery: Exclude patients causing singular fits
+
+TEST_5.7: Volume decoding [BLOCKING]
+  - Decode predicted z_vol through π_vol
+  - Assert shape [n, 4]; plausible physical range
+  Recovery: Check vol_mean/vol_std from D14
+
+TEST_5.8: Uncertainty calibration [DIAGNOSTIC]
+  - For GP models: fraction of true values within 95% CI
+  - Report coverage (target: 0.90–0.98)
 ```
 
 ### 5.6 Analysis
 
-1. **Trajectory prediction quality**:
-   - Per-patient trajectory MSE in latent space (leave-one-patient-out).
-   - Volume partition prediction $R^2$: decode $z_{\text{vol}}$ → actual volume via semantic head, compare predicted vs. actual volume change.
-   - Location/shape partition prediction quality (analogous).
+1. **Model comparison**:
+   - Volume prediction $R^2$ (LOPO-CV) for LME, H-GP, PA-MOGP.
+   - Volume MAE in physical units ($\text{mm}^3$ or $\text{cm}^3$).
+   - Calibration: fraction of true values within 95% prediction intervals.
+   - Per-patient trajectory Pearson $r$ (for patients with $n_i \geq 3$).
 
-2. **Gompertz parameter analysis**:
-   - Distribution of $\hat{\alpha}_i$ (growth rates) and $\hat{K}_i$ (carrying capacities).
-   - Correlation of $\hat{\alpha}_i$ with clinical variables (if available): WHO grade, Ki-67 index, etc.
-   - Biological plausibility: $\hat{\alpha}_i > 0$ (growth, not shrinkage), $\hat{K}_i$ in clinically reasonable range.
+2. **Kernel hyperparameter analysis**:
+   - Learned length-scales $\ell$ per partition (PA-MOGP): reveals characteristic timescales of volume/location/shape dynamics.
+   - If $\ell_{\text{loc}} \gg \ell_{\text{vol}}$, confirms that location changes are much slower than volume growth.
 
-3. **Risk stratification**:
-   - Standardized risk score: $\text{Risk}_i = (\hat{\alpha}_i - \bar{\alpha}) / \sigma_\alpha$.
-   - Kaplan-Meier-style visualization of high vs. low risk groups (if clinical outcome data available).
+3. **Cross-partition coupling analysis**:
+   - Heatmap of $\mathbf{w}\mathbf{w}^\top$ from PA-MOGP.
+   - Which volume dimensions most strongly drive location/shape changes?
+   - If coupling improvement ($R^2_{\text{PA-MOGP}} - R^2_{\text{H-GP}}$) > 0, validates the mechanistic hypothesis.
 
-4. **Ablation: Gompertz vs. pure neural ODE**: Compare trajectory MSE and volume $R^2$ between:
-   - Gompertz-informed (physics prior + neural correction).
-   - Pure MLP ODE (no physics prior).
-   - Gompertz only (no neural correction).
+4. **Ablation studies**:
+   - A6: Growth model comparison (LME vs. H-GP vs. PA-MOGP).
+   - A8: GP mean function (zero vs. linear vs. Gompertz fit).
+   - A9: GP kernel selection (Matérn-3/2, Matérn-5/2, SE).
+   - A10: Cross-partition coupling (with vs. without).
 
-5. **Trajectory visualization**: 2D PCA/UMAP projection of predicted trajectories overlaid with actual trajectories. Smooth, parallel-transport-like evolution indicates good dynamics modeling.
+5. **Trajectory visualization**: 3–4 example patients showing predicted trajectory (mean ± 95% CI) overlaid on actual observations, for all three models.
 
 ---
 
@@ -884,13 +893,14 @@ This section defines the evaluation protocol that validates the entire pipeline 
 | Per-dimension variance > 0.5 | ≥ 95% | ≥ 85% |
 | dCor(vol, loc) | < 0.10 | < 0.20 |
 
-**Phase 4 (Neural ODE):**
+**Phase 4 (Growth Prediction):**
 
 | Metric | Target | Minimum |
 |--------|--------|---------|
-| Volume prediction $R^2$ (LOPO-CV) | ≥ 0.70 | ≥ 0.50 |
-| Trajectory MSE | Monotonically decreasing during training | — |
-| Gompertz $\hat{\alpha}_i > 0$ for all patients | 100% | ≥ 90% |
+| Volume prediction $R^2$ (LOPO) — best model | ≥ 0.70 | ≥ 0.50 |
+| Calibration (95% CI coverage) — GP models | 0.90–0.98 | ≥ 0.80 |
+| Per-patient trajectory $r$ (patients $n_i \geq 3$) | ≥ 0.80 | ≥ 0.60 |
+| PA-MOGP $R^2$ > H-GP $R^2$ (coupling improvement) | > 0 | — |
 
 ### 6.3 Ablation Study Matrix
 
@@ -901,9 +911,11 @@ This section defines the evaluation protocol that validates the entire pipeline 
 | A3: Aux semantic heads | Phase 1 aux | {with, without} | Phase 2 $R^2$ |
 | A4: SDP dimension | $d$ | {64, 128, 256} | $R^2$, dCor |
 | A5: VICReg + dCor | Regularization | {full, no cov, no dCor, no both} | Cross-partition corr |
-| A6: Gompertz prior | ODE architecture | {Gompertz+MLP, MLP only, Gompertz only} | Trajectory MSE, Vol $R^2$ |
-| A7: ComBat | Harmonization | {with, without} | Phase 4 trajectory MSE |
-| A8: Residual dynamics | ODE residual | {frozen (default), learned with $\eta$=0.001} | Trajectory MSE, overfitting |
+| A6: Growth model comparison | Model | {LME, H-GP, PA-MOGP} | Vol $R^2$ (LOPO) |
+| A7: ComBat effect on prediction | Harmonization | {with, without} | Vol $R^2$ (LOPO) |
+| A8: GP mean function | Mean function | {zero, linear (from LME), Gompertz fit} | Vol $R^2$ (LOPO) |
+| A9: GP kernel selection | Kernel (H-GP) | {Matérn-3/2, Matérn-5/2, SE} | Vol $R^2$ (LOPO) |
+| A10: Cross-partition coupling | PA-MOGP structure | {with coupling, without coupling} | Vol $R^2$ (LOPO), calibration |
 
 ### 6.4 Figure List
 
@@ -914,9 +926,12 @@ This section defines the evaluation protocol that validates the entire pipeline 
 5. **Disentanglement matrix**: Cross-partition correlation heatmap.
 6. **Latent UMAP colored by semantics**: Volume, location, shape.
 7. **Cohort distribution comparison**: BraTS-MEN vs Andalusian UMAP.
-8. **Patient trajectories**: 2D latent space with temporal arrows.
-9. **Volume prediction**: Predicted vs actual volume change scatter plot.
-10. **Gompertz parameter distribution**: Histogram of growth rates.
+8. **Patient trajectories in latent space**: 2D UMAP with temporal arrows for 5–10 patients with $n_i \geq 3$.
+9. **Volume prediction scatter**: Predicted vs actual $\Delta V$ for all LOPO-CV test pairs, colored by model (LME/H-GP/PA-MOGP).
+10. **Trajectory prediction with uncertainty**: 3–4 example patients showing predicted trajectory (mean ± 95% CI) overlaid on actual observations, for all three models.
+11. **Model comparison bar chart**: $R^2$, MAE, calibration for each model.
+12. **Learned kernel hyperparameters**: Length-scales $\ell$ per partition (PA-MOGP), revealing characteristic timescales.
+13. **Cross-partition coupling weights**: Heatmap of $\mathbf{w}\mathbf{w}^\top$ showing volume-driven coupling.
 11. **Risk stratification**: Ranked patients by growth rate.
 
 ---
@@ -966,7 +981,8 @@ logging:
 | MONAI 1.3+ | NIfTI loading, transforms, SwinUNETR, DiceCELoss |
 | PyTorch Lightning 2.0+ | Training loop, checkpointing, logging |
 | OmegaConf 2.3+ | Hierarchical configuration |
-| torchdiffeq | Neural ODE solvers (adjoint method) |
+| GPy>=1.13 | Gaussian Process models (ICM multi-output support) |
+| statsmodels>=0.14 | Linear Mixed-Effects models (REML) |
 | scipy | Convex hull, center of mass, shape features |
 | neuroCombat | Scanner harmonization |
 | scikit-learn | Ridge regression probes, metrics |
@@ -1002,11 +1018,14 @@ logging:
 11. Székely, G. J. et al. "Measuring and Testing Dependence by Correlation of Distances." *Annals of Statistics*, 2007.
 12. Miyato, T. et al. "Spectral Normalization for Generative Adversarial Networks." *ICLR*, 2018.
 
-### Neural ODEs & Tumor Growth
+### Growth Prediction Models
 
-13. Chen, R. T. Q. et al. "Neural Ordinary Differential Equations." *NeurIPS*, 2018.
-14. Rubanova, Y. et al. "Latent ODEs for Irregularly-Sampled Time Series." *NeurIPS*, 2019.
-15. Benzekry, S. et al. "Classical Mathematical Models for Description and Prediction of Experimental Tumor Growth." *PLOS Computational Biology*, 2014.
+13. Laird, N. M. & Ware, J. H. "Random-Effects Models for Longitudinal Data." *Biometrics*, 1982.
+14. Rasmussen, C. E. & Williams, C. K. I. *Gaussian Processes for Machine Learning*. MIT Press, 2006.
+15. Schulam, P. & Saria, S. "A Framework for Individualizing Predictions of Disease Trajectories." *NeurIPS*, 2015.
+16. Álvarez, M. A. et al. "Kernels for Vector-Valued Functions: A Review." *FnTML*, 2012.
+17. Bonilla, E. V. et al. "Multi-task Gaussian Process Prediction." *NeurIPS*, 2007.
+18. Benzekry, S. et al. "Classical Mathematical Models for Description and Prediction of Experimental Tumor Growth." *PLOS Computational Biology*, 2014.
 
 ### Data & Harmonization
 

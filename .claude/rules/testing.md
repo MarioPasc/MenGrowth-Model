@@ -14,4 +14,4 @@ Always use the growth conda environment:
 
 ## Module Dependencies
 Do NOT write tests for Phase N+1 until Phase N tests pass.
-Phase order: 1 (LoRA) → 2 (SDP) → 3 (Encoding) → 4 (Neural ODE)
+Phase order: 1 (LoRA) → 2 (SDP) → 3 (Encoding) → 4 (Growth Prediction)

@@ -20,7 +20,7 @@ PIPELINE STATUS:
   [X] Phase 1: LoRA Adaptation (complete, in experiments/lora_ablation/)
   [ ] Phase 2: SDP (stubbed, spec in module_3_sdp.md)
   [ ] Phase 3: Encoding + ComBat (not started, spec in module_4_encoding.md)
-  [ ] Phase 4: Neural ODE (stubbed, spec in module_5_neural_ode.md)
+  [ ] Phase 4: Growth Prediction (stubbed, spec in module_5_growth_prediction.md)
 
 CODING RULES:
   1. Type hints on ALL function signatures

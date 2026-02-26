@@ -14,7 +14,7 @@ keywords = [
     "deep-learning",
     "tumour-growth-prediction",
     "meningioma",
-    "neural-ode",
+    "gaussian-process",
     "foundation-model",
 ]
 authors = [
@@ -59,8 +59,9 @@ dependencies = [
     # LoRA adaptation
     "peft>=0.7.0",
 
-    # Neural ODE
-    "torchdiffeq>=0.2.3",
+    # Growth prediction (GP hierarchy)
+    "GPy>=1.13.0",
+    "statsmodels>=0.14.0",
 
     # Scientific computing
     "scipy>=1.10.0",
@@ -111,7 +112,7 @@ vae-analyze = "vae.tools.analysis.cli:main"
 # Growth module entry points (future)
 # growth-train-lora = "growth.training.train_lora:main"
 # growth-train-sdp = "growth.training.train_sdp:main"
-# growth-train-ode = "growth.training.train_ode:main"
+# growth-train-growth = "growth.training.train_growth:main"
 
 # Experiment entry points
 growth-exp-lora-ablation = "experiments.lora_ablation.run_ablation:main"
@@ -162,7 +163,8 @@ module = [
     "numpy.*",
     "nibabel.*",
     "nrrd.*",
-    "torchdiffeq.*",
+    "GPy.*",
+    "statsmodels.*",
     "einops.*",
 ]
 ignore_missing_imports = true

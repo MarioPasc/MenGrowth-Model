@@ -6,7 +6,6 @@ All narrative is computed from metrics — nothing is hardcoded.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -16,7 +15,6 @@ from experiments.lora_ablation.report.data_loader import (
 )
 from experiments.lora_ablation.report.style import (
     CONDITION_LABELS,
-    EXPERIMENT_LABELS,
     RANKS,
 )
 
@@ -34,9 +32,9 @@ class SectionContent:
 
     section_id: str
     title: str
-    paragraphs: List[str] = field(default_factory=list)
-    figure_names: List[str] = field(default_factory=list)
-    table_names: List[str] = field(default_factory=list)
+    paragraphs: list[str] = field(default_factory=list)
+    figure_names: list[str] = field(default_factory=list)
+    table_names: list[str] = field(default_factory=list)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -44,32 +42,29 @@ class SectionContent:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _fmt(val: Optional[float], decimals: int = 3) -> str:
+def _fmt(val: float | None, decimals: int = 3) -> str:
     """Format a float for display, handling None."""
     if val is None:
         return "N/A"
     return f"{val:.{decimals}f}"
 
 
-def _pct(val: Optional[float]) -> str:
+def _pct(val: float | None) -> str:
     """Format as percentage."""
     if val is None:
         return "N/A"
     return f"{val * 100:.1f}%"
 
 
-def _best_rank_condition(exp: ExperimentData, metric_fn) -> Optional[str]:
+def _best_rank_condition(exp: ExperimentData, metric_fn) -> str | None:
     """Find the rank condition that maximizes metric_fn(cond)."""
-    rank_conds = [
-        c for c in exp.conditions
-        if c.startswith(("lora_r", "dora_r"))
-    ]
+    rank_conds = [c for c in exp.conditions if c.startswith(("lora_r", "dora_r"))]
     if not rank_conds:
         return None
     return max(rank_conds, key=lambda c: metric_fn(exp.conditions[c]))
 
 
-def _frozen(exp: ExperimentData) -> Optional[ConditionData]:
+def _frozen(exp: ExperimentData) -> ConditionData | None:
     """Get frozen baseline condition."""
     return exp.conditions.get("baseline_frozen")
 
@@ -85,7 +80,8 @@ def generate_abstract(exp: ExperimentData) -> SectionContent:
 
     frozen = _frozen(exp)
     best_cond_name = _best_rank_condition(
-        exp, lambda c: c.dice_men.get("dice_mean", 0),
+        exp,
+        lambda c: c.dice_men.get("dice_mean", 0),
     )
 
     if frozen is None or best_cond_name is None:
@@ -174,7 +170,8 @@ def generate_segmentation_section(exp: ExperimentData) -> SectionContent:
 
     frozen = _frozen(exp)
     best_name = _best_rank_condition(
-        exp, lambda c: c.dice_men.get("dice_mean", 0),
+        exp,
+        lambda c: c.dice_men.get("dice_mean", 0),
     )
 
     if best_name is None:
@@ -256,7 +253,10 @@ def generate_domain_adaptation_section(exp: ExperimentData) -> SectionContent:
 
         # Best adapted clf accuracy
         if rank_conds:
-            clfs = [(c, exp.conditions[c].domain_metrics.get("domain_classifier_accuracy", 1.0)) for c in rank_conds]
+            clfs = [
+                (c, exp.conditions[c].domain_metrics.get("domain_classifier_accuracy", 1.0))
+                for c in rank_conds
+            ]
             best_clf_cond, best_clf = min(clfs, key=lambda x: abs(x[1] - 0.5))
             section.paragraphs.append(
                 f"The condition closest to chance-level separability is "
@@ -376,7 +376,8 @@ def generate_feature_quality_section(exp: ExperimentData) -> SectionContent:
     shape_r2 = best.metrics_enhanced.get("r2_shape_linear", 0)
     features_ranked = sorted(
         [("volume", vol_r2), ("location", loc_r2), ("shape", shape_r2)],
-        key=lambda x: x[1], reverse=True,
+        key=lambda x: x[1],
+        reverse=True,
     )
     section.paragraphs.append(
         f"Feature decodability ranking: "
@@ -478,7 +479,7 @@ def generate_statistical_section(exp: ExperimentData) -> SectionContent:
         )
 
         # Group by condition
-        by_cond: Dict[str, List] = {}
+        by_cond: dict[str, list] = {}
         for cond, metric, p, effect in significant:
             by_cond.setdefault(cond, []).append((metric, p, effect))
 
@@ -513,7 +514,7 @@ def generate_rank_summary_section(exp: ExperimentData) -> SectionContent:
         return section
 
     # Score each condition across multiple criteria
-    scores: Dict[str, float] = {}
+    scores: dict[str, float] = {}
     for c in rank_conds:
         cond = exp.conditions[c]
         dice = cond.dice_men.get("dice_mean", 0)
@@ -546,8 +547,8 @@ def generate_rank_summary_section(exp: ExperimentData) -> SectionContent:
 
 
 def generate_lora_vs_dora_section(
-    experiments: List[ExperimentData],
-) -> Optional[SectionContent]:
+    experiments: list[ExperimentData],
+) -> SectionContent | None:
     """Section 3.8: LoRA vs DoRA comparison."""
     lora_exp = None
     dora_exp = None
@@ -598,8 +599,8 @@ def generate_lora_vs_dora_section(
 
 
 def generate_semantic_section(
-    experiments: List[ExperimentData],
-) -> Optional[SectionContent]:
+    experiments: list[ExperimentData],
+) -> SectionContent | None:
     """Section 3.9: Semantic heads comparison."""
     sem_exp = None
     no_sem_exp = None
@@ -670,7 +671,8 @@ def generate_discussion(exp: ExperimentData) -> SectionContent:
 
     frozen = _frozen(exp)
     best_name = _best_rank_condition(
-        exp, lambda c: c.dice_men.get("dice_mean", 0),
+        exp,
+        lambda c: c.dice_men.get("dice_mean", 0),
     )
 
     if frozen is not None and best_name is not None:
@@ -707,7 +709,8 @@ def generate_conclusion(exp: ExperimentData) -> SectionContent:
 
     frozen = _frozen(exp)
     best_name = _best_rank_condition(
-        exp, lambda c: c.dice_men.get("dice_mean", 0),
+        exp,
+        lambda c: c.dice_men.get("dice_mean", 0),
     )
 
     if frozen is None or best_name is None:
@@ -734,7 +737,7 @@ def generate_conclusion(exp: ExperimentData) -> SectionContent:
         f"while retaining {_pct(retention)} of glioma segmentation performance "
         f"(GLI Dice = {_fmt(best_gli)} vs frozen {_fmt(frozen_gli)}). "
         f"These adapted features serve as the foundation for downstream "
-        f"Supervised Disentangled Projection and Neural ODE growth modeling."
+        f"Supervised Disentangled Projection and GP-based growth prediction."
     )
 
     return section
@@ -746,9 +749,9 @@ def generate_conclusion(exp: ExperimentData) -> SectionContent:
 
 
 def generate_all_sections(
-    experiments: List[ExperimentData],
+    experiments: list[ExperimentData],
     compare_semantic: bool = False,
-) -> List[SectionContent]:
+) -> list[SectionContent]:
     """Generate all narrative sections for the report.
 
     Args:

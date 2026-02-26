@@ -1,8 +1,8 @@
-# CLAUDE.md — BSG Neural ODE Pipeline
+# CLAUDE.md — BSG Growth Prediction Pipeline
 
 ## Project Overview
 
-This BSc thesis pipeline adapts BrainSegFounder (a glioma-pretrained 3D brain MRI foundation model) for meningioma growth forecasting. The pipeline has 4 phases: (1) LoRA-based encoder adaptation using segmentation as proxy task, (2) Supervised Disentangled Projection (SDP) mapping frozen encoder features to a structured 128-d latent space, (3) Cohort encoding and ComBat harmonization of longitudinal Andalusian cohort MRIs, and (4) Neural ODE growth forecasting with Gompertz-informed dynamics in the disentangled latent space. The master methodology is in `methodology_refined.md`.
+This BSc thesis pipeline adapts BrainSegFounder (a glioma-pretrained 3D brain MRI foundation model) for meningioma growth forecasting. The pipeline has 4 phases: (1) LoRA-based encoder adaptation using segmentation as proxy task, (2) Supervised Disentangled Projection (SDP) mapping frozen encoder features to a structured 128-d latent space, (3) Cohort encoding and ComBat harmonization of longitudinal Andalusian cohort MRIs, and (4) Growth prediction via a three-model GP hierarchy (LME → Hierarchical GP → Partition-Aware Multi-Output GP) operating on the disentangled latent space, evaluated under LOPO-CV. The master methodology is in `methodology_refined.md`.
 
 ## Directory Structure
 
@@ -21,12 +21,12 @@ MenGrowth-Model/                          # /home/mpascual/research/code/MenGrow
 │   │   ├── segmentation/
 │   │   │   ├── semantic_heads.py         # Auxiliary vol/loc/shape heads ← REUSE
 │   │   │   └── original_decoder.py       # Full SwinUNETR decoder ← REUSE
-│   │   ├── ode/                          # Neural ODE dynamics ← IMPLEMENT
+│   │   ├── growth/                        # GP growth models (LME, H-GP, PA-MOGP) ← IMPLEMENT
 │   ├── data/
 │   │   ├── semantic_features.py          # 3 shape features via compute_shape_array() (445 lines) ← REUSE
 │   │   ├── transforms.py                 # MONAI transforms ← REUSE
 │   │   └── bratsmendata.py               # Dataset class ← REUSE/EXTEND
-│   ├── losses/                           # SDP, ODE losses ← IMPLEMENT
+│   ├── losses/                           # SDP losses ← IMPLEMENT
 │   ├── harmonization/                    # ComBat ← IMPLEMENT
 │   └── utils/
 │       └── checkpoint.py                 # extract_encoder_weights() ← REUSE
@@ -42,14 +42,14 @@ MenGrowth-Model/                          # /home/mpascual/research/code/MenGrow
 │   │   ├── phase1_lora.yaml
 │   │   ├── phase2_sdp.yaml
 │   │   ├── phase3_encode.yaml
-│   │   └── phase4_ode.yaml
+│   │   └── phase4_growth.yaml
 └── tests/                                # pytest test suite
 ```
 
 ## Module Dependency Chain
 
 ```
-module_0 (Data) → module_1 (Domain Gap) → module_2 (LoRA) → module_3 (SDP) → module_4 (Encoding) → module_5 (Neural ODE) → module_6 (Evaluation)
+module_0 (Data) → module_1 (Domain Gap) → module_2 (LoRA) → module_3 (SDP) → module_4 (Encoding) → module_5 (Growth Prediction) → module_6 (Evaluation)
 ```
 
 Each module's outputs are the next module's inputs. Do NOT start a module until all predecessor modules pass their BLOCKING tests.
@@ -71,7 +71,8 @@ Each module's outputs are the next module's inputs. Do NOT start a module until 
 - PyTorch 2.0+ (CUDA 12.x)
 - MONAI 1.3+
 - PyTorch Lightning 2.0+
-- torchdiffeq (Neural ODE solvers)
+- GPy>=1.13 (Gaussian Process models with ICM multi-output support)
+- statsmodels>=0.14 (LME fitting via REML)
 - OmegaConf 2.3+
 - scipy, scikit-learn, umap-learn, neuroCombat
 
@@ -129,6 +130,6 @@ Save the resolved OmegaConf config to the run directory for every experiment.
 
 ## Reference Documents
 
-- **`DECISIONS.md`** — All resolved design choices (15 decisions with rationale)
+- **`DECISIONS.md`** — All resolved design choices (20 decisions with rationale; D8-D9 superseded, D16-D20 added for GP pivot)
 - **`methodology_refined.md`** — Full scientific methodology (canonical reference)
 - **`module_0_data.md`** through **`module_6_evaluation.md`** — Per-module task specifications
