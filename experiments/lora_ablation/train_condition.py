@@ -43,6 +43,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from growth.data.bratsmendata import create_dataloaders
+from growth.losses.encoder_vicreg import EncoderVICRegLoss
 from growth.losses.segmentation import DiceMetric3Ch, SegmentationLoss3Ch
 from growth.models.segmentation.semantic_heads import AuxiliarySemanticLoss
 from growth.utils.model_card import model_card_from_training
@@ -510,6 +511,7 @@ def train_epoch(
     gradient_monitor_freq: int = 50,
     use_amp: bool = False,
     grad_accum_steps: int = 1,
+    vicreg_loss_fn: nn.Module | None = None,
 ) -> dict[str, float]:
     """Train for one epoch with optional auxiliary losses.
 
@@ -529,6 +531,7 @@ def train_epoch(
         gradient_monitor_freq: How often to compute gradient diagnostics (batches).
         use_amp: Whether to use bf16 automatic mixed precision.
         grad_accum_steps: Number of batches to accumulate gradients over.
+        vicreg_loss_fn: Optional encoder VICReg loss for feature richness.
 
     Returns:
         Dict with loss components and optional gradient diagnostics.
@@ -549,6 +552,9 @@ def train_epoch(
     total_vol_loss = 0.0
     total_loc_loss = 0.0
     total_shape_loss = 0.0
+    total_vicreg_loss = 0.0
+    total_vicreg_var = 0.0
+    total_vicreg_cov = 0.0
     total_loss = 0.0
     num_batches = 0
 
@@ -569,11 +575,14 @@ def train_epoch(
 
         # Forward pass under bf16 autocast (no-op when use_amp=False)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-            if use_semantic_heads and hasattr(model, "forward_with_semantics"):
+            # Use forward_with_semantics when we need features (for aux or vicreg)
+            need_features = (use_semantic_heads or vicreg_loss_fn is not None)
+            if need_features and hasattr(model, "forward_with_semantics"):
                 outputs = model.forward_with_semantics(images)
                 pred = outputs["logits"]
             else:
                 pred = model(images)
+                outputs = {}
 
             # Segmentation loss
             seg_loss = seg_loss_fn(pred, segs)
@@ -604,6 +613,13 @@ def train_epoch(
                 loc_loss = aux_components.get("loc_loss", 0.0)
                 shape_loss = aux_components.get("shape_loss", 0.0)
 
+            # VICReg encoder feature richness loss (if enabled)
+            vicreg_loss = torch.tensor(0.0, device=device)
+            vicreg_components = {}
+            if vicreg_loss_fn is not None and "features" in outputs:
+                vicreg_loss, vicreg_components = vicreg_loss_fn(outputs["features"])
+                loss = loss + vicreg_loss
+
         # Backward pass (outside autocast — gradients computed in fp32)
         (loss / grad_accum_steps).backward()
 
@@ -628,6 +644,9 @@ def train_epoch(
         total_vol_loss += vol_loss
         total_loc_loss += loc_loss
         total_shape_loss += shape_loss
+        total_vicreg_loss += vicreg_loss.item() if isinstance(vicreg_loss, torch.Tensor) else vicreg_loss
+        total_vicreg_var += vicreg_components.get("vicreg_var_loss", 0.0)
+        total_vicreg_cov += vicreg_components.get("vicreg_cov_loss", 0.0)
         total_loss += loss.item()
         num_batches += 1
 
@@ -639,6 +658,9 @@ def train_epoch(
         "vol_loss": total_vol_loss / num_batches,
         "loc_loss": total_loc_loss / num_batches,
         "shape_loss": total_shape_loss / num_batches,
+        "vicreg_loss": total_vicreg_loss / num_batches,
+        "vicreg_var_loss": total_vicreg_var / num_batches,
+        "vicreg_cov_loss": total_vicreg_cov / num_batches,
     }
 
     # Add gradient monitoring results
@@ -820,7 +842,11 @@ def train_condition(
     decoder_type = training_config.get("decoder_type", "original")
     use_semantic_heads = training_config.get("use_semantic_heads", False)
     freeze_decoder = training_config.get("freeze_decoder", False)
-    lambda_aux = training_config.get("lambda_aux", 0.1)
+
+    # Per-condition lambda_aux override (for v3 ablation)
+    lambda_aux = condition_config.get(
+        "lambda_aux_override", training_config.get("lambda_aux", 0.1)
+    )
 
     # Auxiliary loss warmup parameters
     aux_warmup_start = training_config.get("aux_warmup_epochs", 0)
@@ -933,6 +959,23 @@ def train_condition(
                 f"shape_std={stats['shape_std'].mean():.2f}"
             )
 
+    # VICReg encoder feature richness loss (optional, per-condition toggle)
+    vicreg_loss_fn = None
+    use_vicreg = condition_config.get("use_vicreg", False)
+    lambda_var_enc = training_config.get("lambda_var_enc", 5.0) if use_vicreg else 0.0
+    lambda_cov_enc = training_config.get("lambda_cov_enc", 1.0) if use_vicreg else 0.0
+    if use_vicreg:
+        vicreg_gamma = training_config.get("vicreg_gamma", 1.0)
+        vicreg_loss_fn = EncoderVICRegLoss(
+            lambda_var=lambda_var_enc,
+            lambda_cov=lambda_cov_enc,
+            gamma=vicreg_gamma,
+        )
+        logger.info(
+            f"Encoder VICReg loss enabled: lambda_var={lambda_var_enc}, "
+            f"lambda_cov={lambda_cov_enc}, gamma={vicreg_gamma}"
+        )
+
     # Training configuration
     epochs = max_epochs or training_config["max_epochs"]
     patience = training_config["early_stopping_patience"]
@@ -948,6 +991,9 @@ def train_condition(
         "train_vol_loss",
         "train_loc_loss",
         "train_shape_loss",
+        "train_vicreg_loss",
+        "train_vicreg_var",
+        "train_vicreg_cov",
         "val_loss",
         "val_dice_mean",
         "val_dice_0",
@@ -999,6 +1045,7 @@ def train_condition(
             gradient_monitor_freq=gradient_monitor_freq,
             use_amp=use_amp,
             grad_accum_steps=grad_accum_steps,
+            vicreg_loss_fn=vicreg_loss_fn,
         )
 
         # Validate
@@ -1019,8 +1066,15 @@ def train_condition(
                 f"loc={train_metrics['loc_loss']:.4f}, "
                 f"shape={train_metrics['shape_loss']:.4f}]"
             )
+        log_msg += ")"
+        if use_vicreg and train_metrics["vicreg_loss"] > 0:
+            log_msg += (
+                f" | VICReg: {train_metrics['vicreg_loss']:.4f} "
+                f"(var={train_metrics['vicreg_var_loss']:.4f}, "
+                f"cov={train_metrics['vicreg_cov_loss']:.4f})"
+            )
         log_msg += (
-            f") | Val Loss: {val_metrics['loss']:.4f} | "
+            f" | Val Loss: {val_metrics['loss']:.4f} | "
             f"Val Dice: {val_metrics['dice_mean']:.4f} | "
             f"LR: {current_lr:.2e}"
         )
@@ -1043,6 +1097,9 @@ def train_condition(
             train_metrics["vol_loss"],
             train_metrics["loc_loss"],
             train_metrics["shape_loss"],
+            train_metrics["vicreg_loss"],
+            train_metrics["vicreg_var_loss"],
+            train_metrics["vicreg_cov_loss"],
             val_metrics["loss"],
             val_metrics["dice_mean"],
             val_metrics["dice_0"],

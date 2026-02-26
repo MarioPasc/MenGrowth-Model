@@ -10,11 +10,11 @@
 # =============================================================================
 paths:
   checkpoint_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS
-  lora_checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/BrainSegFounder_adaptation/LoRA_Adaptation/lora_ablation_semantic_heads/conditions/lora_r8
+  lora_checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/BrainSegFounder_adaptation/LoRA_Adaptation/lora_ablation_semantic_heads/conditions/lora_r16
   data_root: /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train
   h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/brats_men_train.h5
-  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/SDP_Module/runs/sdp_default
-  features_dir: ${paths.output_dir}/features
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/SDP_Module
+  features_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/features/lora_semantic_heads_r16
 
 # =============================================================================
 # Data Splits
@@ -32,55 +32,56 @@ sdp:
   in_dim: 768
   hidden_dim: 512
   out_dim: 128
-  dropout: 0.1
+  dropout: 0.3
   spectral_norm: all
 
 partition:
   vol_dim: 24
-  loc_dim: 8
+  loc_dim: 12
   shape_dim: 12
-  residual_dim: 84
+  residual_dim: 80
 
 targets:
   n_vol: 4
   n_loc: 3
-  n_shape: 3
+  n_shape: 1
+  shape_indices: [0]  # sphericity only (solidity has ceiling R²=0.14, unpredictable)
 
 # =============================================================================
 # Loss
 # =============================================================================
 loss:
   lambda_vol: 20.0
-  lambda_loc: 12.0
-  lambda_shape: 15.0
-  lambda_cov: 5.0
+  lambda_loc: 10.0
+  lambda_shape: 30.0
+  lambda_cov: 15.0
   lambda_var: 5.0
-  lambda_dcor: 2.0
+  lambda_dcor: 8.0
   gamma_var: 1.0
 
 # =============================================================================
 # Curriculum
 # =============================================================================
 curriculum:
-  enabled: true
+  enabled: false
   warmup_end: 10
-  semantic_end: 40
-  independence_end: 60
+  semantic_end: 60
+  independence_end: 120
 
 # =============================================================================
 # Training
 # =============================================================================
 training:
   seed: 42
-  max_epochs: 100
+  max_epochs: 300
   lr: 1.0e-3
   weight_decay: 0.01
-  batch_size: full
+  batch_size: 128
   optimizer: adamw
   gradient_clip_val: 1.0
   scheduler:
     type: cosine
-    warmup_epochs: 5
+    warmup_epochs: 10
     min_lr: 1.0e-6
   precision: 32-true
   accelerator: auto

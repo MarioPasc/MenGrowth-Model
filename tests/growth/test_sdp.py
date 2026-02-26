@@ -97,9 +97,9 @@ class TestSDPForwardPass:
         parts = partition.split(z)
 
         assert parts["vol"].shape == (BATCH_SIZE, 24)
-        assert parts["loc"].shape == (BATCH_SIZE, 8)
+        assert parts["loc"].shape == (BATCH_SIZE, 12)
         assert parts["shape"].shape == (BATCH_SIZE, 12)
-        assert parts["residual"].shape == (BATCH_SIZE, 84)
+        assert parts["residual"].shape == (BATCH_SIZE, 80)
 
     def test_sdp_with_heads_output_shapes(
         self, sdp_with_heads: SDPWithHeads, synthetic_features: torch.Tensor

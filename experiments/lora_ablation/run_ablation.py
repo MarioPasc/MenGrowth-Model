@@ -391,6 +391,44 @@ def run_analysis(config_path: str, glioma_features_path: Optional[str] = None) -
     analyze_results(config_path, glioma_features_path=glioma_features_path)
 
 
+def run_feature_quality(
+    config_path: str,
+    condition: str | None = None,
+) -> None:
+    """Run feature quality evaluation."""
+    logger.info("=" * 60)
+    logger.info("STEP: Feature Quality Evaluation")
+    logger.info("=" * 60)
+
+    from .evaluate_feature_quality import main as feature_quality_main
+    feature_quality_main(config_path, condition)
+
+
+def run_feature_quality_all(config_path: str) -> None:
+    """Run feature quality evaluation for all conditions."""
+    logger.info("=" * 60)
+    logger.info("STEP: Feature Quality Evaluation (All Conditions)")
+    logger.info("=" * 60)
+
+    from .evaluate_feature_quality import main as feature_quality_main
+    feature_quality_main(config_path, condition=None)
+
+
+def run_regenerate(
+    config_path: str,
+    skip_cache: bool = False,
+    figures_only: bool = False,
+    tables_only: bool = False,
+) -> None:
+    """Regenerate all analysis outputs (figures, tables, reports)."""
+    logger.info("=" * 60)
+    logger.info("STEP: Regenerate Analysis")
+    logger.info("=" * 60)
+
+    from .regenerate_analysis import main as regenerate_main
+    regenerate_main(config_path, skip_cache, figures_only, tables_only)
+
+
 def run_enhanced_diagnostics(config_path: str) -> None:
     """Run enhanced diagnostics analysis."""
     logger.info("=" * 60)
@@ -461,6 +499,10 @@ def run_analyze_only(
     # Step 3: Evaluate probes (optional)
     if not skip_probes:
         run_probes_all(config_path, device)
+
+    # Step 3b: Feature quality evaluation
+    if not skip_probes:
+        run_feature_quality_all(config_path)
 
     # Step 4: Evaluate test Dice (optional)
     if not skip_dice:
@@ -573,6 +615,9 @@ def run_all(
 
     # Step 5: Evaluate probes
     run_probes_all(config_path, device)
+
+    # Step 5b: Feature quality evaluation
+    run_feature_quality_all(config_path)
 
     # Step 6: Evaluate test Dice (BraTS-MEN + BraTS-GLI)
     run_test_dice_all(config_path, device, glioma_test_size)
@@ -700,11 +745,28 @@ def main():
     analyze_parser.add_argument("--glioma-features", type=str, default=None,
                                help="Path to glioma features for domain shift")
 
+    # feature-quality
+    fq_parser = subparsers.add_parser("feature-quality", help="Evaluate feature quality")
+    fq_parser.add_argument("--condition", type=str, default=None,
+                           help="Single condition (if omitted, evaluates all)")
+
     # enhanced-diagnostics
     subparsers.add_parser(
         "enhanced-diagnostics",
         help="Run enhanced diagnostics (gradient analysis, feature quality, etc.)"
     )
+
+    # regenerate
+    regen_parser = subparsers.add_parser(
+        "regenerate",
+        help="Regenerate analysis outputs (figures, tables, reports) from existing data"
+    )
+    regen_parser.add_argument("--skip-cache", action="store_true",
+                               help="Reuse existing figure cache")
+    regen_parser.add_argument("--figures-only", action="store_true",
+                               help="Only regenerate figures")
+    regen_parser.add_argument("--tables-only", action="store_true",
+                               help="Only regenerate tables")
 
     # run-all
     run_all_parser = subparsers.add_parser("run-all", help="Run complete pipeline")
@@ -780,8 +842,12 @@ def main():
         run_generate_tables(args.config)
     elif args.command == "analyze":
         run_analysis(args.config, args.glioma_features)
+    elif args.command == "feature-quality":
+        run_feature_quality(args.config, args.condition)
     elif args.command == "enhanced-diagnostics":
         run_enhanced_diagnostics(args.config)
+    elif args.command == "regenerate":
+        run_regenerate(args.config, args.skip_cache, args.figures_only, args.tables_only)
     elif args.command == "run-all":
         run_all(
             args.config, args.max_epochs, args.device, args.skip_training,

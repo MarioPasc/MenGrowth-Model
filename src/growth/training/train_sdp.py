@@ -24,12 +24,16 @@ logger = logging.getLogger(__name__)
 def load_precomputed_features(
     features_path: str,
     feature_level: str = "encoder10",
+    shape_indices: list[int] | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Load precomputed features and targets from HDF5 file.
 
     Args:
         features_path: Path to .h5 file containing features and targets.
         feature_level: Feature level to load (e.g., "encoder10").
+        shape_indices: Optional list of shape target column indices to keep.
+            E.g., [0, 2] to keep sphericity and solidity, dropping
+            surface_area_log at index 1.
 
     Returns:
         Tuple of (features [N, 768], targets dict with "vol", "loc", "shape").
@@ -42,7 +46,12 @@ def load_precomputed_features(
         targets = {}
         targets["vol"] = torch.from_numpy(np.array(f["targets/volume"]))
         targets["loc"] = torch.from_numpy(np.array(f["targets/location"]))
-        targets["shape"] = torch.from_numpy(np.array(f["targets/shape"]))
+        shape_all = torch.from_numpy(np.array(f["targets/shape"]))
+
+        if shape_indices is not None:
+            targets["shape"] = shape_all[:, shape_indices]
+        else:
+            targets["shape"] = shape_all
 
     logger.info(
         f"Loaded features from {features_path}: h={h.shape}, "
@@ -56,6 +65,7 @@ def load_and_combine_splits(
     features_dir: str,
     split_names: list[str],
     feature_level: str = "encoder10",
+    shape_indices: list[int] | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Load and concatenate features from multiple splits.
 
@@ -63,6 +73,7 @@ def load_and_combine_splits(
         features_dir: Directory containing per-split .h5 files.
         split_names: List of split names to combine.
         feature_level: Feature level to load.
+        shape_indices: Optional list of shape target column indices to keep.
 
     Returns:
         Combined (features, targets) tensors.
@@ -72,7 +83,9 @@ def load_and_combine_splits(
 
     for split in split_names:
         h5_path = Path(features_dir) / f"{split}.h5"
-        h, targets = load_precomputed_features(str(h5_path), feature_level)
+        h, targets = load_precomputed_features(
+            str(h5_path), feature_level, shape_indices=shape_indices
+        )
         all_h.append(h)
         for key in all_targets:
             all_targets[key].append(targets[key])

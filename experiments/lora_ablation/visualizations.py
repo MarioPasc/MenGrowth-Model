@@ -64,14 +64,19 @@ logger = logging.getLogger(__name__)
 if HAS_MATPLOTLIB:
     set_publication_style()
 
-# Color palette for conditions
+# Import v3 style for consistent colors/labels
+from .v3_style import V3_COLORS, V3_LABELS, V3_SHAPE_LABELS, get_color, get_label
+
+# Color palette for conditions (v2 legacy + v3 conditions)
 CONDITION_COLORS = {
-    'baseline': '#808080',  # Gray
-    'lora_r2': '#a6cee3',   # Light blue
-    'lora_r4': '#1f78b4',   # Blue
-    'lora_r8': '#33a02c',   # Green
-    'lora_r16': '#ff7f00',  # Orange
-    'lora_r32': '#e31a1c',  # Red
+    'baseline': '#808080',
+    'lora_r2': '#a6cee3',
+    'lora_r4': '#1f78b4',
+    'lora_r8': '#33a02c',
+    'lora_r16': '#ff7f00',
+    'lora_r32': '#e31a1c',
+    # v3 conditions (colorblind-safe Wong 2011)
+    **V3_COLORS,
 }
 
 
@@ -181,9 +186,8 @@ def plot_umap_by_semantic(
         logger.warning("UMAP not available. Skipping UMAP visualization.")
         return
 
-    # Select conditions to show
-    conditions_to_show = ['baseline', 'lora_r4', 'lora_r8', 'lora_r16']
-    conditions_to_show = [c for c in conditions_to_show if c in data_by_condition]
+    # Show all conditions that have data (no hardcoded list)
+    conditions_to_show = [c for c in data_by_condition]
 
     if not conditions_to_show:
         logger.warning("No conditions with data for UMAP")
@@ -307,7 +311,7 @@ def plot_predictions_scatter(
     dim_labels = {
         'volume': ['Total', 'NCR', 'ED', 'ET'],
         'location': ['X', 'Y', 'Z'],
-        'shape': ['Sphericity', 'Surface', 'Solidity'],
+        'shape': V3_SHAPE_LABELS,
     }
 
     for col, feat in enumerate(feature_types):

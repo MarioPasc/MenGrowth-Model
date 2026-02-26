@@ -127,7 +127,11 @@ class LinearProbe:
         if self.scaler is not None:
             X = self.scaler.transform(X)
 
-        return self.model.predict(X)
+        predictions = self.model.predict(X)
+        # Ensure 2D output (single-target Ridge returns 1D)
+        if predictions.ndim == 1:
+            predictions = predictions.reshape(-1, 1)
+        return predictions
 
     def evaluate(
         self,

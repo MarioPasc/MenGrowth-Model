@@ -16,6 +16,7 @@ from growth.data.semantic_features import (
     compute_sphericity,
     compute_solidity,
     compute_aspect_ratios,
+    compute_composition_features,
     compute_shape_features,
     compute_shape_array,
     extract_semantic_features,
@@ -315,17 +316,88 @@ class TestComputeShapeArray:
         assert shape_arr.shape == (3,)
         assert shape_arr.dtype == np.float32
 
-    def test_consistency_with_dict(self):
-        """Array values should match dict values."""
+    def test_consistency_with_components(self):
+        """Array values should match individual function outputs."""
         mask = np.zeros((96, 96, 96), dtype=np.int32)
         mask[40:60, 40:60, 40:60] = LABEL_NCR
 
         shape_arr = compute_shape_array(mask)
-        shape_dict = compute_shape_features(mask)
+        composition = compute_composition_features(mask)
 
-        assert abs(shape_arr[0] - shape_dict["sphericity"]) < 1e-6
-        assert abs(shape_arr[1] - shape_dict["surface_area_log"]) < 1e-6
-        assert abs(shape_arr[2] - shape_dict["solidity"]) < 1e-6
+        assert abs(shape_arr[0] - compute_sphericity(mask)) < 1e-6
+        assert abs(shape_arr[1] - composition["enhancement_ratio"]) < 1e-6
+        assert abs(shape_arr[2] - composition["infiltration_index"]) < 1e-6
+
+
+class TestCompositionFeatures:
+    """Tests for tumor composition features."""
+
+    def test_enhancement_ratio_range(self):
+        """Enhancement ratio should be in [0, 1]."""
+        mask = np.zeros((96, 96, 96), dtype=np.int32)
+        mask[40:50, 40:50, 40:50] = LABEL_NCR
+        mask[50:55, 40:50, 40:50] = LABEL_ED
+        mask[55:60, 40:50, 40:50] = LABEL_ET
+
+        comp = compute_composition_features(mask)
+
+        assert 0.0 <= comp["enhancement_ratio"] <= 1.0
+
+    def test_infiltration_index_nonnegative(self):
+        """Infiltration index should be >= 0."""
+        mask = np.zeros((96, 96, 96), dtype=np.int32)
+        mask[40:50, 40:50, 40:50] = LABEL_NCR
+        mask[50:60, 40:60, 40:60] = LABEL_ED
+
+        comp = compute_composition_features(mask)
+
+        assert comp["infiltration_index"] >= 0.0
+
+    def test_empty_mask(self):
+        """Empty mask should return zeros."""
+        mask = np.zeros((96, 96, 96), dtype=np.int32)
+        comp = compute_composition_features(mask)
+
+        assert comp["enhancement_ratio"] == 0.0
+        assert comp["infiltration_index"] == 0.0
+
+    def test_only_et_gives_ratio_one(self):
+        """Tumor with only ET should have enhancement_ratio close to 1."""
+        mask = np.zeros((96, 96, 96), dtype=np.int32)
+        mask[40:60, 40:60, 40:60] = LABEL_ET
+
+        comp = compute_composition_features(mask)
+
+        assert comp["enhancement_ratio"] > 0.99
+
+    def test_high_edema_gives_high_infiltration(self):
+        """Tumor with much more edema than solid should have high infiltration."""
+        mask = np.zeros((96, 96, 96), dtype=np.int32)
+        # Small solid tumor
+        mask[45:50, 45:50, 45:50] = LABEL_NCR  # 125 voxels
+        # Large edema
+        mask[10:90, 10:90, 10:90] = LABEL_ED  # Will overwrite non-NCR
+
+        # Actually set up properly: NCR first, then ED in surrounding region
+        mask = np.zeros((96, 96, 96), dtype=np.int32)
+        mask[45:50, 45:50, 45:50] = LABEL_NCR  # 125 voxels
+        mask[30:70, 30:70, 30:70] = LABEL_ED  # 64000 voxels
+        mask[45:50, 45:50, 45:50] = LABEL_NCR  # Re-set NCR (overwritten by ED)
+
+        comp = compute_composition_features(mask)
+
+        # infiltration_index = V_ED / (V_NCR + V_ET + eps) >> 1
+        assert comp["infiltration_index"] > 1.0
+
+    def test_no_edema_gives_zero_infiltration(self):
+        """No edema should give infiltration_index ~0."""
+        mask = np.zeros((96, 96, 96), dtype=np.int32)
+        mask[40:60, 40:60, 40:60] = LABEL_NCR
+        mask[60:70, 40:60, 40:60] = LABEL_ET
+
+        comp = compute_composition_features(mask)
+
+        assert comp["infiltration_index"] < 0.01
 
 
 class TestExtractSemanticFeatures:

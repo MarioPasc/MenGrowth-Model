@@ -94,6 +94,12 @@ def compute_performance_metrics(
         X_eval = eval_data[f"partitions/{part_name}"]
         y_eval = eval_data[f"targets/{tgt_key}"]
 
+        # Ensure targets are 2D (handles single-target partitions like n_shape=1)
+        if y_train.ndim == 1:
+            y_train = y_train.reshape(-1, 1)
+        if y_eval.ndim == 1:
+            y_eval = y_eval.reshape(-1, 1)
+
         # Linear probe
         linear = EnhancedLinearProbe(alpha=1.0)
         linear.fit(X_train, y_train)
@@ -147,6 +153,12 @@ def compute_cross_probing(
             X_eval = eval_data[f"partitions/{src_name}"]
             y_eval = eval_data[f"targets/{tgt_key}"]
 
+            # Ensure targets are 2D
+            if y_train.ndim == 1:
+                y_train = y_train.reshape(-1, 1)
+            if y_eval.ndim == 1:
+                y_eval = y_eval.reshape(-1, 1)
+
             probe = LinearProbe(
                 input_dim=X_train.shape[1],
                 output_dim=y_train.shape[1],
@@ -185,24 +197,24 @@ def compute_dci_scores(
     z_eval = eval_data["z"]
     z_combined = np.concatenate([z_train, z_eval], axis=0)
 
-    # Build combined targets: vol(4) + loc(3) + shape(3) = 10 factors
+    # Build combined targets dynamically (shape dims depend on config)
     targets_list = []
-    for tgt_key in ["volume", "location", "shape"]:
+    factor_labels = []
+    for tgt_name, tgt_key in [("vol", "volume"), ("loc", "location"), ("shape", "shape")]:
         t_train = train_data.get(f"targets/{tgt_key}")
         t_eval = eval_data.get(f"targets/{tgt_key}")
         if t_train is not None and t_eval is not None:
-            targets_list.append(np.concatenate([t_train, t_eval], axis=0))
+            combined = np.concatenate([t_train, t_eval], axis=0)
+            # Ensure 2D
+            if combined.ndim == 1:
+                combined = combined.reshape(-1, 1)
+            targets_list.append(combined)
+            n_dims = combined.shape[1]
+            factor_labels.extend([f"{tgt_name}_{i}" for i in range(n_dims)])
 
     targets_combined = np.concatenate(targets_list, axis=1)
 
     dci_result = compute_dci(z_combined, targets_combined)
-
-    # Factor labels
-    factor_labels = (
-        [f"vol_{i}" for i in range(4)]
-        + [f"loc_{i}" for i in range(3)]
-        + [f"shape_{i}" for i in range(3)]
-    )
 
     return {
         "disentanglement": dci_result.disentanglement,
@@ -409,6 +421,32 @@ def compute_jacobian_analysis(
     return results
 
 
+def _compute_partition_indices_from_h5(h5_path: str) -> dict[str, tuple[int, int]]:
+    """Compute partition index ranges from actual H5 partition sizes.
+
+    Args:
+        h5_path: Path to any latent_*.h5 file.
+
+    Returns:
+        Dict mapping partition names to (start, end) index tuples.
+    """
+    with h5py.File(h5_path, "r") as f:
+        part_dims = {}
+        for name in ["vol", "loc", "shape", "residual"]:
+            if f"partitions/{name}" in f:
+                part_dims[name] = f[f"partitions/{name}"].shape[1]
+
+    # Build contiguous indices
+    indices = {}
+    offset = 0
+    for name in ["vol", "loc", "shape", "residual"]:
+        if name in part_dims:
+            indices[name] = (offset, offset + part_dims[name])
+            offset += part_dims[name]
+
+    return indices
+
+
 def main(run_dir: str) -> None:
     """Run full post-training evaluation.
 
@@ -418,14 +456,14 @@ def main(run_dir: str) -> None:
     paths = load_run_paths(run_dir)
     logger.info(f"Evaluating run: {paths.root}")
 
-    # Get partition indices
-    partition_indices = {name: (spec.start, spec.end) for name, spec in DEFAULT_PARTITIONS.items()}
-
     # Find available latent files
     latent_files = sorted(paths.latent.glob("latent_*.h5"))
     if not latent_files:
         logger.error("No latent H5 files found. Run training first.")
         return
+
+    # Compute partition indices from actual H5 data (more robust than DEFAULT_PARTITIONS)
+    partition_indices = _compute_partition_indices_from_h5(str(latent_files[0]))
 
     # Identify splits
     splits = {}

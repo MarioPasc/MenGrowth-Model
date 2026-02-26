@@ -82,7 +82,7 @@ class AuxiliarySemanticHeads(nn.Module):
         input_dim: Dimension of bottleneck features (768).
         volume_dim: Number of volume features (4: total, NCR, ED, ET).
         location_dim: Number of location features (3: x, y, z).
-        shape_dim: Number of shape features (3: sphericity, surface_area_log, solidity).
+        shape_dim: Number of shape features (3: sphericity, enhancement_ratio, infiltration_index).
         hidden_dim: Hidden dimension for MLPs.
         dropout: Dropout rate.
 

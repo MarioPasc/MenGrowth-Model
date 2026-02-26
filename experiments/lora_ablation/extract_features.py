@@ -105,6 +105,82 @@ class MultiScaleFeatureExtractor:
         return features
 
 
+class TumorAwarePoolExtractor:
+    """Extract tumor-aware pooled features using segmentation mask weighting.
+
+    Instead of GAP (Global Average Pooling) which pools equally over all
+    spatial positions, TAP (Tumor-Aware Pooling) uses the predicted WT
+    (Whole Tumor) segmentation probability to weight encoder features.
+
+    This addresses the signal dilution problem: tumors occupy 1-5% of the
+    192^3 volume, so 95%+ of GAP signal is non-tumor tissue.
+
+    Requires the full model (encoder + decoder) to produce segmentation.
+
+    Args:
+        full_model: Full model with forward_with_semantics or standard forward.
+        device: Device to use.
+        floor: Minimum weight for non-tumor regions (prevents zero-weight).
+    """
+
+    def __init__(
+        self,
+        full_model: torch.nn.Module,
+        device: str = "cuda",
+        floor: float = 0.01,
+    ):
+        self.full_model = full_model
+        self.device = device
+        self.floor = floor
+        self.full_model.eval()
+
+    @torch.no_grad()
+    def extract(
+        self,
+        x: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Extract TAP features.
+
+        Args:
+            x: Input tensor [B, 4, D, H, W].
+
+        Returns:
+            Dict with 'encoder10_tap' (768-dim TAP features) and
+            'encoder10_gap' (768-dim GAP features for comparison).
+        """
+        # Get hidden states from the encoder
+        hidden_states = self.full_model.model.encoder.swinViT(
+            x, self.full_model.model.encoder.normalize
+        )
+
+        # encoder10 features: [B, 768, S, S, S]
+        enc10 = self.full_model.model.encoder.encoder10(hidden_states[4])
+
+        # GAP baseline
+        gap_features = F.adaptive_avg_pool3d(enc10, 1).flatten(1)  # [B, 768]
+
+        # Get segmentation prediction for WT mask
+        pred = self.full_model(x)  # [B, 3, D, H, W]
+        wt_prob = torch.sigmoid(pred[:, 1:2])  # WT channel [B, 1, D, H, W]
+
+        # Downsample WT probability to encoder10 spatial size
+        enc_spatial = enc10.shape[2:]  # (S, S, S)
+        mask = F.adaptive_avg_pool3d(wt_prob, enc_spatial)  # [B, 1, S, S, S]
+
+        # Apply floor to prevent zero-weight regions
+        mask = mask + self.floor
+        # Normalize mask to sum to 1 over spatial dims
+        mask = mask / mask.sum(dim=(2, 3, 4), keepdim=True)
+
+        # Tumor-aware pooling: weighted sum over spatial dims
+        tap_features = (enc10 * mask).sum(dim=(2, 3, 4))  # [B, 768]
+
+        return {
+            "encoder10_gap": gap_features,
+            "encoder10_tap": tap_features,
+        }
+
+
 def load_encoder_for_condition(
     condition_name: str,
     config: dict,
@@ -164,6 +240,53 @@ def load_encoder_for_condition(
     return encoder
 
 
+def load_full_model_for_condition(
+    condition_name: str,
+    config: dict,
+    device: str,
+) -> torch.nn.Module | None:
+    """Load full model (encoder + decoder) for TAP extraction.
+
+    Returns None if no checkpoint is available (e.g. baseline_frozen without
+    a saved best_model.pt).
+
+    Args:
+        condition_name: Condition name.
+        config: Full experiment config.
+        device: Device.
+
+    Returns:
+        Full model in eval mode, or None.
+    """
+    from .model_factory import create_ablation_model, get_condition_config
+
+    output_dir = Path(config["experiment"]["output_dir"])
+    condition_dir = output_dir / "conditions" / condition_name
+    best_model_path = condition_dir / "best_model.pt"
+
+    if not best_model_path.exists():
+        logger.warning(f"No best_model.pt found for {condition_name}, skipping TAP")
+        return None
+
+    condition_config = get_condition_config(config, condition_name)
+    training_config = config["training"]
+
+    model = create_ablation_model(
+        condition_config=condition_config,
+        training_config=training_config,
+        checkpoint_path=config["paths"]["checkpoint"],
+        device=device,
+    )
+
+    # Load saved weights
+    state_dict = torch.load(best_model_path, map_location=device, weights_only=True)
+    model.load_state_dict(state_dict, strict=False)
+    model.eval()
+
+    logger.info(f"Loaded full model for TAP extraction: {condition_name}")
+    return model
+
+
 @torch.no_grad()
 def extract_features_for_split(
     encoder: torch.nn.Module,
@@ -176,6 +299,7 @@ def extract_features_for_split(
     h5_path: str | None = None,
     h5_split: str | None = None,
     use_amp: bool = False,
+    tap_extractor: TumorAwarePoolExtractor | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], list[str]]:
     """Extract features and semantic targets for a split.
 
@@ -190,6 +314,7 @@ def extract_features_for_split(
         h5_path: Optional path to H5 file (uses H5 backend if set).
         h5_split: Optional split name for H5 backend.
         use_amp: If True, use bf16 autocast to halve VRAM usage.
+        tap_extractor: Optional TAP extractor for tumor-aware features.
 
     Returns:
         Tuple of (features_dict, targets_dict, subject_ids).
@@ -233,6 +358,9 @@ def extract_features_for_split(
         "layers3": [],
         "layers4": [],
     }
+    if tap_extractor is not None:
+        all_features["encoder10_tap"] = []
+
     all_volumes = []
     all_locations = []
     all_shapes = []
@@ -243,12 +371,20 @@ def extract_features_for_split(
     for batch in tqdm(dataloader, desc="Extracting features"):
         images = batch["image"].to(device)
 
-        # Extract multi-scale features
+        # Extract multi-scale features (GAP)
         with amp_ctx:
             features = extractor.extract(images)
 
-        for key in all_features:
+        for key in ["encoder10", "multi_scale", "layers2", "layers3", "layers4"]:
             all_features[key].append(features[key].cpu().float().numpy())
+
+        # Extract TAP features (if enabled)
+        if tap_extractor is not None:
+            with amp_ctx:
+                tap_features = tap_extractor.extract(images)
+            all_features["encoder10_tap"].append(
+                tap_features["encoder10_tap"].cpu().float().numpy()
+            )
 
         # Semantic targets
         all_volumes.append(batch["semantic_features"]["volume"].numpy())
@@ -331,6 +467,17 @@ def extract_features(
     batch_size = fe_config.get("batch_size", 8)
     num_workers = config["training"].get("num_workers", 4)
     feature_level = fe_config.get("level", "multi_scale")
+    pooling_mode = fe_config.get("pooling_mode", "gap")
+
+    # Optional: load full model for TAP extraction
+    tap_extractor = None
+    if pooling_mode in ("tap", "both"):
+        full_model = load_full_model_for_condition(condition_name, config, device)
+        if full_model is not None:
+            tap_extractor = TumorAwarePoolExtractor(full_model, device)
+            logger.info("Tumor-Aware Pooling (TAP) enabled")
+        else:
+            logger.warning("TAP requested but no full model available, using GAP only")
 
     # Extract for sdp_train split (used for SDP projection and probe training)
     sdp_split_key = "sdp_train" if "sdp_train" in splits else "probe_train"
@@ -343,6 +490,7 @@ def extract_features(
         batch_size=batch_size,
         num_workers=num_workers,
         feature_level=feature_level,
+        tap_extractor=tap_extractor,
     )
     save_features(probe_features, probe_targets, probe_ids, condition_dir, "probe")
 
@@ -356,6 +504,7 @@ def extract_features(
         batch_size=batch_size,
         num_workers=num_workers,
         feature_level=feature_level,
+        tap_extractor=tap_extractor,
     )
     save_features(test_features, test_targets, test_ids, condition_dir, "test")
 

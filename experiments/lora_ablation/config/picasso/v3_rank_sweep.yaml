@@ -1,0 +1,181 @@
+# experiments/lora_ablation/config/picasso/v3_rank_sweep.yaml
+# LoRA v3 Rank Sweep — Picasso A100 80GB
+#
+# Strategy: Full v3 treatment (VICReg + boosted aux + semantic heads) on all
+# LoRA conditions. Only rank varies. Array job: 1 GPU per condition.
+#
+# Hardware: Picasso A100 80GB, 128 cores/node.
+# Key optimizations vs local config:
+#   - batch_size: 4 (bf16; A100 80GB fits 128^3 x4)
+#   - max_epochs: 200 (2x fewer steps/epoch -> 2x epochs)
+#   - patience: 40
+#   - num_workers: 16 (128 cores / 8 GPUs per node)
+#   - use_amp: true (native bf16 tensor cores)
+
+experiment:
+  name: lora_v3_rank_sweep
+  seed: 42
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/lora_v3_rank_sweep
+
+paths:
+  checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  data_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
+  h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men_train.h5
+  glioma_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/glioma/high_resolution
+
+data:
+  roi_size: [128, 128, 128]
+  feature_roi_size: [192, 192, 192]
+  spacing: [1.0, 1.0, 1.0]
+
+data_splits:
+  lora_train: 525
+  lora_val: 100
+  sdp_train: 225
+  test: 150
+
+# =============================================================================
+# 7 Conditions (Array ID 0-6)
+# =============================================================================
+conditions:
+  # Array ID 0: frozen reference
+  - name: baseline_frozen
+    lora_rank: null
+    skip_training: true
+    description: Original BrainSegFounder (completely frozen)
+
+  # Array ID 1: decoder-only reference
+  - name: baseline
+    lora_rank: null
+    description: Frozen encoder + trainable decoder (no adaptation)
+
+  # Array ID 2: LoRA r=4 + full v3 treatment
+  - name: lora_r4_full
+    lora_rank: 4
+    lora_alpha: 8
+    use_vicreg: true
+    lambda_aux_override: 0.3
+    description: LoRA r=4 + VICReg + lambda_aux=0.3
+
+  # Array ID 3: LoRA r=8 + full v3 treatment
+  - name: lora_r8_full
+    lora_rank: 8
+    lora_alpha: 16
+    use_vicreg: true
+    lambda_aux_override: 0.3
+    description: LoRA r=8 + VICReg + lambda_aux=0.3
+
+  # Array ID 4: LoRA r=16 + full v3 treatment
+  - name: lora_r16_full
+    lora_rank: 16
+    lora_alpha: 32
+    use_vicreg: true
+    lambda_aux_override: 0.3
+    description: LoRA r=16 + VICReg + lambda_aux=0.3
+
+  # Array ID 5: LoRA r=32 + full v3 treatment
+  - name: lora_r32_full
+    lora_rank: 32
+    lora_alpha: 64
+    use_vicreg: true
+    lambda_aux_override: 0.3
+    description: LoRA r=32 + VICReg + lambda_aux=0.3
+
+  # Array ID 6: LoRA r=64 + full v3 treatment (saturation test)
+  - name: lora_r64_full
+    lora_rank: 64
+    lora_alpha: 128
+    use_vicreg: true
+    lambda_aux_override: 0.3
+    description: LoRA r=64 + VICReg + lambda_aux=0.3 (saturation)
+
+# =============================================================================
+# Training — A100 optimized
+# =============================================================================
+training:
+  max_epochs: 200
+  early_stopping_patience: 40
+  batch_size: 4
+  lr_encoder: 1.0e-4
+  lr_decoder: 5.0e-4
+  weight_decay: 1.0e-5
+  num_workers: 16
+  lora_dropout: 0.1
+  gradient_clip: 1.0
+
+  decoder_type: "original"
+  freeze_decoder: false
+  use_semantic_heads: true
+
+  # Base lambda_aux (overridden per condition)
+  lambda_aux: 0.1
+
+  # Auxiliary warmup (scaled for 200 epochs)
+  aux_warmup_epochs: 10
+  aux_warmup_duration: 20
+
+  # VICReg (active for use_vicreg: true conditions)
+  lambda_var_enc: 5.0
+  lambda_cov_enc: 1.0
+  vicreg_gamma: 1.0
+
+  # Mixed precision
+  use_amp: true
+  grad_accum_steps: 1
+
+  # Gradient monitoring
+  enable_gradient_monitoring: true
+  gradient_monitor_freq: 50
+
+# =============================================================================
+# Loss
+# =============================================================================
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  lambda_volume: 1.0
+  lambda_location: 0.3
+  lambda_shape: 1.0
+
+# =============================================================================
+# Probes
+# =============================================================================
+probe:
+  alpha_linear: 1.0
+  use_mlp_probes: true
+  alpha_mlp: 0.01
+  hidden_sizes: [128]
+  normalize_features: true
+  normalize_targets: true
+
+# =============================================================================
+# Feature Extraction
+# =============================================================================
+feature_extraction:
+  level: encoder10
+  batch_size: 4
+  pooling_mode: both
+
+# =============================================================================
+# Domain Analysis
+# =============================================================================
+domain_analysis:
+  enabled: true
+  num_samples: 200
+
+# =============================================================================
+# Visualization
+# =============================================================================
+visualization:
+  umap_n_neighbors: 15
+  umap_min_dist: 0.1
+  color_by_semantic: true
+  show_variance_per_dim: true
+  show_scatter_plots: true
+
+logging:
+  log_every_n_steps: 10
+  val_check_interval: 1.0
+
+model_card:
+  enabled: true

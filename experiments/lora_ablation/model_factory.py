@@ -478,13 +478,16 @@ def _create_original_decoder_model(
             device=device,
         )
 
+        # Configurable target_stages (default [3, 4], option [2, 3, 4])
+        target_stages = condition_config.get("target_stages", [3, 4])
+
         # Wrap with LoRA/DoRA adapters
         lora_encoder = LoRASwinViT(
             full_model,
             rank=lora_rank,
             alpha=lora_alpha,
             dropout=0.1,
-            target_stages=[3, 4],
+            target_stages=target_stages,
             use_dora=use_dora,
         )
 

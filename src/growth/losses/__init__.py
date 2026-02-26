@@ -6,6 +6,7 @@ Phase 4 (Growth Prediction) uses closed-form GP/LME estimation, not neural losse
 """
 
 from .dcor import DistanceCorrelationLoss, distance_correlation
+from .encoder_vicreg import EncoderVICRegLoss
 from .sdp_loss import CurriculumSchedule, SDPLoss
 from .semantic import SemanticRegressionLoss
 from .vicreg import CovarianceLoss, VarianceHingeLoss
@@ -14,6 +15,7 @@ __all__ = [
     "SemanticRegressionLoss",
     "CovarianceLoss",
     "VarianceHingeLoss",
+    "EncoderVICRegLoss",
     "DistanceCorrelationLoss",
     "distance_correlation",
     "SDPLoss",

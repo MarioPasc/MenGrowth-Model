@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH -J ablation_train
-#SBATCH --time=2-00:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
@@ -116,8 +116,10 @@ fi
 python -c "
 from growth.data.bratsmendata import create_dataloaders
 from growth.losses.segmentation import SegmentationLoss3Ch, DiceMetric3Ch
+from growth.losses.encoder_vicreg import EncoderVICRegLoss
 from experiments.lora_ablation.model_factory import create_ablation_model
 from experiments.lora_ablation.run_ablation import main as run_ablation_main
+from experiments.lora_ablation.evaluate_feature_quality import evaluate_feature_quality_single
 print('All imports OK')
 "
 
@@ -162,6 +164,7 @@ print(cfg['experiment']['output_dir'])
 EXPECTED_FILES=(
     "${OUTPUT_DIR}/comprehensive_results.csv"
     "${OUTPUT_DIR}/test_dice_summary.csv"
+    "${OUTPUT_DIR}/feature_quality_comparison.csv"
 )
 
 MISSING=0

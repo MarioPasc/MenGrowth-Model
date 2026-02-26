@@ -130,6 +130,10 @@ class EnhancedLinearProbe:
 
         y_pred = self.model.predict(X_scaled)
 
+        # Ensure 2D for sklearn compatibility (single-target case)
+        if y_pred.ndim == 1:
+            y_pred = y_pred.reshape(-1, 1)
+
         if denormalize and self.target_scaler is not None:
             y_pred = self.target_scaler.inverse_transform(y_pred)
 
@@ -145,6 +149,10 @@ class EnhancedLinearProbe:
         Returns:
             Dict with 'r2', 'r2_per_dim', 'mse'.
         """
+        # Ensure 2D targets
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
+
         predictions = self.predict(X, denormalize=True)
 
         r2 = r2_score(y, predictions)
@@ -250,6 +258,10 @@ class MLPProbe:
 
         y_pred = self.model.predict(X_scaled)
 
+        # Ensure 2D for sklearn compatibility (single-target case)
+        if y_pred.ndim == 1:
+            y_pred = y_pred.reshape(-1, 1)
+
         if denormalize and self.target_scaler is not None:
             y_pred = self.target_scaler.inverse_transform(y_pred)
 
@@ -265,6 +277,10 @@ class MLPProbe:
         Returns:
             Dict with 'r2', 'r2_per_dim', 'mse'.
         """
+        # Ensure 2D targets
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
+
         predictions = self.predict(X, denormalize=True)
 
         r2 = r2_score(y, predictions)

@@ -33,11 +33,12 @@ class PartitionSpec:
 
 
 # Default partition layout: 128 dims total
+# Must match sdp_default.yaml: vol=24, loc=12, shape=12, residual=80
 DEFAULT_PARTITIONS: dict[str, PartitionSpec] = {
     "vol": PartitionSpec(name="vol", start=0, end=24, target_dim=4),
-    "loc": PartitionSpec(name="loc", start=24, end=32, target_dim=3),
-    "shape": PartitionSpec(name="shape", start=32, end=44, target_dim=3),
-    "residual": PartitionSpec(name="residual", start=44, end=128, target_dim=None),
+    "loc": PartitionSpec(name="loc", start=24, end=36, target_dim=3),
+    "shape": PartitionSpec(name="shape", start=36, end=48, target_dim=1),
+    "residual": PartitionSpec(name="residual", start=48, end=128, target_dim=None),
 }
 
 # Partitions with supervised regression targets

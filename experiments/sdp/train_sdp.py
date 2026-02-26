@@ -64,6 +64,7 @@ def save_latent_vectors_h5(
     output_dir: str,
     split_names: list[str],
     targets_by_split: dict[str, dict[str, torch.Tensor]] | None = None,
+    shape_indices: list[int] | None = None,
 ) -> None:
     """Project all splits through trained SDP and save latent vectors + targets.
 
@@ -77,6 +78,7 @@ def save_latent_vectors_h5(
         split_names: List of split names to process.
         targets_by_split: Optional dict of {split: {key: tensor}} with
             unnormalized targets to save alongside latent vectors.
+        shape_indices: Optional list of shape target column indices to keep.
     """
     module.eval()
     device = next(module.parameters()).device
@@ -90,7 +92,9 @@ def save_latent_vectors_h5(
             continue
 
         # Load features and targets from source H5
-        h, raw_targets = load_precomputed_features(str(h5_in))
+        h, raw_targets = load_precomputed_features(
+            str(h5_in), shape_indices=shape_indices
+        )
 
         # Load subject IDs
         with h5py.File(h5_in, "r") as f:
@@ -122,10 +126,13 @@ def save_latent_vectors_h5(
                 pred_grp.create_dataset(name, data=tensor.cpu().float().numpy(), compression="gzip")
 
             # Save unnormalized targets for downstream evaluation
+            # Use long-form keys matching evaluate_sdp.py expectations
+            target_key_map = {"vol": "volume", "loc": "location", "shape": "shape"}
             tgt_grp = f.create_group("targets")
             for name, tensor in targets_to_save.items():
                 data = tensor.cpu().numpy() if isinstance(tensor, torch.Tensor) else tensor
-                tgt_grp.create_dataset(name, data=data, compression="gzip")
+                save_key = target_key_map.get(name, name)
+                tgt_grp.create_dataset(save_key, data=data, compression="gzip")
 
             dt = h5py.special_dtype(vlen=str)
             f.create_dataset("subject_ids", data=subject_ids, dtype=dt)
@@ -170,9 +177,16 @@ def main(
     paths = create_run_dir(base_dir=base_dir, run_name=run_name)
     save_run_config(paths, cfg)
 
+    # Shape indices filtering (drop redundant features like surface_area_log)
+    shape_indices = list(cfg.targets.shape_indices) if cfg.targets.get("shape_indices") else None
+
     # Load features
-    h_train, targets_train = load_and_combine_splits(features_dir, train_split_names)
-    h_val, targets_val = load_precomputed_features(str(Path(features_dir) / f"{val_split_name}.h5"))
+    h_train, targets_train = load_and_combine_splits(
+        features_dir, train_split_names, shape_indices=shape_indices
+    )
+    h_val, targets_val = load_precomputed_features(
+        str(Path(features_dir) / f"{val_split_name}.h5"), shape_indices=shape_indices
+    )
 
     logger.info(f"Train: {h_train.shape[0]} samples, Val: {h_val.shape[0]} samples")
 
@@ -274,6 +288,7 @@ def main(
         features_dir=features_dir,
         output_dir=str(paths.latent),
         split_names=all_splits,
+        shape_indices=shape_indices,
     )
 
     # Auto-trigger evaluation and visualization (skippable)

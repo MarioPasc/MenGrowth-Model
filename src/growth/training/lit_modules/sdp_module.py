@@ -322,13 +322,21 @@ class SDPLitModule(pl.LightningModule):
         }
 
     def train_dataloader(self) -> DataLoader:
-        """Full-batch training dataloader."""
+        """Training dataloader with configurable batch size."""
         assert self._train_dataset is not None, "Call setup_data() first"
+        batch_size_cfg = self.cfg.training.get("batch_size", "full")
+        if batch_size_cfg == "full" or batch_size_cfg is None:
+            batch_size = len(self._train_dataset)
+            shuffle = False
+        else:
+            batch_size = int(batch_size_cfg)
+            shuffle = True
         return DataLoader(
             self._train_dataset,
-            batch_size=len(self._train_dataset),
-            shuffle=False,  # Full-batch, no shuffle needed
+            batch_size=batch_size,
+            shuffle=shuffle,
             num_workers=0,
+            drop_last=False,
         )
 
     def val_dataloader(self) -> DataLoader | None:

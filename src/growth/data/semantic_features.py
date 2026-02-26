@@ -311,6 +311,44 @@ def compute_aspect_ratios(
     }
 
 
+def compute_composition_features(
+    mask: np.ndarray,
+    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+) -> Dict[str, float]:
+    """Compute tumor composition features.
+
+    These features capture the internal makeup of the tumor as ratios
+    of component volumes, which are more encodable than geometric shape
+    features (since the encoder already represents component volumes well).
+
+    Args:
+        mask: Segmentation mask [D, H, W] with BraTS labels.
+        spacing: Voxel spacing in mm.
+
+    Returns:
+        Dictionary with:
+        - 'enhancement_ratio': V_ET / (V_total + eps), in [0, 1].
+          Measures tumor activity / aggressiveness.
+        - 'infiltration_index': V_ED / (V_NCR + V_ET + eps), >= 0.
+          Measures invasiveness (how much edema relative to solid tumor).
+    """
+    volumes = compute_volumes(mask, spacing)
+    eps = 1e-6
+
+    v_total = volumes["total"]
+    v_ncr = volumes["ncr"]
+    v_ed = volumes["ed"]
+    v_et = volumes["et"]
+
+    enhancement_ratio = v_et / (v_total + eps) if v_total > 0 else 0.0
+    infiltration_index = v_ed / (v_ncr + v_et + eps) if (v_ncr + v_et) > 0 else 0.0
+
+    return {
+        "enhancement_ratio": float(np.clip(enhancement_ratio, 0.0, 1.0)),
+        "infiltration_index": float(max(0.0, infiltration_index)),
+    }
+
+
 def compute_shape_features(
     mask: np.ndarray,
     spacing: Tuple[float, float, float] = DEFAULT_SPACING,
@@ -349,29 +387,31 @@ def compute_shape_array(
 ) -> np.ndarray:
     """Compute shape features as array.
 
-    Returns the 3 most reliable shape features for regression:
+    Returns 3 shape/composition features for regression:
     - sphericity: Shape compactness (0-1)
-    - surface_area_log: Log-transformed surface area
-    - solidity: Ratio of volume to convex hull (0-1)
+    - enhancement_ratio: V_ET / V_total — tumor activity (0-1)
+    - infiltration_index: V_ED / (V_NCR + V_ET) — invasiveness (>= 0)
 
-    Aspect ratios (aspect_dh, aspect_dw, aspect_hw) are excluded as they
-    showed poor R^2 in ablation experiments due to noise from bounding
-    box estimation on segmentation masks.
+    Previous features (surface_area_log, solidity) were replaced because:
+    - surface_area_log has r=0.993 with volume (redundant)
+    - solidity has ceiling R²=0.14 (not encodable)
+    - Enhancement ratio and infiltration index are functions of component
+      volumes, which the encoder already represents well.
 
     Args:
         mask: Segmentation mask [D, H, W]
         spacing: Voxel spacing in mm
 
     Returns:
-        Array of shape [3]: [sphericity, surface_area_log, solidity]
+        Array of shape [3]: [sphericity, enhancement_ratio, infiltration_index]
     """
-    features = compute_shape_features(mask, spacing)
+    composition = compute_composition_features(mask, spacing)
 
     return np.array(
         [
-            features["sphericity"],
-            features["surface_area_log"],
-            features["solidity"],
+            compute_sphericity(mask, spacing),
+            composition["enhancement_ratio"],
+            composition["infiltration_index"],
         ],
         dtype=np.float32,
     )
