@@ -133,13 +133,16 @@ echo ""
 # ========================================================================
 echo "Submitting training array job..."
 
-ARRAY_JOB_ID=$(sbatch --parsable \
+ARRAY_JOB_RAW=$(sbatch --parsable \
     --array=0-6 \
     --job-name="v3_rank" \
     --output="${SLURM_LOG_DIR}/train_%a_%j.out" \
     --error="${SLURM_LOG_DIR}/train_%a_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
     "${SCRIPT_DIR}/train_worker_v3.sh")
+
+# --parsable on array jobs may return "JOBID;cluster" or "JOBID_0" — extract base ID
+ARRAY_JOB_ID="${ARRAY_JOB_RAW%%[_;]*}"
 
 echo "  Array job ID: ${ARRAY_JOB_ID} (7 elements, 0-6)"
 echo ""
@@ -152,6 +155,7 @@ echo "Submitting analysis job (dependent on array ${ARRAY_JOB_ID})..."
 ANALYSIS_JOB_ID=$(sbatch --parsable \
     --dependency="afterok:${ARRAY_JOB_ID}" \
     --job-name="v3_analysis" \
+    --constraint=cpu \
     --output="${SLURM_LOG_DIR}/analysis_%j.out" \
     --error="${SLURM_LOG_DIR}/analysis_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \

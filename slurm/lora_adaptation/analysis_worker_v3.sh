@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:0
+#SBATCH --constraint=cpu
 
 # =============================================================================
 # LORA V3 — ANALYSIS WORKER (CPU-only)
