@@ -48,59 +48,128 @@ PAUL_TOL_MUTED = [
 # =============================================================================
 
 CONDITION_COLORS = {
+    # v2 conditions (Paul Tol)
     "baseline": "#BBBBBB",  # Grey - frozen encoder (reference)
     "lora_r2": "#88CCEE",  # Light cyan - minimal adaptation (lower bound)
     "lora_r4": "#66CCEE",  # Cyan - light adaptation
     "lora_r8": "#4477AA",  # Blue - moderate adaptation
     "lora_r16": "#228833",  # Green - strong adaptation
     "lora_r32": "#117733",  # Dark green - maximum adaptation (saturation test)
+    # v3 conditions (Wong 2011)
+    "baseline_frozen": "#999999",  # Gray
+    "lora_r4_full": "#56B4E9",  # Sky blue
+    "lora_r8_full": "#009E73",  # Bluish green
+    "lora_r16_full": "#F0E442",  # Yellow
+    "lora_r32_full": "#0072B2",  # Blue
+    "lora_r64_full": "#D55E00",  # Vermillion
+    # DoRA conditions
+    "dora_r2": "#b2df8a",
+    "dora_r4": "#6a3d9a",
+    "dora_r8": "#cab2d6",
+    "dora_r16": "#fb9a99",
+    "dora_r32": "#fdbf6f",
 }
 
 CONDITION_MARKERS = {
     "baseline": "o",  # Circle
+    "baseline_frozen": "X",  # X marker
     "lora_r2": "v",  # Triangle down
     "lora_r4": "s",  # Square
     "lora_r8": "D",  # Diamond
     "lora_r16": "^",  # Triangle up
     "lora_r32": "p",  # Pentagon
+    "lora_r4_full": "s",
+    "lora_r8_full": "D",
+    "lora_r16_full": "^",
+    "lora_r32_full": "p",
+    "lora_r64_full": "h",  # Hexagon
+    "dora_r2": "v",
+    "dora_r4": "s",
+    "dora_r8": "D",
+    "dora_r16": "^",
+    "dora_r32": "p",
 }
 
 CONDITION_LINESTYLES = {
     "baseline": "--",  # Dashed (reference)
+    "baseline_frozen": ":",  # Dotted (frozen reference)
     "lora_r2": "-",  # Solid
     "lora_r4": "-",  # Solid
     "lora_r8": "-",  # Solid
     "lora_r16": "-",  # Solid
     "lora_r32": "-",  # Solid
+    "lora_r4_full": "-",
+    "lora_r8_full": "-",
+    "lora_r16_full": "-",
+    "lora_r32_full": "-",
+    "lora_r64_full": "-",
+    "dora_r2": "-.",  # Dash-dot (DoRA)
+    "dora_r4": "-.",
+    "dora_r8": "-.",
+    "dora_r16": "-.",
+    "dora_r32": "-.",
 }
 
 CONDITION_HATCHES = {
     "baseline": "//",  # Diagonal stripes
+    "baseline_frozen": "xx",  # Cross-hatch (frozen)
     "lora_r2": None,  # Solid
     "lora_r4": None,  # Solid
     "lora_r8": None,  # Solid
     "lora_r16": None,  # Solid
     "lora_r32": "\\\\",  # Back diagonal (saturation marker)
+    "lora_r4_full": None,
+    "lora_r8_full": None,
+    "lora_r16_full": None,
+    "lora_r32_full": None,
+    "lora_r64_full": "\\\\",
+    "dora_r2": None,
+    "dora_r4": None,
+    "dora_r8": None,
+    "dora_r16": None,
+    "dora_r32": None,
 }
 
-# LaTeX-formatted labels for conditions
+# Display labels for conditions (human-readable)
 CONDITION_LABELS = {
-    "baseline": r"Baseline (Frozen)",
-    "lora_r2": r"LoRA $r{=}2$",
-    "lora_r4": r"LoRA $r{=}4$",
-    "lora_r8": r"LoRA $r{=}8$",
-    "lora_r16": r"LoRA $r{=}16$",
-    "lora_r32": r"LoRA $r{=}32$",
+    "baseline": "Baseline",
+    "baseline_frozen": "Frozen",
+    "lora_r2": "LoRA r=2",
+    "lora_r4": "LoRA r=4",
+    "lora_r8": "LoRA r=8",
+    "lora_r16": "LoRA r=16",
+    "lora_r32": "LoRA r=32",
+    "lora_r4_full": "LoRA r=4",
+    "lora_r8_full": "LoRA r=8",
+    "lora_r16_full": "LoRA r=16",
+    "lora_r32_full": "LoRA r=32",
+    "lora_r64_full": "LoRA r=64",
+    "dora_r2": "DoRA r=2",
+    "dora_r4": "DoRA r=4",
+    "dora_r8": "DoRA r=8",
+    "dora_r16": "DoRA r=16",
+    "dora_r32": "DoRA r=32",
 }
 
-# Short labels for tight spaces
+# Short labels for tight spaces (axis ticks)
 CONDITION_LABELS_SHORT = {
     "baseline": "Base",
+    "baseline_frozen": "Frozen",
     "lora_r2": "r=2",
     "lora_r4": "r=4",
     "lora_r8": "r=8",
     "lora_r16": "r=16",
     "lora_r32": "r=32",
+    "lora_r4_full": "r=4",
+    "lora_r8_full": "r=8",
+    "lora_r16_full": "r=16",
+    "lora_r32_full": "r=32",
+    "lora_r64_full": "r=64",
+    "dora_r2": "dr=2",
+    "dora_r4": "dr=4",
+    "dora_r8": "dr=8",
+    "dora_r16": "dr=16",
+    "dora_r32": "dr=32",
 }
 
 # =============================================================================
@@ -434,3 +503,137 @@ def get_figure_size(
 
     ratio = height_ratio or PLOT_SETTINGS["figure_height_ratio"]
     return (w, w * ratio)
+
+
+# =============================================================================
+# V3 Condition Registries
+# =============================================================================
+
+V3_CONDITIONS: list[str] = [
+    "baseline_frozen",
+    "baseline",
+    "lora_r4_full",
+    "lora_r8_full",
+    "lora_r16_full",
+    "lora_r32_full",
+    "lora_r64_full",
+]
+
+V3_SHAPE_LABELS: list[str] = [
+    "Sphericity",
+    "Enhancement Ratio",
+    "Infiltration Index",
+]
+
+V3_FEATURE_TYPES: list[str] = ["volume", "location", "shape"]
+
+V3_FEATURE_LABELS: dict[str, str] = {
+    "volume": "Volume",
+    "location": "Location",
+    "shape": "Shape",
+}
+
+# =============================================================================
+# Condition Ordering Lists
+# =============================================================================
+
+CONDITION_ORDER_V2: list[str] = [
+    "baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32",
+]
+
+CONDITION_ORDER_V3: list[str] = list(V3_CONDITIONS)
+
+CONDITION_ORDER_LORA: list[str] = [
+    "baseline_frozen", "baseline",
+    "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32",
+]
+
+CONDITION_ORDER_DORA: list[str] = [
+    "baseline_frozen", "baseline",
+    "dora_r2", "dora_r4", "dora_r8", "dora_r16", "dora_r32",
+]
+
+CONDITION_ORDER_ALL: list[str] = [
+    "baseline_frozen", "baseline",
+    "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32",
+    "dora_r2", "dora_r4", "dora_r8", "dora_r16", "dora_r32",
+]
+
+RANKS: list[int] = [2, 4, 8, 16, 32]
+
+# =============================================================================
+# Probe / DCI / Adapter Colors
+# =============================================================================
+
+PROBE_COLORS: dict[str, str] = {
+    "linear": "#0072B2",  # Blue
+    "mlp": "#D55E00",  # Vermillion
+}
+
+DCI_COLORS: dict[str, str] = {
+    "D": "#0072B2",  # Blue
+    "C": "#009E73",  # Green
+    "I": "#D55E00",  # Vermillion
+}
+
+ADAPTER_COLORS: dict[str, str] = {
+    "lora": "#1f78b4",
+    "dora": "#6a3d9a",
+}
+
+# =============================================================================
+# Experiment Labels (for report directory naming)
+# =============================================================================
+
+EXPERIMENT_LABELS: dict[str, str] = {
+    "lora_ablation_semantic_heads": "LoRA + Semantic",
+    "lora_ablation_no_semantic_heads": "LoRA",
+    "dora_ablation_semantic_heads": "DoRA + Semantic",
+    "dora_ablation_no_semantic_heads": "DoRA",
+}
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+
+def get_color(condition: str) -> str:
+    """Get color for a condition, with fallback for unknown conditions.
+
+    Args:
+        condition: Condition name.
+
+    Returns:
+        Hex color string.
+    """
+    return CONDITION_COLORS.get(condition, "#808080")
+
+
+def get_label(condition: str) -> str:
+    """Get display label for a condition, with fallback.
+
+    Args:
+        condition: Condition name.
+
+    Returns:
+        Human-readable label.
+    """
+    return CONDITION_LABELS.get(condition, condition)
+
+
+def short_label(condition: str) -> str:
+    """Convert condition name to short plot label.
+
+    Args:
+        condition: Full condition name (e.g. 'lora_r8').
+
+    Returns:
+        Short label for axis ticks (e.g. 'r8').
+    """
+    return CONDITION_LABELS_SHORT.get(
+        condition,
+        condition.replace("baseline_frozen", "frozen")
+        .replace("baseline", "base")
+        .replace("lora_", "r")
+        .replace("dora_", "dr"),
+    )

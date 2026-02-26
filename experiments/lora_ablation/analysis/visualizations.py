@@ -64,20 +64,13 @@ logger = logging.getLogger(__name__)
 if HAS_MATPLOTLIB:
     set_publication_style()
 
-# Import v3 style for consistent colors/labels
-from .v3_style import V3_COLORS, V3_LABELS, V3_SHAPE_LABELS, get_color, get_label
-
-# Color palette for conditions (v2 legacy + v3 conditions)
-CONDITION_COLORS = {
-    'baseline': '#808080',
-    'lora_r2': '#a6cee3',
-    'lora_r4': '#1f78b4',
-    'lora_r8': '#33a02c',
-    'lora_r16': '#ff7f00',
-    'lora_r32': '#e31a1c',
-    # v3 conditions (colorblind-safe Wong 2011)
-    **V3_COLORS,
-}
+# Consolidated style constants
+from experiments.utils.settings import (
+    CONDITION_COLORS,
+    V3_SHAPE_LABELS,
+    get_color,
+    get_label,
+)
 
 
 def load_condition_data(

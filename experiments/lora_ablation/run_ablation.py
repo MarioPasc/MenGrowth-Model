@@ -44,11 +44,11 @@ import yaml
 from growth.utils.seed import set_seed
 from growth.utils.reproducibility import save_reproducibility_artifacts
 
-from .data_splits import main as generate_splits, load_splits
-from .domain_visualizations import generate_domain_figures
-from .extract_domain_features import extract_domain_features
-from .evaluate_dice import TestDiceEvaluator, generate_dice_summary, save_dice_results
-from .generate_tables import (
+from .pipeline.data_splits import main as generate_splits, load_splits
+from .analysis.domain_visualizations import generate_domain_figures
+from .pipeline.extract_domain_features import extract_domain_features
+from .pipeline.evaluate_dice import TestDiceEvaluator, generate_dice_summary, save_dice_results
+from .analysis.generate_tables import (
     load_all_metrics as load_all_metrics_tables,
     generate_comprehensive_csv,
     generate_comprehensive_latex,
@@ -138,7 +138,7 @@ def run_train(
     device: str = "cuda",
 ) -> None:
     """Train a single condition."""
-    from .train_condition import main as train_main
+    from .pipeline.train_condition import main as train_main
 
     logger.info(f"Training condition: {condition}")
     train_main(config_path, condition, max_epochs, device)
@@ -174,7 +174,7 @@ def run_extract(
     device: str = "cuda",
 ) -> None:
     """Extract features for a condition."""
-    from .extract_features import main as extract_main
+    from .pipeline.extract_features import main as extract_main
 
     logger.info(f"Extracting features for: {condition}")
     extract_main(config_path, condition, device)
@@ -250,7 +250,7 @@ def run_probes(
     device: str = "cuda",
 ) -> None:
     """Evaluate probes for a condition."""
-    from .evaluate_probes import main as probes_main
+    from .pipeline.evaluate_probes import main as probes_main
 
     logger.info(f"Evaluating probes for: {condition}")
     probes_main(config_path, condition, device)
@@ -284,7 +284,7 @@ def run_visualize(config_path: str) -> None:
     logger.info("STEP 7: Generating Visualizations")
     logger.info("=" * 60)
 
-    from .visualizations import main as viz_main
+    from .analysis.visualizations import main as viz_main
     viz_main(config_path)
 
 
@@ -295,7 +295,7 @@ def run_test_dice(
     device: str = "cuda",
 ) -> None:
     """Evaluate test Dice for a single condition."""
-    from .evaluate_dice import main as evaluate_dice_main
+    from .pipeline.evaluate_dice import main as evaluate_dice_main
 
     logger.info(f"Evaluating test Dice for: {condition}")
     evaluate_dice_main(config_path, condition, dataset, device=device)
@@ -387,7 +387,7 @@ def run_analysis(config_path: str, glioma_features_path: Optional[str] = None) -
     logger.info("STEP 9: Statistical Analysis")
     logger.info("=" * 60)
 
-    from .analyze_results import analyze_results
+    from .analysis.analyze_results import analyze_results
     analyze_results(config_path, glioma_features_path=glioma_features_path)
 
 
@@ -400,7 +400,7 @@ def run_feature_quality(
     logger.info("STEP: Feature Quality Evaluation")
     logger.info("=" * 60)
 
-    from .evaluate_feature_quality import main as feature_quality_main
+    from .pipeline.evaluate_feature_quality import main as feature_quality_main
     feature_quality_main(config_path, condition)
 
 
@@ -410,7 +410,7 @@ def run_feature_quality_all(config_path: str) -> None:
     logger.info("STEP: Feature Quality Evaluation (All Conditions)")
     logger.info("=" * 60)
 
-    from .evaluate_feature_quality import main as feature_quality_main
+    from .pipeline.evaluate_feature_quality import main as feature_quality_main
     feature_quality_main(config_path, condition=None)
 
 
@@ -425,7 +425,7 @@ def run_regenerate(
     logger.info("STEP: Regenerate Analysis")
     logger.info("=" * 60)
 
-    from .regenerate_analysis import main as regenerate_main
+    from .analysis.regenerate_analysis import main as regenerate_main
     regenerate_main(config_path, skip_cache, figures_only, tables_only)
 
 
@@ -435,7 +435,7 @@ def run_enhanced_diagnostics(config_path: str) -> None:
     logger.info("STEP 10: Enhanced Diagnostics")
     logger.info("=" * 60)
 
-    from .enhanced_diagnostics import run_comprehensive_diagnostics
+    from .analysis.enhanced_diagnostics import run_comprehensive_diagnostics
     run_comprehensive_diagnostics(config_path)
 
 

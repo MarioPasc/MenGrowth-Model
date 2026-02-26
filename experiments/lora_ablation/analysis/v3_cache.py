@@ -20,7 +20,7 @@ import numpy as np
 import torch
 import yaml
 
-from .v3_style import V3_CONDITIONS
+from experiments.utils.settings import V3_CONDITIONS
 
 logger = logging.getLogger(__name__)
 

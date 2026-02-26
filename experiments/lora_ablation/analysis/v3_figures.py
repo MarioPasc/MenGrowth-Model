@@ -17,16 +17,19 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from .v3_style import (
+from experiments.utils.settings import (
     V3_CONDITIONS,
     V3_SHAPE_LABELS,
     PROBE_COLORS,
     DCI_COLORS,
-    FIGURE_DPI,
-    apply_v3_style,
+    PLOT_SETTINGS,
+    apply_ieee_style,
     get_color,
     get_label,
 )
+
+FIGURE_DPI = PLOT_SETTINGS["dpi_print"]
+apply_v3_style = apply_ieee_style
 
 logger = logging.getLogger(__name__)
 

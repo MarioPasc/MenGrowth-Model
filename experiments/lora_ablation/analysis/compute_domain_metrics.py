@@ -66,50 +66,15 @@ except ImportError:
     HAS_SEABORN = False
     sns = None
 
+from experiments.utils.settings import (
+    CONDITION_COLORS,
+    CONDITION_ORDER_ALL as CONDITION_ORDER,
+    DOMAIN_COLORS,
+    EXPERIMENT_LABELS,
+    short_label as _short_label,
+)
+
 logger = logging.getLogger(__name__)
-
-# Canonical condition order
-CONDITION_ORDER = [
-    "baseline_frozen",
-    "baseline",
-    "lora_r2",
-    "lora_r4",
-    "lora_r8",
-    "lora_r16",
-    "lora_r32",
-    "dora_r2",
-    "dora_r4",
-    "dora_r8",
-    "dora_r16",
-    "dora_r32",
-]
-
-CONDITION_COLORS = {
-    "baseline_frozen": "#a0a0a0",
-    "baseline": "#808080",
-    "lora_r2": "#a6cee3",
-    "lora_r4": "#1f78b4",
-    "lora_r8": "#33a02c",
-    "lora_r16": "#ff7f00",
-    "lora_r32": "#e31a1c",
-    "dora_r2": "#a6cee3",
-    "dora_r4": "#1f78b4",
-    "dora_r8": "#33a02c",
-    "dora_r16": "#ff7f00",
-    "dora_r32": "#e31a1c",
-}
-
-EXPERIMENT_LABELS = {
-    "lora_ablation_semantic_heads": "LoRA + Sem",
-    "lora_ablation_no_semantic_heads": "LoRA",
-    "dora_ablation_semantic_heads": "DoRA + Sem",
-    "dora_ablation_no_semantic_heads": "DoRA",
-}
-
-DOMAIN_COLORS = {
-    "glioma": "#b2182b",
-    "meningioma": "#2166ac",
-}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -264,16 +229,6 @@ def save_summary_csv(results: Dict[str, dict], output_dir: Path) -> Path:
 # Visualizations
 # ─────────────────────────────────────────────────────────────────────
 
-def _short_label(cond: str) -> str:
-    """Shorten condition name for plot labels."""
-    return (
-        cond.replace("baseline_frozen", "frozen")
-        .replace("baseline", "base")
-        .replace("lora_", "r")
-        .replace("dora_", "dr")
-    )
-
-
 def _save_figure(fig, path: Path) -> None:
     """Save figure as both PDF and PNG."""
     for ext in ["pdf", "png"]:
@@ -341,7 +296,7 @@ def plot_umap_grid(
 ) -> None:
     """Fig 2: UMAP grid for frozen baseline vs best adapted condition."""
     try:
-        from experiments.lora_ablation.domain_visualizations import plot_domain_umap
+        from experiments.lora_ablation.analysis.domain_visualizations import plot_domain_umap
     except ImportError:
         logger.warning("Cannot import plot_domain_umap, skipping UMAP grid")
         return

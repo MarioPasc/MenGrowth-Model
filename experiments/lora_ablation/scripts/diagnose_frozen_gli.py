@@ -36,8 +36,8 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from experiments.lora_ablation.data_splits import load_splits
-from experiments.lora_ablation.extract_domain_features import BraTSGLIDataset
+from experiments.lora_ablation.pipeline.data_splits import load_splits
+from experiments.lora_ablation.pipeline.extract_domain_features import BraTSGLIDataset
 from growth.data.bratsmendata import BraTSMENDataset
 from growth.data.transforms import (
     DEFAULT_ROI_SIZE,

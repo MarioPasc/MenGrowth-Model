@@ -64,7 +64,7 @@ echo "  [OK] Feature quality complete"
 
 # Step 2: Regenerate analysis (figures, tables, reports)
 echo "[2/2] Regenerating analysis..."
-python -m experiments.lora_ablation.regenerate_analysis \
+python -m experiments.lora_ablation.analysis.regenerate_analysis \
     --config "${CONFIG_PATH}"
 echo "  [OK] Analysis regenerated"
 

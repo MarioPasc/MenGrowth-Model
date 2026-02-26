@@ -177,7 +177,7 @@ def _generate_feature_quality_latex(
 ) -> None:
     """Generate feature quality LaTeX table."""
     from datetime import datetime
-    from .v3_style import get_label
+    from experiments.utils.settings import get_label
 
     fq_by_cond = {}
     for cond_cfg in config["conditions"]:
@@ -269,7 +269,7 @@ def _generate_recommendation(
     reports_dir: Path,
 ) -> None:
     """Generate a short recommendation based on probe metrics."""
-    from .v3_style import get_label
+    from experiments.utils.settings import get_label
 
     best_name: Optional[str] = None
     best_r2: float = -float("inf")

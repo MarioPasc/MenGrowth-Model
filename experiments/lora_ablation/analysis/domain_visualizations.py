@@ -36,24 +36,9 @@ try:
 except ImportError:
     HAS_UMAP = False
 
+from experiments.utils.settings import CONDITION_COLORS, DOMAIN_COLORS
+
 logger = logging.getLogger(__name__)
-
-# Color scheme for domains
-DOMAIN_COLORS = {
-    "meningioma": "#2166ac",  # Blue
-    "glioma": "#b2182b",      # Red
-}
-
-# Color scheme for conditions
-CONDITION_COLORS = {
-    "baseline": "#808080",
-    "baseline_frozen": "#a0a0a0",
-    "lora_r2": "#a6cee3",
-    "lora_r4": "#1f78b4",
-    "lora_r8": "#33a02c",
-    "lora_r16": "#ff7f00",
-    "lora_r32": "#e31a1c",
-}
 
 
 def plot_domain_feature_distributions(
