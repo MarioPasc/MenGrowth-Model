@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH -J v3_rank_train
-#SBATCH --time=12:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G

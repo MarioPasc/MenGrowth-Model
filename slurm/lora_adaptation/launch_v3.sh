@@ -32,6 +32,17 @@ export REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-M
 export CONDA_ENV_NAME="growth"
 export CONFIG_PATH="${REPO_SRC}/experiments/lora_ablation/config/picasso/v3_rank_sweep.yaml"
 
+echo "Activating conda environment: ${CONDA_ENV_NAME}"
+if command -v conda >/dev/null 2>&1; then
+    source "$(conda info --base)/etc/profile.d/conda.sh" || true
+    conda activate "${CONDA_ENV_NAME}" 2>/dev/null || source activate "${CONDA_ENV_NAME}"
+else
+    source activate "${CONDA_ENV_NAME}"
+fi
+
+echo "  Python: $(which python)"
+echo "  Version: $(python --version)"
+echo ""
 # Extract output dir from config
 OUTPUT_DIR=$(python3 -c "
 import yaml
