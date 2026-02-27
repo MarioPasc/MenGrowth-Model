@@ -640,10 +640,21 @@ def train_epoch(
                 vicreg_feature_buffer.append(outputs["features"])
 
         # Backward pass for seg+aux only (outside autocast — gradients in fp32)
-        (loss / grad_accum_steps).backward()
+        # retain_graph on the last micro-batch before a step boundary so VICReg
+        # can still backprop through the features from that forward pass.
+        is_step_boundary = (
+            (batch_idx + 1) % grad_accum_steps == 0
+            or (batch_idx + 1) == len(dataloader)
+        )
+        need_retain = (
+            vicreg_loss_fn is not None
+            and is_step_boundary
+            and vicreg_feature_buffer  # has buffered features needing grad
+        )
+        (loss / grad_accum_steps).backward(retain_graph=need_retain)
 
         # Step at accumulation boundaries or last batch
-        if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader):
+        if is_step_boundary:
             # Compute VICReg on accumulated features (better statistics)
             step_vicreg_loss = 0.0
             step_vicreg_components: dict[str, float] = {}
