@@ -468,6 +468,12 @@ def extract_features(
     num_workers = config["training"].get("num_workers", 4)
     feature_level = fe_config.get("level", "multi_scale")
     pooling_mode = fe_config.get("pooling_mode", "gap")
+    use_amp = config["training"].get("use_amp", False)
+
+    # H5 backend (preferred — avoids NIfTI file I/O)
+    h5_path = config.get("paths", {}).get("h5_file")
+    if h5_path:
+        logger.info(f"Using H5 backend: {h5_path}")
 
     # Optional: load full model for TAP extraction
     tap_extractor = None
@@ -490,6 +496,9 @@ def extract_features(
         batch_size=batch_size,
         num_workers=num_workers,
         feature_level=feature_level,
+        h5_path=h5_path,
+        h5_split=sdp_split_key,
+        use_amp=use_amp,
         tap_extractor=tap_extractor,
     )
     save_features(probe_features, probe_targets, probe_ids, condition_dir, "probe")
@@ -504,6 +513,9 @@ def extract_features(
         batch_size=batch_size,
         num_workers=num_workers,
         feature_level=feature_level,
+        h5_path=h5_path,
+        h5_split="test",
+        use_amp=use_amp,
         tap_extractor=tap_extractor,
     )
     save_features(test_features, test_targets, test_ids, condition_dir, "test")

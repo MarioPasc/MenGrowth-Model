@@ -1,13 +1,13 @@
 # experiments/lora_ablation/config/picasso/v3_rank_sweep.yaml
-# LoRA v3 Rank Sweep — Picasso A100 80GB
+# LoRA v3 Rank Sweep — Picasso A100 40GB
 #
 # Strategy: Full v3 treatment (VICReg + boosted aux + semantic heads) on all
 # LoRA conditions. Only rank varies. Array job: 1 GPU per condition.
 #
-# Hardware: Picasso A100 80GB, 128 cores/node.
+# Hardware: Picasso A100 40GB, 128 cores/node.
 # Key optimizations vs local config:
-#   - batch_size: 4 (bf16; A100 80GB fits 128^3 x4)
-#   - max_epochs: 200 (2x fewer steps/epoch -> 2x epochs)
+#   - batch_size: 2 + grad_accum_steps: 2 (effective batch 4; fits 40GB)
+#   - max_epochs: 200
 #   - patience: 40
 #   - num_workers: 16 (128 cores / 8 GPUs per node)
 #   - use_amp: true (native bf16 tensor cores)
@@ -95,7 +95,7 @@ conditions:
 training:
   max_epochs: 200
   early_stopping_patience: 40
-  batch_size: 4
+  batch_size: 2
   lr_encoder: 1.0e-4
   lr_decoder: 5.0e-4
   weight_decay: 1.0e-5
@@ -119,9 +119,14 @@ training:
   lambda_cov_enc: 1.0
   vicreg_gamma: 1.0
 
-  # Mixed precision
+  # LR schedule: warmup → ReduceLROnPlateau
+  lr_warmup_epochs: 5
+  lr_reduce_factor: 0.5
+  lr_reduce_patience: 10
+
+  # Mixed precision + gradient accumulation (effective batch = 2 × 2 = 4)
   use_amp: true
-  grad_accum_steps: 1
+  grad_accum_steps: 2
 
   # Gradient monitoring
   enable_gradient_monitoring: true
