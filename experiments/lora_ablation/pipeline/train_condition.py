@@ -646,7 +646,7 @@ def train_epoch(
             (batch_idx + 1) % grad_accum_steps == 0
             or (batch_idx + 1) == len(dataloader)
         )
-        need_retain = (
+        need_retain = bool(
             vicreg_loss_fn is not None
             and is_step_boundary
             and vicreg_feature_buffer  # has buffered features needing grad
