@@ -198,12 +198,12 @@ class AuxiliarySemanticLoss(nn.Module):
             location: Location targets [N, 3].
             shape: Shape targets [N, 3].
         """
-        self.volume_mean = volume.mean(dim=0)
-        self.volume_std = volume.std(dim=0).clamp(min=1e-6)
-        self.location_mean = location.mean(dim=0)
-        self.location_std = location.std(dim=0).clamp(min=1e-6)
-        self.shape_mean = shape.mean(dim=0)
-        self.shape_std = shape.std(dim=0).clamp(min=1e-6)
+        self.volume_mean.copy_(volume.mean(dim=0))
+        self.volume_std.copy_(volume.std(dim=0).clamp(min=1e-6))
+        self.location_mean.copy_(location.mean(dim=0))
+        self.location_std.copy_(location.std(dim=0).clamp(min=1e-6))
+        self.shape_mean.copy_(shape.mean(dim=0))
+        self.shape_std.copy_(shape.std(dim=0).clamp(min=1e-6))
         self._stats_initialized = True
 
         logger.info("Target statistics updated for normalization")

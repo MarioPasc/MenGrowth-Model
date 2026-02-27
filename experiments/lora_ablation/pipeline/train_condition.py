@@ -37,8 +37,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import yaml
+import numpy as np
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -154,6 +155,7 @@ def _run_validation_only(
     condition_dir.mkdir(parents=True, exist_ok=True)
 
     # Create validation dataloader
+    # H5 backend: val uses 192³ (100% tumor containment) at batch_size=1.
     logger.info("Creating validation dataloader...")
     h5_path = config.get("paths", {}).get("h5_file")
     _, val_loader = create_dataloaders(
@@ -165,6 +167,7 @@ def _run_validation_only(
         compute_semantic=False,
         augment_train=False,
         h5_path=h5_path,
+        val_batch_size=training_config.get("val_batch_size", 1),
     )
 
     # Create model (completely frozen)
@@ -408,8 +411,8 @@ def create_optimizer(
     config: dict,
     is_baseline: bool,
     decoder_type: str,
-) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-    """Create optimizer with separate param groups.
+) -> tuple[torch.optim.Optimizer, dict]:
+    """Create optimizer with separate param groups and warmup+plateau scheduler.
 
     Args:
         model: The model to optimize.
@@ -418,7 +421,8 @@ def create_optimizer(
         decoder_type: "lightweight" or "original".
 
     Returns:
-        Tuple of (optimizer, scheduler).
+        Tuple of (optimizer, scheduler_info) where scheduler_info is a dict
+        with 'warmup', 'plateau', and 'warmup_epochs' keys.
     """
     training_config = config["training"]
 
@@ -447,13 +451,25 @@ def create_optimizer(
         weight_decay=training_config["weight_decay"],
     )
 
-    scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=training_config["max_epochs"],
-        eta_min=1e-7,
+    warmup_epochs = training_config.get("lr_warmup_epochs", 5)
+
+    warmup_scheduler = LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs,
+    )
+    plateau_scheduler = ReduceLROnPlateau(
+        optimizer, mode='max',
+        factor=training_config.get("lr_reduce_factor", 0.5),
+        patience=training_config.get("lr_reduce_patience", 10),
+        min_lr=1e-7,
     )
 
-    return optimizer, scheduler
+    scheduler_info = {
+        'warmup': warmup_scheduler,
+        'plateau': plateau_scheduler,
+        'warmup_epochs': warmup_epochs,
+    }
+
+    return optimizer, scheduler_info
 
 
 # =============================================================================
@@ -556,7 +572,13 @@ def train_epoch(
     total_vicreg_var = 0.0
     total_vicreg_cov = 0.0
     total_loss = 0.0
+    total_variance_hinge = 0.0
+    variance_hinge_count = 0
     num_batches = 0
+    num_steps = 0
+
+    # VICReg feature buffer for accumulation across micro-batches
+    vicreg_feature_buffer: list[torch.Tensor] = []
 
     # Gradient monitoring accumulators
     grad_norms_sum = {"encoder_grad_norm": 0.0, "decoder_grad_norm": 0.0, "semantic_grad_norm": 0.0}
@@ -613,18 +635,39 @@ def train_epoch(
                 loc_loss = aux_components.get("loc_loss", 0.0)
                 shape_loss = aux_components.get("shape_loss", 0.0)
 
-            # VICReg encoder feature richness loss (if enabled)
-            vicreg_loss = torch.tensor(0.0, device=device)
-            vicreg_components = {}
+            # Buffer features for VICReg (computed at step boundary for better statistics)
             if vicreg_loss_fn is not None and "features" in outputs:
-                vicreg_loss, vicreg_components = vicreg_loss_fn(outputs["features"])
-                loss = loss + vicreg_loss
+                vicreg_feature_buffer.append(outputs["features"])
 
-        # Backward pass (outside autocast — gradients computed in fp32)
+        # Backward pass for seg+aux only (outside autocast — gradients in fp32)
         (loss / grad_accum_steps).backward()
 
         # Step at accumulation boundaries or last batch
         if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader):
+            # Compute VICReg on accumulated features (better statistics)
+            step_vicreg_loss = 0.0
+            step_vicreg_components: dict[str, float] = {}
+            if vicreg_loss_fn is not None and vicreg_feature_buffer:
+                # Keep gradients for last micro-batch only (standard approach)
+                detached = [f.detach() for f in vicreg_feature_buffer[:-1]]
+                last_with_grad = vicreg_feature_buffer[-1]
+                all_features = torch.cat(detached + [last_with_grad], dim=0)
+
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                    vicreg_loss_t, step_vicreg_components = vicreg_loss_fn(all_features)
+
+                (vicreg_loss_t / grad_accum_steps).backward()
+                step_vicreg_loss = vicreg_loss_t.item()
+
+                # Track feature dimensional health (variance hinge)
+                with torch.no_grad():
+                    feat_std = all_features.float().std(dim=0)
+                    vh = torch.clamp(1.0 - feat_std, min=0.0).mean().item()
+                    total_variance_hinge += vh
+                    variance_hinge_count += 1
+
+                vicreg_feature_buffer = []
+
             # Gradient monitoring (periodic)
             if enable_gradient_monitoring and (batch_idx + 1) % gradient_monitor_freq == 0:
                 grad_norms = compute_gradient_norms(model, decoder_type, is_baseline)
@@ -637,20 +680,24 @@ def train_epoch(
                 torch.nn.utils.clip_grad_norm_(trainable_params, gradient_clip)
 
             optimizer.step()
+            num_steps += 1
 
-        # Track UNSCALED loss
+            # Track VICReg at step level
+            total_vicreg_loss += step_vicreg_loss
+            total_vicreg_var += step_vicreg_components.get("vicreg_var_loss", 0.0)
+            total_vicreg_cov += step_vicreg_components.get("vicreg_cov_loss", 0.0)
+
+        # Track UNSCALED loss (seg + aux per batch)
         total_seg_loss += seg_loss.item()
         total_aux_loss += aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
         total_vol_loss += vol_loss
         total_loc_loss += loc_loss
         total_shape_loss += shape_loss
-        total_vicreg_loss += vicreg_loss.item() if isinstance(vicreg_loss, torch.Tensor) else vicreg_loss
-        total_vicreg_var += vicreg_components.get("vicreg_var_loss", 0.0)
-        total_vicreg_cov += vicreg_components.get("vicreg_cov_loss", 0.0)
         total_loss += loss.item()
         num_batches += 1
 
-    # Compute averages
+    # Compute averages (VICReg averaged per step, not per batch)
+    num_steps = max(1, num_steps)
     metrics = {
         "loss": total_loss / num_batches,
         "seg_loss": total_seg_loss / num_batches,
@@ -658,9 +705,10 @@ def train_epoch(
         "vol_loss": total_vol_loss / num_batches,
         "loc_loss": total_loc_loss / num_batches,
         "shape_loss": total_shape_loss / num_batches,
-        "vicreg_loss": total_vicreg_loss / num_batches,
-        "vicreg_var_loss": total_vicreg_var / num_batches,
-        "vicreg_cov_loss": total_vicreg_cov / num_batches,
+        "vicreg_loss": total_vicreg_loss / num_steps,
+        "vicreg_var_loss": total_vicreg_var / num_steps,
+        "vicreg_cov_loss": total_vicreg_cov / num_steps,
+        "variance_hinge": total_variance_hinge / max(1, variance_hinge_count),
     }
 
     # Add gradient monitoring results
@@ -739,6 +787,66 @@ def validate(
         "dice_1": dice_tensor[1].item(),  # WT (Whole Tumor)
         "dice_2": dice_tensor[2].item(),  # ET (Enhancing Tumor)
     }
+
+
+# =============================================================================
+# Inline Feature Quality Evaluation
+# =============================================================================
+
+
+@torch.no_grad()
+def evaluate_feature_quality_inline(
+    model: nn.Module,
+    dataloader: DataLoader,
+    device: str,
+    use_amp: bool = False,
+) -> dict[str, float]:
+    """Quick Ridge-probe R² on validation features. ~30s overhead.
+
+    Args:
+        model: Model with forward_with_semantics method.
+        dataloader: Validation data loader (must include semantic_features).
+        device: Device string.
+        use_amp: Whether to use bf16 autocast.
+
+    Returns:
+        Dict with probe_vol_r2, probe_loc_r2, probe_shape_r2, probe_mean_r2.
+        Empty dict if insufficient data.
+    """
+    model.eval()
+    all_features, all_vol, all_loc, all_shape = [], [], [], []
+
+    for batch in dataloader:
+        images = batch["image"].to(device)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+            if hasattr(model, "forward_with_semantics"):
+                outputs = model.forward_with_semantics(images)
+                all_features.append(outputs["features"].float().cpu().numpy())
+
+        if "semantic_features" in batch:
+            all_vol.append(batch["semantic_features"]["volume"].numpy())
+            all_loc.append(batch["semantic_features"]["location"].numpy())
+            all_shape.append(batch["semantic_features"]["shape"].numpy())
+
+    if not all_features or not all_vol:
+        return {}
+
+    from sklearn.linear_model import Ridge
+    from sklearn.model_selection import cross_val_score
+    from sklearn.preprocessing import StandardScaler
+
+    X = StandardScaler().fit_transform(np.concatenate(all_features))
+    results: dict[str, float] = {}
+    for name, y_list in [("vol", all_vol), ("loc", all_loc), ("shape", all_shape)]:
+        Y = np.concatenate(y_list)
+        n_cv = min(5, max(2, len(X)))
+        scores = cross_val_score(Ridge(alpha=1.0), X, Y, cv=n_cv, scoring='r2')
+        results[f"probe_{name}_r2"] = max(0.0, float(scores.mean()))
+
+    results["probe_mean_r2"] = float(np.mean([
+        results["probe_vol_r2"], results["probe_loc_r2"], results["probe_shape_r2"]
+    ]))
+    return results
 
 
 # =============================================================================
@@ -879,6 +987,8 @@ def train_condition(
     condition_dir.mkdir(parents=True, exist_ok=True)
 
     # Create dataloaders (with semantic features if using aux loss)
+    # H5 backend: val uses 192³ (100% tumor containment) at batch_size=1.
+    # Training uses 128³ random crops (stochastic coverage, matches BSF).
     logger.info("Creating dataloaders...")
     h5_path = config.get("paths", {}).get("h5_file")
     train_loader, val_loader = create_dataloaders(
@@ -890,6 +1000,7 @@ def train_condition(
         compute_semantic=use_semantic_heads,
         augment_train=True,
         h5_path=h5_path,
+        val_batch_size=training_config.get("val_batch_size", 1),
     )
 
     # Create model using the unified factory
@@ -921,7 +1032,7 @@ def train_condition(
         )
 
     # Create optimizer and scheduler
-    optimizer, scheduler = create_optimizer(model, config, is_baseline, decoder_type)
+    optimizer, scheduler_info = create_optimizer(model, config, is_baseline, decoder_type)
 
     # Create losses
     seg_loss_fn = SegmentationLoss3Ch(
@@ -944,13 +1055,13 @@ def train_condition(
         logger.info("Computing target statistics...")
         stats = compute_target_statistics(train_loader)
         if stats:
-            # Directly set the precomputed mean and std buffers
-            aux_loss_fn.volume_mean = stats["volume_mean"]
-            aux_loss_fn.volume_std = stats["volume_std"]
-            aux_loss_fn.location_mean = stats["location_mean"]
-            aux_loss_fn.location_std = stats["location_std"]
-            aux_loss_fn.shape_mean = stats["shape_mean"]
-            aux_loss_fn.shape_std = stats["shape_std"]
+            # Use .copy_() to preserve registered buffer status
+            aux_loss_fn.volume_mean.copy_(stats["volume_mean"])
+            aux_loss_fn.volume_std.copy_(stats["volume_std"])
+            aux_loss_fn.location_mean.copy_(stats["location_mean"])
+            aux_loss_fn.location_std.copy_(stats["location_std"])
+            aux_loss_fn.shape_mean.copy_(stats["shape_mean"])
+            aux_loss_fn.shape_std.copy_(stats["shape_std"])
             aux_loss_fn._stats_initialized = True
             logger.info(
                 f"Target normalization stats: "
@@ -1001,6 +1112,12 @@ def train_condition(
         "val_dice_2",
         "lr",
         "lambda_aux_eff",
+        "variance_hinge",
+        "probe_vol_r2",
+        "probe_loc_r2",
+        "probe_shape_r2",
+        "probe_mean_r2",
+        "checkpoint_score",
     ]
     if enable_gradient_monitoring:
         csv_columns.extend(["encoder_grad_norm", "decoder_grad_norm", "semantic_grad_norm"])
@@ -1010,6 +1127,7 @@ def train_condition(
         writer.writerow(csv_columns)
 
     # Training loop
+    best_score = 0.0
     best_dice = 0.0
     best_metrics = {}
     patience_counter = 0
@@ -1051,9 +1169,12 @@ def train_condition(
         # Validate
         val_metrics = validate(model, val_loader, seg_loss_fn, dice_metric, device, use_amp=use_amp)
 
-        # Update scheduler
-        scheduler.step()
-        current_lr = scheduler.get_last_lr()[0]
+        # Update scheduler (warmup then plateau)
+        if epoch < scheduler_info['warmup_epochs']:
+            scheduler_info['warmup'].step()
+        else:
+            scheduler_info['plateau'].step(val_metrics['dice_mean'])
+        current_lr = optimizer.param_groups[0]['lr']
 
         # Log metrics with per-component losses
         log_msg = (
@@ -1088,6 +1209,21 @@ def train_condition(
                 f"semantic={train_metrics['semantic_grad_norm']:.2e}"
             )
 
+        # Inline feature probes (every epoch — ~30s overhead)
+        probe_metrics: dict[str, float] = {}
+        if use_semantic_heads:
+            probe_metrics = evaluate_feature_quality_inline(model, val_loader, device, use_amp)
+            model.train()  # Restore training mode
+            if probe_metrics:
+                logger.info(
+                    f"  Probe R²: vol={probe_metrics['probe_vol_r2']:.3f}, "
+                    f"loc={probe_metrics['probe_loc_r2']:.3f}, "
+                    f"shape={probe_metrics['probe_shape_r2']:.3f}"
+                )
+
+        # Checkpoint score: probe_mean_r2 when available, else fall back to dice
+        checkpoint_score = probe_metrics.get("probe_mean_r2", val_metrics["dice_mean"])
+
         # Save to CSV
         csv_row = [
             epoch + 1,
@@ -1107,6 +1243,12 @@ def train_condition(
             val_metrics["dice_2"],
             current_lr,
             lambda_aux_eff,
+            train_metrics.get("variance_hinge", ""),
+            probe_metrics.get("probe_vol_r2", ""),
+            probe_metrics.get("probe_loc_r2", ""),
+            probe_metrics.get("probe_shape_r2", ""),
+            probe_metrics.get("probe_mean_r2", ""),
+            checkpoint_score,
         ]
         if enable_gradient_monitoring:
             csv_row.extend(
@@ -1121,19 +1263,24 @@ def train_condition(
             writer = csv.writer(f)
             writer.writerow(csv_row)
 
-        # Early stopping check (based on Dice, not total loss)
-        if val_metrics["dice_mean"] > best_dice:
+        # Checkpoint selection (probe R² only; dice fallback for non-semantic conditions)
+        if checkpoint_score > best_score:
+            best_score = checkpoint_score
             best_dice = val_metrics["dice_mean"]
             best_metrics = {
                 "epoch": epoch + 1,
                 "train_loss": train_metrics["loss"],
                 **val_metrics,
+                **probe_metrics,
             }
             save_checkpoint(
                 model, condition_dir, is_baseline, epoch + 1, best_metrics, decoder_type
             )
             patience_counter = 0
-            logger.info(f"  New best! Dice: {best_dice:.4f}")
+            logger.info(
+                f"  New best! probe_mean_r2={checkpoint_score:.4f} "
+                f"(dice={best_dice:.4f})"
+            )
         else:
             patience_counter += 1
             if patience_counter >= patience:

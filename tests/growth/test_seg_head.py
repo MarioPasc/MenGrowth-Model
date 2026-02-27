@@ -211,3 +211,81 @@ class TestLoRASegmentationModel:
 
         assert len(encoder_params) > 0
         assert len(decoder_params) > 0
+
+
+# =============================================================================
+# BUG-3: AuxiliarySemanticLoss buffer persistence tests
+# =============================================================================
+
+
+class TestAuxiliarySemanticLossBuffers:
+    """Tests for BUG-3 fix: .copy_() preserves registered buffers."""
+
+    def test_state_dict_roundtrip_preserves_statistics(self):
+        """Save → load should preserve updated buffer values."""
+        from growth.models.segmentation.semantic_heads import AuxiliarySemanticLoss
+
+        loss_fn = AuxiliarySemanticLoss()
+
+        # Update statistics
+        vol = torch.randn(50, 4) * 10
+        loc = torch.randn(50, 3) * 5
+        shape = torch.randn(50, 3) * 2
+        loss_fn.update_statistics(vol, loc, shape)
+
+        # Save state dict
+        state = loss_fn.state_dict()
+
+        # Create fresh instance and load
+        loss_fn2 = AuxiliarySemanticLoss()
+        loss_fn2.load_state_dict(state)
+
+        # Verify values match
+        torch.testing.assert_close(loss_fn2.volume_mean, loss_fn.volume_mean)
+        torch.testing.assert_close(loss_fn2.volume_std, loss_fn.volume_std)
+        torch.testing.assert_close(loss_fn2.location_mean, loss_fn.location_mean)
+        torch.testing.assert_close(loss_fn2.location_std, loss_fn.location_std)
+        torch.testing.assert_close(loss_fn2.shape_mean, loss_fn.shape_mean)
+        torch.testing.assert_close(loss_fn2.shape_std, loss_fn.shape_std)
+
+    def test_buffers_remain_registered_after_update(self):
+        """After update_statistics(), buffers should still be in named_buffers()."""
+        from growth.models.segmentation.semantic_heads import AuxiliarySemanticLoss
+
+        loss_fn = AuxiliarySemanticLoss()
+
+        # Get buffer names before
+        buffer_names_before = {name for name, _ in loss_fn.named_buffers()}
+
+        # Update
+        loss_fn.update_statistics(
+            torch.randn(20, 4), torch.randn(20, 3), torch.randn(20, 3),
+        )
+
+        # Get buffer names after
+        buffer_names_after = {name for name, _ in loss_fn.named_buffers()}
+
+        expected = {
+            "volume_mean", "volume_std",
+            "location_mean", "location_std",
+            "shape_mean", "shape_std",
+        }
+
+        assert expected.issubset(buffer_names_before), f"Missing buffers before: {expected - buffer_names_before}"
+        assert expected.issubset(buffer_names_after), f"Missing buffers after: {expected - buffer_names_after}"
+
+    def test_buffers_survive_to_device(self):
+        """Buffers should move with .to(device) after update."""
+        from growth.models.segmentation.semantic_heads import AuxiliarySemanticLoss
+
+        loss_fn = AuxiliarySemanticLoss()
+        loss_fn.update_statistics(
+            torch.randn(20, 4), torch.randn(20, 3), torch.randn(20, 3),
+        )
+
+        # Move to CPU (should work even if already on CPU — tests the mechanism)
+        loss_fn = loss_fn.to("cpu")
+
+        # Buffers should still be accessible
+        assert loss_fn.volume_mean.device.type == "cpu"
+        assert loss_fn.volume_mean.shape == (4,)

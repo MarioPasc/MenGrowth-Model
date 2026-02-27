@@ -70,7 +70,7 @@ from growth.data.bratsmendata import (
     BraTSMENDataset,
     split_subjects_multi,
 )
-from growth.data.semantic_features import extract_semantic_features_from_file
+from growth.data.semantic_features import extract_semantic_features, extract_semantic_features_from_file
 from growth.data.transforms import (
     DEFAULT_SPACING,
     FEATURE_ROI_SIZE,
@@ -370,8 +370,9 @@ def convert(
                 age_ds[i] = meta.get("age", float("nan"))
                 sex_ds[i] = meta.get("sex", "unknown")
 
-                # Semantic features (from native-resolution segmentation)
-                sem = extract_semantic_features_from_file(str(paths["seg"]))
+                # Semantic features from preprocessed 192³ seg (consistent frame)
+                seg_for_semantic = seg_np[0].astype(np.int32)  # [192, 192, 192]
+                sem = extract_semantic_features(seg_for_semantic, spacing=(1.0, 1.0, 1.0))
                 vol_ds[i] = sem["volume"]
                 loc_ds[i] = sem["location"]
                 shape_ds[i] = sem["shape"]

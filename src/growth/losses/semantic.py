@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 class SemanticRegressionLoss(nn.Module):
     """Weighted per-partition MSE loss for semantic target prediction.
 
-    Each partition's loss is normalized by its target dimensionality
-    (1/k_p factor) and weighted by a per-partition lambda.
+    Each partition's loss is the mean squared error (averaged over B × k_p),
+    weighted by a per-partition lambda.
 
-    Loss per partition: L_p = lambda_p * (1/k_p) * ||pred_p - target_p||^2
+    Loss per partition: L_p = lambda_p * MSE(pred_p, target_p)
 
     Args:
         lambda_vol: Weight for volume loss.
@@ -65,9 +65,8 @@ class SemanticRegressionLoss(nn.Module):
             pred = predictions[name]
             target = targets[name]
 
-            # Dimension-normalized MSE: (1/k_p) * ||pred - target||^2
-            k_p = pred.shape[1]
-            mse = torch.mean((pred - target) ** 2) / k_p
+            # MSE: mean over B × k_p elements (torch.mean already normalizes)
+            mse = torch.mean((pred - target) ** 2)
             details[f"mse_{name}"] = mse.detach()
 
             total_loss = total_loss + self.lambdas[name] * mse

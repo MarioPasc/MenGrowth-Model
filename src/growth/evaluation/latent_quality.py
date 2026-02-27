@@ -804,6 +804,7 @@ def compute_dci(
         DCIResults with D, C, informativeness, and importance matrix.
     """
     from sklearn.linear_model import Lasso
+    from sklearn.model_selection import cross_val_score
 
     n_samples, n_dims = z.shape
     n_factors = targets.shape[1]
@@ -826,16 +827,19 @@ def compute_dci(
         if np.std(y) < 1e-10:
             continue
 
+        # Fit full model for importance matrix (unchanged)
         lasso = Lasso(alpha=alpha, max_iter=max_iter, random_state=42)
         lasso.fit(z_scaled, y)
 
         importance[j, :] = np.abs(lasso.coef_)
 
-        # R² on training data (informativeness)
-        y_pred = lasso.predict(z_scaled)
-        ss_res = np.sum((y - y_pred) ** 2)
-        ss_tot = np.sum((y - y.mean()) ** 2)
-        r2_per_factor[j] = 1.0 - ss_res / (ss_tot + 1e-10) if ss_tot > 1e-10 else 0.0
+        # Cross-validated R² for informativeness (avoids inflation)
+        n_cv = min(5, max(2, len(z_scaled)))
+        cv_scores = cross_val_score(
+            Lasso(alpha=alpha, max_iter=max_iter, random_state=42),
+            z_scaled, y, cv=n_cv, scoring='r2',
+        )
+        r2_per_factor[j] = max(0.0, float(cv_scores.mean()))
 
     # Disentanglement: per latent dim, then weighted average
     # D_d = 1 - H(importance_norm[:, d]) / log(n_factors)

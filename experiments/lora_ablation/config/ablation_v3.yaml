@@ -26,12 +26,12 @@ data:
   feature_roi_size: [192, 192, 192]
   spacing: [1.0, 1.0, 1.0]
 
-# Conservative splits for robust evaluation
+# Production-aligned splits (matches picasso/v3_rank_sweep.yaml)
 data_splits:
-  lora_train: 200
+  lora_train: 525
   lora_val: 100
-  sdp_train: 200
-  test: 500
+  sdp_train: 225
+  test: 150
 
 # =============================================================================
 # Ablation Conditions (10 total)
@@ -140,6 +140,11 @@ training:
   lambda_var_enc: 5.0
   lambda_cov_enc: 1.0
   vicreg_gamma: 1.0
+
+  # LR schedule: warmup → ReduceLROnPlateau
+  lr_warmup_epochs: 5
+  lr_reduce_factor: 0.5
+  lr_reduce_patience: 10
 
   # Mixed precision and gradient accumulation
   use_amp: true

@@ -69,6 +69,11 @@ class EncoderVICRegLoss(nn.Module):
 
         batch_size, feat_dim = features.shape
 
+        # VICReg requires batch_size >= 2 for meaningful variance/covariance
+        if batch_size < 2:
+            zero = torch.tensor(0.0, device=features.device, requires_grad=True)
+            return zero, {"vicreg_var_loss": 0.0, "vicreg_cov_loss": 0.0, "vicreg_total": 0.0}
+
         # Variance hinge loss: keep each dimension alive
         # L_var = (1/D) sum_d max(0, gamma - sqrt(Var(h_d) + eps))^2
         eps = 1e-4

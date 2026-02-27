@@ -425,6 +425,11 @@ class LoRAOriginalDecoderModel(nn.Module):
         base model, including the decoder. We need to explicitly re-enable
         gradients for decoder parameters.
         """
+        # NOTE: encoder10 is unfrozen by design. Although named "encoder10",
+        # it is architecturally part of the decoder pathway — it processes
+        # bottleneck hidden_states[4] before decoder5. The 768-dim GAP-pooled
+        # features used for SDP come from encoder10's output. Unfreezing it
+        # allows the bottleneck representation to adapt to meningioma data.
         decoder_modules = [
             self.decoder.encoder1, self.decoder.encoder2,
             self.decoder.encoder3, self.decoder.encoder4,

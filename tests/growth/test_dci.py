@@ -172,3 +172,37 @@ class TestDCIEdgeCases:
         assert isinstance(result, DCIResults)
         # Single factor means n_factors < 2, D should be 0 by convention
         assert result.informativeness > 0.0
+
+
+class TestDCICrossValidatedR2:
+    """FLAW-6: CV R² should prevent training-set inflation."""
+
+    def test_cv_r2_lower_than_train_r2_overfit(self) -> None:
+        """In overfit regime (n_samples=30, n_dims=128), CV R² < train R².
+
+        With many more features than samples, LASSO overfits training data.
+        Cross-validated R² should be much lower than training-set R².
+        """
+        rng = np.random.RandomState(42)
+        n_samples, n_dims = 30, 128
+        z = rng.randn(n_samples, n_dims)
+        # Factor is actually just noise (no real signal)
+        targets = rng.randn(n_samples, 3)
+
+        result = compute_dci(z, targets)
+
+        # With noise targets and overparameterized z, CV R² should be low
+        assert result.informativeness < 0.5, (
+            f"Informativeness = {result.informativeness:.3f}, "
+            f"expected < 0.5 for noise targets in overfit regime"
+        )
+
+    def test_cv_r2_high_for_easy_case(self) -> None:
+        """When factors are clearly predictable, CV R² should be high."""
+        z, targets = _make_perfectly_disentangled(n_samples=500, n_factors=3, n_latent=32)
+        result = compute_dci(z, targets)
+
+        assert result.informativeness > 0.5, (
+            f"Informativeness = {result.informativeness:.3f}, "
+            f"expected > 0.5 for perfectly disentangled data"
+        )

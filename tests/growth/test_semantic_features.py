@@ -453,3 +453,49 @@ class TestExtractSemanticFeatures:
 
         # Shape features should handle empty case
         assert features["shape"].shape == (3,)
+
+
+class TestCentroidNormalization:
+    """FLAW-5: Centroid normalization depends on volume dimensions.
+
+    Centroids are normalized by dividing by image dimensions. If computed
+    from native-resolution masks (variable per subject), the same physical
+    tumor position gives different centroids. Using 192³ volumes fixes this.
+    """
+
+    def test_centroid_consistent_for_standardized_volumes(self):
+        """Two 192³ masks with same tumor position → same centroid."""
+        # Both masks are 192³ (standardized frame)
+        mask_a = np.zeros((192, 192, 192), dtype=np.int32)
+        mask_a[80:100, 80:100, 80:100] = LABEL_NCR
+
+        mask_b = np.zeros((192, 192, 192), dtype=np.int32)
+        mask_b[80:100, 80:100, 80:100] = LABEL_NCR
+
+        centroid_a = compute_centroid(mask_a, normalize=True)
+        centroid_b = compute_centroid(mask_b, normalize=True)
+
+        np.testing.assert_array_almost_equal(centroid_a, centroid_b)
+
+    def test_centroid_differs_for_different_volume_sizes(self):
+        """Same voxel position in different-sized volumes → different centroid.
+
+        This documents the old bug: centroids computed from native-resolution
+        masks are not comparable across subjects with different image sizes.
+        """
+        # 100³ volume: tumor at voxel [50, 50, 50]
+        mask_small = np.zeros((100, 100, 100), dtype=np.int32)
+        mask_small[45:55, 45:55, 45:55] = LABEL_NCR
+
+        # 200³ volume: tumor at same voxel position
+        mask_large = np.zeros((200, 200, 200), dtype=np.int32)
+        mask_large[45:55, 45:55, 45:55] = LABEL_NCR
+
+        centroid_small = compute_centroid(mask_small, normalize=True)
+        centroid_large = compute_centroid(mask_large, normalize=True)
+
+        # Centroids should DIFFER because normalization divides by image dims
+        # Small: ~0.495, Large: ~0.2475
+        assert not np.allclose(centroid_small, centroid_large, atol=0.01), (
+            f"Centroids should differ: small={centroid_small}, large={centroid_large}"
+        )

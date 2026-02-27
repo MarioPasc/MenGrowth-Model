@@ -207,20 +207,24 @@ class BaselineOriginalDecoderModel(nn.Module):
     def forward_with_semantics(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Forward pass with semantic predictions.
 
+        Computes hidden states once and reuses them for both decoding and
+        feature extraction (avoids double swinViT forward pass).
+
         Args:
-            x: Input tensor [B, 4, 96, 96, 96].
+            x: Input tensor [B, 4, 128, 128, 128].
 
         Returns:
             Dict with:
-                - 'logits': Segmentation logits [B, 4, 96, 96, 96]
+                - 'logits': Segmentation logits [B, 3, 128, 128, 128]
                 - 'features': Bottleneck features [B, 768]
                 - 'pred_volume': Volume predictions [B, 4] (if semantic_heads)
                 - 'pred_location': Location predictions [B, 3] (if semantic_heads)
                 - 'pred_shape': Shape predictions [B, 3] (if semantic_heads)
         """
-        # Get logits and bottleneck features
-        logits = self.model(x)
-        features = self.model.get_bottleneck_features(x)
+        # Single swinViT pass — reuse hidden states for decoder + features
+        hidden_states = self.model.get_hidden_states(x)
+        logits = self.model.decoder(x, hidden_states)
+        features = self.model.decoder.get_bottleneck_features(hidden_states)
 
         result = {
             'logits': logits,

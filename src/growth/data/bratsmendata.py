@@ -511,6 +511,8 @@ def create_dataloaders(
     train_split: str = "lora_train",
     val_split: str = "lora_val",
     roi_size: tuple[int, int, int] | None = None,
+    val_roi_size: tuple[int, int, int] | None = None,
+    val_batch_size: int | None = None,
 ) -> tuple[DataLoader, DataLoader]:
     """Create train and validation DataLoaders.
 
@@ -533,6 +535,12 @@ def create_dataloaders(
         train_split: Split name for training in H5 file.
         val_split: Split name for validation in H5 file.
         roi_size: Override ROI size for training transforms.
+        val_roi_size: Override ROI size for validation transforms. If None,
+            H5 backend defaults to FEATURE_ROI_SIZE (192³) for full tumor
+            coverage; NIfTI backend matches training ROI size.
+        val_batch_size: Override batch size for validation loader. If None,
+            defaults to ``batch_size``. Useful when ``val_roi_size`` is
+            larger than training ROI (e.g. 192³ vs 128³).
 
     Returns:
         Tuple of (train_loader, val_loader).
@@ -542,6 +550,7 @@ def create_dataloaders(
         from .transforms import DEFAULT_ROI_SIZE, FEATURE_ROI_SIZE
 
         train_roi = roi_size or DEFAULT_ROI_SIZE
+        val_roi = val_roi_size or FEATURE_ROI_SIZE
 
         train_dataset = BraTSMENDatasetH5(
             h5_path=h5_path,
@@ -553,7 +562,7 @@ def create_dataloaders(
         val_dataset = BraTSMENDatasetH5(
             h5_path=h5_path,
             split=val_split,
-            transform=get_h5_val_transforms(roi_size=FEATURE_ROI_SIZE),
+            transform=get_h5_val_transforms(roi_size=val_roi),
             compute_semantic=compute_semantic,
         )
     else:
@@ -589,7 +598,7 @@ def create_dataloaders(
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=val_batch_size or batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
