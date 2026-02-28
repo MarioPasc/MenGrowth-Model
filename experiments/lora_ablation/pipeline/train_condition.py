@@ -44,6 +44,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from growth.data.bratsmendata import create_dataloaders
+from growth.data.transforms import DEFAULT_ROI_SIZE
 from growth.losses.encoder_vicreg import EncoderVICRegLoss
 from growth.losses.segmentation import DiceMetric3Ch, SegmentationLoss3Ch
 from growth.models.segmentation.semantic_heads import AuxiliarySemanticLoss
@@ -155,7 +156,7 @@ def _run_validation_only(
     condition_dir.mkdir(parents=True, exist_ok=True)
 
     # Create validation dataloader
-    # H5 backend: val uses 192³ (100% tumor containment) at batch_size=1.
+    # Use 128³ (matching BSF fine-tuning) — decoder OOMs at 192³.
     logger.info("Creating validation dataloader...")
     h5_path = config.get("paths", {}).get("h5_file")
     _, val_loader = create_dataloaders(
@@ -168,6 +169,7 @@ def _run_validation_only(
         augment_train=False,
         h5_path=h5_path,
         val_batch_size=training_config.get("val_batch_size", 1),
+        val_roi_size=DEFAULT_ROI_SIZE,
     )
 
     # Create model (completely frozen)
@@ -998,8 +1000,8 @@ def train_condition(
     condition_dir.mkdir(parents=True, exist_ok=True)
 
     # Create dataloaders (with semantic features if using aux loss)
-    # H5 backend: val uses 192³ (100% tumor containment) at batch_size=1.
-    # Training uses 128³ random crops (stochastic coverage, matches BSF).
+    # Both train and val use 128³ (matching BSF fine-tuning resolution).
+    # 192³ is reserved for encoder-only feature extraction (no decoder).
     logger.info("Creating dataloaders...")
     h5_path = config.get("paths", {}).get("h5_file")
     train_loader, val_loader = create_dataloaders(
@@ -1012,6 +1014,7 @@ def train_condition(
         augment_train=True,
         h5_path=h5_path,
         val_batch_size=training_config.get("val_batch_size", 1),
+        val_roi_size=DEFAULT_ROI_SIZE,
     )
 
     # Create model using the unified factory
