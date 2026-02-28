@@ -357,7 +357,7 @@ def main(
     logger.info("=" * 60)
     logger.info("REGENERATION COMPLETE")
     logger.info("=" * 60)
-    logger.info(f"  figures/    : 8 PDF + PNG")
+    logger.info(f"  figures/    : 11 PDF + PNG")
     logger.info(f"  tables/     : LaTeX tables")
     logger.info(f"  results/    : aggregated CSVs")
     logger.info(f"  reports/    : analysis + recommendation")

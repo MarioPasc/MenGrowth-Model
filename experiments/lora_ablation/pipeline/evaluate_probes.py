@@ -67,10 +67,10 @@ def load_features_and_targets(
     if not features_probe_path.exists():
         raise FileNotFoundError(f"Features not found: {features_probe_path}")
 
-    data["features_probe"] = torch.load(features_probe_path)
-    data["targets_probe"] = torch.load(condition_dir / "targets_probe.pt")
-    data["features_test"] = torch.load(features_test_path)
-    data["targets_test"] = torch.load(condition_dir / "targets_test.pt")
+    data["features_probe"] = torch.load(features_probe_path, weights_only=True)
+    data["targets_probe"] = torch.load(condition_dir / "targets_probe.pt", weights_only=True)
+    data["features_test"] = torch.load(features_test_path, weights_only=True)
+    data["targets_test"] = torch.load(condition_dir / "targets_test.pt", weights_only=True)
 
     logger.info(f"Loaded features ({feature_level}): "
                 f"probe={data['features_probe'].shape}, "

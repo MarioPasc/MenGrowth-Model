@@ -117,8 +117,8 @@ def load_condition_data(condition_dir: Path) -> Dict:
         targ_path = condition_dir / f"targets_{split}.pt"
 
         if feat_path.exists():
-            data[f"features_{split}"] = torch.load(feat_path).numpy()
-            targets = torch.load(targ_path)
+            data[f"features_{split}"] = torch.load(feat_path, weights_only=True).numpy()
+            targets = torch.load(targ_path, weights_only=True)
             data[f"targets_{split}"] = {k: v.numpy() for k, v in targets.items()}
 
     # Load metrics

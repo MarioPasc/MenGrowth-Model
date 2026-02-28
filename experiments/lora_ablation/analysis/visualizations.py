@@ -85,12 +85,12 @@ def load_condition_data(
     if not feat_path.exists():
         feat_path = condition_dir / "features_test.pt"
     if feat_path.exists():
-        data['features'] = torch.load(feat_path).numpy()
+        data['features'] = torch.load(feat_path, weights_only=True).numpy()
 
     # Load targets
     tgt_path = condition_dir / "targets_test.pt"
     if tgt_path.exists():
-        targets = torch.load(tgt_path)
+        targets = torch.load(tgt_path, weights_only=True)
         data['targets'] = {k: v.numpy() for k, v in targets.items() if k != 'all'}
 
     # Load metrics

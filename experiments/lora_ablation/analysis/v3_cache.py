@@ -101,14 +101,23 @@ def _build_dice_data(
     config: dict,
     output_dir: Path,
 ) -> Dict[str, Any]:
-    """Consolidate all test_dice_men.json into a single dict."""
+    """Consolidate test_dice_men.json and test_dice_gli.json per condition.
+
+    Returns:
+        Dict mapping condition name to ``{"men": {...}, "gli": {...}}``.
+        Falls back to flat MEN-only format if no GLI data exists.
+    """
     data: Dict[str, Any] = {}
     for cond_cfg in config["conditions"]:
         name = cond_cfg["name"]
-        dice_path = output_dir / "conditions" / name / "test_dice_men.json"
-        dice = _load_json(dice_path)
-        if dice is not None:
-            data[name] = dice
+        men_path = output_dir / "conditions" / name / "test_dice_men.json"
+        gli_path = output_dir / "conditions" / name / "test_dice_gli.json"
+        men = _load_json(men_path)
+        gli = _load_json(gli_path)
+        if men is not None:
+            data[name] = {"men": men}
+            if gli is not None:
+                data[name]["gli"] = gli
     return data
 
 
@@ -203,7 +212,7 @@ def _build_variance_spectrum(
         if not feat_path.exists():
             continue
 
-        features = torch.load(feat_path, map_location="cpu")
+        features = torch.load(feat_path, map_location="cpu", weights_only=True)
         if isinstance(features, torch.Tensor):
             features = features.numpy()
         variance = np.sort(features.var(axis=0))[::-1]
@@ -252,7 +261,7 @@ def _build_umap_embedding(
         if not feat_path.exists():
             continue
 
-        features = torch.load(feat_path, map_location="cpu")
+        features = torch.load(feat_path, map_location="cpu", weights_only=True)
         if isinstance(features, torch.Tensor):
             features = features.numpy()
 
@@ -267,7 +276,7 @@ def _build_umap_embedding(
 
         # Load targets for coloring
         if tgt_path.exists():
-            targets = torch.load(tgt_path, map_location="cpu")
+            targets = torch.load(tgt_path, map_location="cpu", weights_only=True)
             if isinstance(targets, dict):
                 vol = targets.get("volume", torch.zeros(len(features) + max_samples_per_cond))
                 vol = vol.numpy() if isinstance(vol, torch.Tensor) else np.array(vol)
@@ -319,6 +328,106 @@ def _build_umap_embedding(
     logger.info(f"Saved UMAP embedding ({X.shape[0]} points)")
 
 
+def _build_domain_umap_grid(
+    config: dict,
+    output_dir: Path,
+    cache_dir: Path,
+    max_samples_per_domain: int = 150,
+    pca_dims: int = 50,
+) -> None:
+    """Precompute a shared UMAP over GLI+MEN features for all conditions.
+
+    For each condition, loads ``features_glioma.pt`` and
+    ``features_meningioma_subset.pt``, concatenates all conditions into a
+    single PCA -> UMAP space, then stores per-condition coordinates and
+    silhouette scores.
+
+    Saves ``domain_umap_grid.npz`` with keys:
+      - ``embedding`` [N_total, 2]
+      - ``domains`` [N_total]  (``"glioma"`` / ``"meningioma"``)
+      - ``conditions`` [N_total]
+      - ``silhouette_<cond>`` float per condition
+    """
+    try:
+        from sklearn.decomposition import PCA
+        from sklearn.metrics import silhouette_score
+        from umap import UMAP
+    except ImportError:
+        logger.warning("sklearn or umap not available; skipping domain UMAP grid.")
+        return
+
+    all_features: List[np.ndarray] = []
+    all_domains: List[str] = []
+    all_conditions: List[str] = []
+
+    for cond_cfg in config["conditions"]:
+        name = cond_cfg["name"]
+        cond_dir = output_dir / "conditions" / name
+
+        gli_path = cond_dir / "features_glioma.pt"
+        men_path = cond_dir / "features_meningioma_subset.pt"
+        if not gli_path.exists() or not men_path.exists():
+            logger.debug(f"  domain_umap: skipping {name} (missing domain features)")
+            continue
+
+        gli_feat = torch.load(gli_path, map_location="cpu", weights_only=True)
+        men_feat = torch.load(men_path, map_location="cpu", weights_only=True)
+        if isinstance(gli_feat, torch.Tensor):
+            gli_feat = gli_feat.numpy()
+        if isinstance(men_feat, torch.Tensor):
+            men_feat = men_feat.numpy()
+
+        rng = np.random.RandomState(42)
+        n_gli = min(max_samples_per_domain, len(gli_feat))
+        n_men = min(max_samples_per_domain, len(men_feat))
+        gli_idx = rng.choice(len(gli_feat), n_gli, replace=False)
+        men_idx = rng.choice(len(men_feat), n_men, replace=False)
+
+        all_features.append(gli_feat[gli_idx])
+        all_features.append(men_feat[men_idx])
+        all_domains.extend(["glioma"] * n_gli + ["meningioma"] * n_men)
+        all_conditions.extend([name] * (n_gli + n_men))
+
+    if not all_features:
+        logger.warning("No domain features found for UMAP grid computation.")
+        return
+
+    X = np.vstack(all_features)
+    domains_arr = np.array(all_domains)
+    conditions_arr = np.array(all_conditions)
+    logger.info(f"Domain UMAP grid: {X.shape[0]} samples, {X.shape[1]} dims")
+
+    # Shared PCA -> UMAP
+    actual_pca_dims = min(pca_dims, X.shape[1], X.shape[0])
+    pca = PCA(n_components=actual_pca_dims, random_state=42)
+    X_pca = pca.fit_transform(X)
+
+    umap = UMAP(n_neighbors=15, min_dist=0.1, random_state=42)
+    embedding = umap.fit_transform(X_pca)
+
+    # Per-condition silhouette scores
+    save_dict: Dict[str, Any] = {
+        "embedding": embedding.astype(np.float32),
+        "domains": domains_arr,
+        "conditions": conditions_arr,
+    }
+
+    unique_conds = sorted(set(all_conditions))
+    for cond in unique_conds:
+        mask = conditions_arr == cond
+        cond_domains = domains_arr[mask]
+        if len(set(cond_domains)) < 2:
+            continue
+        domain_labels = (cond_domains == "glioma").astype(int)
+        sil = silhouette_score(embedding[mask], domain_labels)
+        save_dict[f"silhouette_{cond}"] = np.float32(sil)
+        logger.debug(f"  domain_umap: {cond} silhouette={sil:.3f}")
+
+    out_path = cache_dir / "domain_umap_grid.npz"
+    np.savez_compressed(out_path, **save_dict)
+    logger.info(f"Saved domain UMAP grid ({len(unique_conds)} conditions)")
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -360,6 +469,7 @@ def precompute_all(config: dict, output_dir: Path) -> Path:
     # NPZ caches (heavier computation)
     _build_variance_spectrum(config, output_dir, cache_dir)
     _build_umap_embedding(config, output_dir, cache_dir)
+    _build_domain_umap_grid(config, output_dir, cache_dir)
 
     logger.info(f"Figure cache ready: {cache_dir}")
     return cache_dir

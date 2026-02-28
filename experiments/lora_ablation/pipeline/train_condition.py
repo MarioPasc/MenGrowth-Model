@@ -764,28 +764,28 @@ def validate(
     all_dice_scores = []
     num_batches = 0
 
-    for batch in tqdm(dataloader, desc="Validating", leave=False):
-        images = batch["image"].to(device)
-        segs = batch["seg"].to(device)
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Validating", leave=False):
+            images = batch["image"].to(device)
+            segs = batch["seg"].to(device)
 
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-            # Forward pass
-            if hasattr(model, "forward_with_semantics"):
-                outputs = model.forward_with_semantics(images)
-                pred = outputs["logits"]
-            else:
-                pred = model(images)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                # Forward pass (plain forward — no semantic heads needed for val)
+                if hasattr(model, "model"):
+                    pred = model.model(images)
+                else:
+                    pred = model(images)
 
-            # Compute loss
-            loss = seg_loss_fn(pred, segs)
+                # Compute loss
+                loss = seg_loss_fn(pred, segs)
 
-        total_loss += loss.item()
+            total_loss += loss.item()
 
-        # Compute Dice per class (in fp32 for accuracy)
-        dice_scores = dice_metric(pred.float(), segs)
-        all_dice_scores.append(dice_scores.cpu())
+            # Compute Dice per class (in fp32 for accuracy)
+            dice_scores = dice_metric(pred.float(), segs)
+            all_dice_scores.append(dice_scores.cpu())
 
-        num_batches += 1
+            num_batches += 1
 
     # Aggregate metrics
     avg_loss = total_loss / num_batches

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # experiments/lora_ablation/v3_figures.py
-"""Eight thesis-quality figures for LoRA v3 ablation.
+"""Eleven thesis-quality figures for LoRA v3 ablation.
 
 All figures read from the precomputed ``figure_cache/`` directory (no GPU
 needed) and use the colorblind-safe Wong 2011 palette from v3_style.
@@ -22,6 +22,9 @@ from experiments.utils.settings import (
     V3_SHAPE_LABELS,
     PROBE_COLORS,
     DCI_COLORS,
+    DOMAIN_COLORS,
+    DOMAIN_MARKERS,
+    SEMANTIC_COLORS,
     PLOT_SETTINGS,
     apply_ieee_style,
     get_color,
@@ -155,6 +158,27 @@ def fig1_training_dynamics(
 # Fig 2: Segmentation Quality
 # ============================================================================
 
+def _get_men_dice(dice_data: Dict, condition: str) -> Dict:
+    """Extract MEN dice dict from either new or legacy format.
+
+    New format: ``{cond: {"men": {...}, "gli": {...}}}``
+    Legacy format: ``{cond: {"dice_mean": ..., ...}}``
+    """
+    entry = dice_data.get(condition, {})
+    if "men" in entry:
+        return entry["men"]
+    # Legacy flat format
+    return entry
+
+
+def _get_gli_dice(dice_data: Dict, condition: str) -> Optional[Dict]:
+    """Extract GLI dice dict (new format only)."""
+    entry = dice_data.get(condition, {})
+    if "gli" in entry:
+        return entry["gli"]
+    return None
+
+
 def fig2_dice_comparison(
     cache_dir: Path,
     figures_dir: Path,
@@ -178,7 +202,7 @@ def fig2_dice_comparison(
     channel_colors = ["#0072B2", "#009E73", "#D55E00"]
 
     for i, (ch, ch_label, ch_color) in enumerate(zip(channels, channel_labels, channel_colors)):
-        values = [dice_data[c].get(ch, 0) for c in conditions]
+        values = [_get_men_dice(dice_data, c).get(ch, 0) for c in conditions]
         ax.bar(x + i * width, values, width, label=ch_label, color=ch_color, alpha=0.85)
 
     ax.axhline(y=0.88, color="red", linestyle="--", alpha=0.5, label="Threshold (0.88)")
@@ -585,6 +609,280 @@ def fig8_dci_scores(
 
 
 # ============================================================================
+# Fig 9: Domain UMAP Grid
+# ============================================================================
+
+def fig9_domain_umap_grid(
+    cache_dir: Path,
+    figures_dir: Path,
+) -> None:
+    """Domain UMAP Grid (1xN) - GLI vs MEN scatter in shared UMAP space.
+
+    One panel per condition, with silhouette score annotation.
+    """
+    npz_path = cache_dir / "domain_umap_grid.npz"
+    if not npz_path.exists():
+        logger.warning("No domain UMAP grid cache; skipping fig9.")
+        return
+
+    data = np.load(npz_path, allow_pickle=True)
+    embedding = data["embedding"]
+    domains = data["domains"]
+    conditions = data["conditions"]
+
+    unique_conds = [c for c in V3_CONDITIONS if c in set(conditions)]
+    if not unique_conds:
+        return
+
+    n_panels = len(unique_conds)
+    fig, axes = plt.subplots(1, n_panels, figsize=(2.5 * n_panels, 3.5))
+    if n_panels == 1:
+        axes = [axes]
+
+    panel_labels = "abcdefghijklmnop"
+
+    for i, cond in enumerate(unique_conds):
+        ax = axes[i]
+        mask = conditions == cond
+
+        cond_emb = embedding[mask]
+        cond_domains = domains[mask]
+
+        # GLI points
+        gli_mask = cond_domains == "glioma"
+        ax.scatter(
+            cond_emb[gli_mask, 0], cond_emb[gli_mask, 1],
+            c=DOMAIN_COLORS["glioma"], marker="o", s=12, alpha=0.5,
+            linewidths=0.3, edgecolors="none", label="GLI",
+        )
+        # MEN points
+        men_mask = cond_domains == "meningioma"
+        ax.scatter(
+            cond_emb[men_mask, 0], cond_emb[men_mask, 1],
+            c=DOMAIN_COLORS["meningioma"], marker="^", s=12, alpha=0.5,
+            linewidths=0.3, edgecolors="none", label="MEN",
+        )
+
+        # Silhouette annotation
+        sil_key = f"silhouette_{cond}"
+        if sil_key in data:
+            sil = float(data[sil_key])
+            ax.text(
+                0.95, 0.05, f"S = {sil:.2f}",
+                transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=PLOT_SETTINGS["annotation_fontsize"],
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="0.7", alpha=0.8),
+            )
+
+        # Panel label
+        label_char = panel_labels[i] if i < len(panel_labels) else str(i)
+        ax.set_title(f"({label_char}) {get_label(cond)}", fontsize=PLOT_SETTINGS["axes_titlesize"])
+
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        if i == 0:
+            ax.set_ylabel("UMAP 2")
+        if i == n_panels - 1:
+            ax.legend(fontsize=7, markerscale=1.5, loc="upper right")
+
+    fig.text(0.5, 0.01, "UMAP 1", ha="center", fontsize=PLOT_SETTINGS["axes_labelsize"])
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
+    _save_fig(fig, figures_dir, "fig9_domain_umap_grid")
+
+
+# ============================================================================
+# Fig 10: Semantic Probe R² Summary
+# ============================================================================
+
+def fig10_semantic_summary(
+    cache_dir: Path,
+    figures_dir: Path,
+) -> None:
+    """Semantic Probe R² Summary (7x4) - grouped bar chart across all conditions.
+
+    vol/loc/shape R² with solid (Linear) and hatched (MLP) bars, delta-over-frozen
+    annotation on LoRA conditions.
+    """
+    probe_data = _load_json(cache_dir / "probe_metrics.json")
+    if not probe_data:
+        logger.warning("No probe metrics; skipping fig10.")
+        return
+
+    conditions = _ordered_conditions(probe_data)
+    if not conditions:
+        return
+
+    feature_types = ["volume", "location", "shape"]
+    feat_colors = [SEMANTIC_COLORS["volume"], SEMANTIC_COLORS["location"], SEMANTIC_COLORS["shape"]]
+    feat_labels = ["Volume", "Location", "Shape"]
+
+    n_feat = len(feature_types)
+    n_cond = len(conditions)
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.0))
+
+    # 6 bars per condition group: 3 linear (solid) + 3 MLP (hatched)
+    bar_w = PLOT_SETTINGS["bar_width"]
+    group_width = (2 * n_feat + 1) * bar_w  # gap between linear and MLP sub-groups
+
+    x_centers = np.arange(n_cond) * group_width * 1.3
+
+    # Get frozen baseline values for delta annotation
+    frozen_r2 = {}
+    frozen_key = "baseline_frozen" if "baseline_frozen" in probe_data else None
+    if frozen_key:
+        for ft in feature_types:
+            frozen_r2[ft] = probe_data[frozen_key].get(
+                f"r2_{ft}_linear", probe_data[frozen_key].get(f"r2_{ft}", 0)
+            ) or 0
+
+    for j, (ft, fc, fl) in enumerate(zip(feature_types, feat_colors, feat_labels)):
+        linear_vals = []
+        mlp_vals = []
+        for cond in conditions:
+            m = probe_data[cond]
+            linear_vals.append(m.get(f"r2_{ft}_linear", m.get(f"r2_{ft}", 0)) or 0)
+            mlp_vals.append(m.get(f"r2_{ft}_mlp", 0) or 0)
+
+        # Linear bars (solid)
+        offset_lin = (j - n_feat / 2 + 0.5) * bar_w
+        bars_lin = ax.bar(
+            x_centers + offset_lin, linear_vals, bar_w,
+            color=fc, alpha=0.85, label=f"{fl} (Lin)" if j < n_feat else None,
+        )
+
+        # MLP bars (hatched, offset by n_feat*bar_w + gap)
+        offset_mlp = offset_lin + n_feat * bar_w + bar_w * 0.5
+        bars_mlp = ax.bar(
+            x_centers + offset_mlp, mlp_vals, bar_w,
+            color=fc, alpha=0.55, hatch="//",
+            label=f"{fl} (MLP)" if j < n_feat else None,
+        )
+
+        # Delta-over-frozen annotation for LoRA conditions (linear only)
+        if frozen_key:
+            base_val = frozen_r2.get(ft, 0)
+            for k, cond in enumerate(conditions):
+                if cond in (frozen_key, "baseline"):
+                    continue
+                delta = linear_vals[k] - base_val
+                if abs(delta) > 0.01:
+                    sign = "+" if delta > 0 else ""
+                    ax.annotate(
+                        f"{sign}{delta:.2f}",
+                        xy=(x_centers[k] + offset_lin, linear_vals[k]),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha="center", fontsize=5, color="#333333",
+                    )
+
+    ax.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
+    ax.set_ylabel(r"R$^2$")
+    ax.set_title("Semantic Probe R\u00b2 (Linear + MLP)")
+    ax.set_xticks(x_centers + n_feat * bar_w * 0.25)
+    ax.set_xticklabels([get_label(c) for c in conditions], rotation=30, ha="right", fontsize=8)
+    ax.legend(fontsize=7, ncol=2, loc="upper left")
+
+    plt.tight_layout()
+    _save_fig(fig, figures_dir, "fig10_semantic_summary")
+
+
+# ============================================================================
+# Fig 11: Dice + Generalization
+# ============================================================================
+
+def fig11_dice_generalization(
+    cache_dir: Path,
+    figures_dir: Path,
+) -> None:
+    """Dice + Generalization (7x5.5) - two stacked panels.
+
+    Top: MEN vs GLI Dice grouped bars.
+    Bottom: Retention ratio (GLI/MEN) with dashed line at 1.0.
+    """
+    dice_data = _load_json(cache_dir / "dice_data.json")
+    if not dice_data:
+        logger.warning("No dice data; skipping fig11.")
+        return
+
+    # Need at least one condition with both MEN and GLI dice
+    conditions = _ordered_conditions(dice_data)
+    has_gli = [c for c in conditions if _get_gli_dice(dice_data, c) is not None]
+    if not has_gli:
+        logger.warning("No GLI dice data available; skipping fig11.")
+        return
+
+    conditions_to_plot = [c for c in conditions if c in has_gli or _get_men_dice(dice_data, c)]
+
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2, 1, figsize=(7.0, 5.5), sharex=True,
+        gridspec_kw={"height_ratios": [2, 1]},
+    )
+
+    x = np.arange(len(conditions_to_plot))
+    width = 0.35
+
+    men_means = []
+    men_stds = []
+    gli_means = []
+    gli_stds = []
+    retention = []
+
+    for cond in conditions_to_plot:
+        men = _get_men_dice(dice_data, cond)
+        gli = _get_gli_dice(dice_data, cond)
+
+        m_mean = men.get("dice_mean", 0) if men else 0
+        m_std = men.get("dice_std", 0) if men else 0
+        g_mean = gli.get("dice_mean", 0) if gli else 0
+        g_std = gli.get("dice_std", 0) if gli else 0
+
+        men_means.append(m_mean)
+        men_stds.append(m_std)
+        gli_means.append(g_mean)
+        gli_stds.append(g_std)
+        retention.append(g_mean / m_mean if m_mean > 0 else 0)
+
+    # Top panel: grouped bars
+    ax_top.bar(
+        x - width / 2, men_means, width, yerr=men_stds,
+        label="BraTS-MEN", color=DOMAIN_COLORS["meningioma"],
+        alpha=0.85, capsize=PLOT_SETTINGS["errorbar_capsize"],
+    )
+    ax_top.bar(
+        x + width / 2, gli_means, width, yerr=gli_stds,
+        label="BraTS-GLI", color=DOMAIN_COLORS["glioma"],
+        alpha=0.85, capsize=PLOT_SETTINGS["errorbar_capsize"],
+    )
+    ax_top.set_ylabel("Mean Dice")
+    ax_top.set_title("(a) In-Domain vs Out-of-Domain Dice")
+    ax_top.set_ylim(0.5, 1.0)
+    ax_top.legend(fontsize=8)
+
+    # Bottom panel: retention ratio
+    bar_colors = [get_color(c) for c in conditions_to_plot]
+    ax_bot.bar(x, retention, width * 2, color=bar_colors, alpha=0.85)
+    ax_bot.axhline(y=1.0, color="black", linestyle="--", alpha=0.6, linewidth=0.8)
+    ax_bot.set_ylabel("Retention (GLI / MEN)")
+    ax_bot.set_title("(b) Generalization Ratio")
+
+    # Value annotations
+    for i, (r, cond) in enumerate(zip(retention, conditions_to_plot)):
+        if r > 0:
+            ax_bot.text(
+                x[i], r + 0.01, f"{r:.2f}",
+                ha="center", va="bottom",
+                fontsize=PLOT_SETTINGS["annotation_fontsize"],
+            )
+
+    ax_bot.set_xticks(x)
+    ax_bot.set_xticklabels([get_label(c) for c in conditions_to_plot], rotation=30, ha="right")
+
+    plt.tight_layout()
+    _save_fig(fig, figures_dir, "fig11_dice_generalization")
+
+
+# ============================================================================
 # Master function
 # ============================================================================
 
@@ -593,7 +891,7 @@ def generate_all_v3_figures(
     figures_dir: Path,
     config: Optional[dict] = None,
 ) -> None:
-    """Generate all 8 thesis-quality figures from cached data.
+    """Generate all 11 thesis-quality figures from cached data.
 
     Args:
         cache_dir: Path to ``results/figure_cache/`` with precomputed data.
@@ -608,7 +906,7 @@ def generate_all_v3_figures(
     cache_dir = Path(cache_dir)
     figures_dir = Path(figures_dir)
 
-    logger.info("Generating 8 v3 figures...")
+    logger.info("Generating 11 v3 figures...")
 
     fig1_training_dynamics(cache_dir, figures_dir)
     fig2_dice_comparison(cache_dir, figures_dir)
@@ -618,5 +916,8 @@ def generate_all_v3_figures(
     fig6_umap_latent(cache_dir, figures_dir)
     fig7_prediction_scatter(cache_dir, figures_dir)
     fig8_dci_scores(cache_dir, figures_dir)
+    fig9_domain_umap_grid(cache_dir, figures_dir)
+    fig10_semantic_summary(cache_dir, figures_dir)
+    fig11_dice_generalization(cache_dir, figures_dir)
 
-    logger.info(f"All 8 figures saved to {figures_dir}")
+    logger.info(f"All 11 figures saved to {figures_dir}")

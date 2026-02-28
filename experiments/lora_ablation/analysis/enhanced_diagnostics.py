@@ -199,7 +199,7 @@ def analyze_feature_quality(
         return results
 
     # Load features
-    features = torch.load(features_path).numpy()
+    features = torch.load(features_path, weights_only=True).numpy()
     n_samples, n_dims = features.shape
 
     results['n_samples'] = n_samples

@@ -98,7 +98,7 @@ class TestDiceEvaluator:
                 checkpoint_file = condition_dir / "checkpoint.pt"
 
             if checkpoint_file.exists():
-                state_dict = torch.load(checkpoint_file, map_location=self.device)
+                state_dict = torch.load(checkpoint_file, map_location=self.device, weights_only=True)
                 # Handle different checkpoint formats
                 if isinstance(state_dict, dict) and "decoder_state_dict" in state_dict:
                     # Old format with separate decoder state
@@ -162,20 +162,20 @@ class TestDiceEvaluator:
         model.eval()
         all_dice_scores = []
 
-        for batch in tqdm(dataloader, desc=desc, leave=False):
-            images = batch["image"].to(self.device)
-            segs = batch["seg"].to(self.device)
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc=desc, leave=False):
+                images = batch["image"].to(self.device)
+                segs = batch["seg"].to(self.device)
 
-            # Forward pass
-            if hasattr(model, "forward_with_semantics"):
-                outputs = model.forward_with_semantics(images)
-                pred = outputs["logits"]
-            else:
-                pred = model(images)
+                # Forward pass (plain forward — no semantic heads needed for eval)
+                if hasattr(model, "model"):
+                    pred = model.model(images)
+                else:
+                    pred = model(images)
 
-            # Compute Dice per class
-            dice_scores = self.dice_metric(pred, segs)
-            all_dice_scores.append(dice_scores.cpu())
+                # Compute Dice per class
+                dice_scores = self.dice_metric(pred, segs)
+                all_dice_scores.append(dice_scores.cpu())
 
         # Aggregate: each element is [B_i, 3], concat to [N_samples, 3]
         dice_tensor = torch.cat(all_dice_scores, dim=0)  # [N_samples, 3]
