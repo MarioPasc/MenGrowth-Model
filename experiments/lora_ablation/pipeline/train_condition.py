@@ -29,6 +29,7 @@ Usage:
 import argparse
 import csv
 import logging
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,10 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+# Disable tqdm when stderr is not a TTY (cluster batch jobs, file redirects).
+# Progress is reported via logger instead.
+_INTERACTIVE = sys.stderr.isatty()
 
 from growth.data.bratsmendata import create_dataloaders
 from growth.data.transforms import DEFAULT_ROI_SIZE
@@ -588,8 +593,10 @@ def train_epoch(
     grad_monitor_count = 0
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
+    n_batches = len(dataloader)
+    log_interval = max(1, n_batches // 4)  # Log at ~25%, 50%, 75%, 100%
 
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training", leave=False)):
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training", leave=False, disable=not _INTERACTIVE)):
         images = batch["image"].to(device)
         segs = batch["seg"].to(device)
 
@@ -709,6 +716,12 @@ def train_epoch(
         total_loss += loss.item()
         num_batches += 1
 
+        # Periodic progress for non-interactive (cluster) environments
+        if not _INTERACTIVE and (batch_idx + 1) % log_interval == 0:
+            pct = 100 * (batch_idx + 1) / n_batches
+            avg_loss = total_loss / num_batches
+            logger.info(f"  [batch {batch_idx + 1}/{n_batches} ({pct:.0f}%)] loss={avg_loss:.4f}")
+
     # Compute averages (VICReg averaged per step, not per batch)
     num_steps = max(1, num_steps)
     metrics = {
@@ -767,7 +780,7 @@ def validate(
     num_batches = 0
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Validating", leave=False):
+        for batch in tqdm(dataloader, desc="Validating", leave=False, disable=not _INTERACTIVE):
             images = batch["image"].to(device)
             segs = batch["seg"].to(device)
 
