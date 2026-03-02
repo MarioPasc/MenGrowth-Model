@@ -1,0 +1,642 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================================================
+% Packages
+% ============================================================================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+
+% ============================================================================
+% Math operators and notation
+% ============================================================================
+\DeclareMathOperator{\E}{\mathbb{E}}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator{\tr}{tr}
+\DeclareMathOperator{\rank}{rank}
+\DeclareMathOperator{\KL}{KL}
+\DeclareMathOperator{\HSIC}{HSIC}
+\DeclareMathOperator{\MMD}{MMD}
+\DeclareMathOperator{\CKA}{CKA}
+\DeclareMathOperator{\PAD}{PAD}
+\DeclareMathOperator{\erank}{erank}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Hcal}{\mathcal{H}}
+\newcommand{\Fcal}{\mathcal{F}}
+\newcommand{\Xcal}{\mathcal{X}}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+
+% ============================================================================
+% Title
+% ============================================================================
+\title{%
+  \textbf{Domain Gap Quantification Between BraTS-GLI and BraTS-MEN} \\[6pt]
+  \large Methodology Reference for Thesis Chapter on Domain Shift Analysis
+}
+\author{Marc Pascual}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document provides a self-contained methodological reference for the domain gap analysis between the BraTS-GLI (glioma) and BraTS-MEN (meningioma) datasets as processed by the frozen BrainSegFounder encoder. We formalize every metric used---Maximum Mean Discrepancy (MMD), Centered Kernel Alignment (CKA), Proxy $\mathcal{A}$-distance, domain classifier accuracy, effective rank, Kolmogorov--Smirnov per-dimension tests, and segmentation Dice scores---providing their mathematical definitions, statistical properties, and justification for use in detecting distributional shift in high-dimensional neural feature spaces. The results section reports and discusses the experimental outcomes ($N=200$ subjects, 100 per domain), confirming a statistically significant domain gap ($\MMD^2=0.056$, $p<0.001$) that motivates the LoRA adaptation phase.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================================
+% 1. INTRODUCTION AND MOTIVATION
+% ============================================================================
+\section{Introduction and Motivation}\label{sec:intro}
+
+Transfer learning from a pretrained foundation model to a new target domain relies on the assumption that the learned representations generalize across related tasks. When the source and target distributions differ substantially---a phenomenon known as \emph{domain shift} or \emph{distribution shift}---the transferred model's performance degrades, often in unpredictable ways \cite{ben-david2010,quinonero-rosales2009}.
+
+In our pipeline, BrainSegFounder \cite{brainsegfounder2024} was pretrained on 41,000+ brain MRI subjects and fine-tuned on BraTS-GLI (adult diffuse gliomas). We apply it to BraTS-MEN (meningiomas), a pathologically distinct tumor type with fundamentally different imaging characteristics:
+
+\begin{itemize}[nosep]
+  \item \textbf{Morphology}: Meningiomas are extra-axial, well-circumscribed, and dural-based; gliomas are intra-axial, infiltrative, and heterogeneous.
+  \item \textbf{Substructures}: Meningiomas typically lack the necrotic core (NCR) and peritumoral edema (ED) patterns characteristic of high-grade gliomas.
+  \item \textbf{Signal intensity}: T1-weighted contrast enhancement patterns, T2-FLAIR signatures, and apparent diffusion characteristics differ between the two pathologies.
+\end{itemize}
+
+These biological differences manifest as distributional shift in the encoder's latent feature space. Quantifying this shift is essential before adaptation (via LoRA) to establish:
+\begin{enumerate}[nosep]
+  \item That the shift exists and is statistically significant (not merely sampling noise).
+  \item The magnitude of the shift, providing a baseline against which adaptation improvements can be measured.
+  \item The downstream functional impact on segmentation performance.
+\end{enumerate}
+
+We employ a battery of complementary metrics, each capturing different aspects of the distributional difference, to provide a comprehensive characterization. The following sections formalize each metric, justify its inclusion, and present the experimental results.
+
+
+% ============================================================================
+% 2. EXPERIMENTAL SETUP
+% ============================================================================
+\section{Experimental Setup}\label{sec:setup}
+
+\subsection{Model and Feature Extraction}
+
+We use the frozen BrainSegFounder model, a SwinUNETR architecture \cite{hatamizadeh2022swinunetr} with feature size 48, pretrained via self-supervised learning on 41K+ brain MRI subjects and fine-tuned for glioma segmentation on BraTS-GLI with 3-channel sigmoid output (TC/WT/ET hierarchy).
+
+Feature extraction targets the \texttt{encoder10} bottleneck layer, which produces feature maps of shape $[B, 768, s, s, s]$ where $s$ depends on input spatial resolution. We apply global average pooling (GAP) over the spatial dimensions to obtain a fixed-size representation:
+\begin{equation}\label{eq:gap}
+  \bm{z}_i = \frac{1}{|S|} \sum_{(d,h,w) \in S} \bm{f}_i^{(d,h,w)} \in \R^{768},
+\end{equation}
+where $\bm{f}_i^{(d,h,w)}$ is the feature vector at spatial position $(d,h,w)$ for subject $i$, and $S$ is the set of all spatial positions. This yields a 768-dimensional feature vector per subject.
+
+\subsection{Datasets and Preprocessing}
+
+\begin{itemize}[nosep]
+  \item \textbf{BraTS-GLI} ($n_s = 100$): NIfTI volumes from the BraTS glioma challenge, processed with standard validation transforms (CropForeground, SpatialPad, ResizeWithPadOrCrop to $192^3$, z-score normalization).
+  \item \textbf{BraTS-MEN} ($n_t = 100$): Pre-preprocessed HDF5 volumes at $192^3$, randomly sampled (seed 42) from the combined \texttt{sdp\_train} and \texttt{test} splits, with runtime z-score normalization.
+\end{itemize}
+
+Both datasets use identical spatial resolution ($192^3$ voxels) and channel ordering $[\text{FLAIR}, \text{T1ce}, \text{T1}, \text{T2}]$ to eliminate preprocessing confounds.
+
+The feature matrices are denoted $\bm{X} = \{\bm{x}_1, \ldots, \bm{x}_{n_s}\} \subset \R^{768}$ (GLI, source domain) and $\bm{Y} = \{\bm{y}_1, \ldots, \bm{y}_{n_t}\} \subset \R^{768}$ (MEN, target domain), both with $n_s = n_t = 100$.
+
+
+% ============================================================================
+% 3. METRICS: FORMAL DEFINITIONS AND JUSTIFICATION
+% ============================================================================
+\section{Domain Shift Metrics}\label{sec:metrics}
+
+We organize the metrics into three categories: (i) kernel-based distributional tests, (ii) classifier-based divergence proxies, and (iii) structural and marginal diagnostics.
+
+% ----------------------------------------------------------------------------
+\subsection{Maximum Mean Discrepancy (MMD)}\label{sec:mmd}
+
+\subsubsection{Definition}
+
+The Maximum Mean Discrepancy \cite{gretton2012} is a distance between probability distributions defined via embeddings into a reproducing kernel Hilbert space (RKHS).
+
+\begin{definition}[MMD]
+Let $P$ and $Q$ be two Borel probability measures on a measurable space $\Xcal$, and let $\Hcal$ be an RKHS with associated kernel $k: \Xcal \times \Xcal \to \R$. The \emph{Maximum Mean Discrepancy} is:
+\begin{equation}\label{eq:mmd-pop}
+  \MMD[\Hcal, P, Q] \coloneqq \sup_{f \in \Hcal, \|f\|_\Hcal \leq 1} \left( \E_{\bm{x} \sim P}[f(\bm{x})] - \E_{\bm{y} \sim Q}[f(\bm{y})] \right).
+\end{equation}
+\end{definition}
+
+The squared MMD admits a kernel-based closed form:
+\begin{equation}\label{eq:mmd-kernel}
+  \MMD^2[\Hcal, P, Q] = \E_{\bm{x},\bm{x}' \sim P}[k(\bm{x}, \bm{x}')] + \E_{\bm{y},\bm{y}' \sim Q}[k(\bm{y}, \bm{y}')] - 2\E_{\bm{x}\sim P, \bm{y}\sim Q}[k(\bm{x}, \bm{y})].
+\end{equation}
+
+When $k$ is a \emph{characteristic kernel} (e.g., the Gaussian RBF kernel), $\MMD[\Hcal, P, Q] = 0$ if and only if $P = Q$, making it a proper metric on probability distributions.
+
+\subsubsection{Empirical Estimator}
+
+Given finite samples $\bm{X} = \{\bm{x}_i\}_{i=1}^{n_s}$ and $\bm{Y} = \{\bm{y}_j\}_{j=1}^{n_t}$, we use the unbiased quadratic-time estimator:
+\begin{equation}\label{eq:mmd-empirical}
+  \widehat{\MMD}^2_u = \frac{1}{n_s(n_s-1)} \sum_{i \neq i'} k(\bm{x}_i, \bm{x}_{i'}) + \frac{1}{n_t(n_t-1)} \sum_{j \neq j'} k(\bm{y}_j, \bm{y}_{j'}) - \frac{2}{n_s n_t} \sum_{i,j} k(\bm{x}_i, \bm{y}_j).
+\end{equation}
+
+\subsubsection{Kernel Choice and Bandwidth}
+
+We employ the Gaussian RBF kernel:
+\begin{equation}\label{eq:rbf}
+  k(\bm{x}, \bm{y}) = \exp\!\left(-\frac{\|\bm{x} - \bm{y}\|^2}{2\sigma^2}\right),
+\end{equation}
+with bandwidth $\sigma$ set via the \emph{median heuristic} \cite{gretton2012}: $\sigma = \text{median}\{\|\bm{z}_i - \bm{z}_j\| : i < j\}$ where $\bm{z}_i$ ranges over the pooled sample $\bm{X} \cup \bm{Y}$. This data-adaptive choice provides a principled default without additional hyperparameter tuning, and has been shown to yield tests with good power across a range of alternatives \cite{ramdas2015}.
+
+\subsubsection{Permutation Test}
+
+We assess statistical significance via a permutation test with $B = 1000$ permutations. Under the null hypothesis $H_0: P = Q$, we pool $\bm{X}$ and $\bm{Y}$ into $\bm{Z} = \{\bm{z}_1, \ldots, \bm{z}_{n_s + n_t}\}$, then for each permutation $b$:
+\begin{enumerate}[nosep]
+  \item Draw a random permutation $\pi_b$ of $\{1, \ldots, n_s + n_t\}$.
+  \item Compute $\widehat{\MMD}^2_{u,b}$ by splitting $\bm{Z}_{\pi_b}$ into pseudo-source and pseudo-target.
+\end{enumerate}
+The $p$-value is estimated as:
+\begin{equation}\label{eq:perm-pvalue}
+  \hat{p} = \frac{1 + \sum_{b=1}^{B} \mathbb{1}\!\left[\widehat{\MMD}^2_{u,b} \geq \widehat{\MMD}^2_u\right]}{1 + B}.
+\end{equation}
+The numerator correction $(+1)$ avoids zero $p$-values and ensures validity \cite{phipson2010}.
+
+\subsubsection{Justification}
+
+MMD is the primary metric because:
+\begin{itemize}[nosep]
+  \item It is \emph{non-parametric}: no assumptions about the form of $P$ or $Q$.
+  \item It is \emph{consistent}: for characteristic kernels, it detects \emph{any} distributional difference given sufficient samples.
+  \item It operates on the \emph{full joint distribution}, not marginals, capturing correlations between feature dimensions.
+  \item The permutation test provides exact (non-asymptotic) Type I error control.
+\end{itemize}
+
+
+% ----------------------------------------------------------------------------
+\subsection{Centered Kernel Alignment (CKA)}\label{sec:cka}
+
+\subsubsection{Definition}
+
+Centered Kernel Alignment \cite{kornblith2019similarity} measures the similarity between two sets of representations. Unlike MMD (which measures distance), CKA measures \emph{alignment}---higher values indicate more similar representations.
+
+Let $\bm{K} = k(\bm{X}, \bm{X}) \in \R^{n \times n}$ and $\bm{L} = k(\bm{Y}, \bm{Y}) \in \R^{n \times n}$ be the Gram matrices of the two representation sets (here we use linear kernels, i.e., $\bm{K} = \bm{X}\bm{X}^\top$). CKA is defined via the Hilbert--Schmidt Independence Criterion (HSIC):
+
+\begin{definition}[HSIC]
+The empirical HSIC between kernel matrices $\bm{K}$ and $\bm{L}$ is:
+\begin{equation}\label{eq:hsic}
+  \HSIC(\bm{K}, \bm{L}) = \frac{1}{(n-1)^2} \tr(\bm{K} \bm{H} \bm{L} \bm{H}),
+\end{equation}
+where $\bm{H} = \bm{I}_n - \frac{1}{n}\bm{1}\bm{1}^\top$ is the centering matrix.
+\end{definition}
+
+\begin{definition}[CKA]
+\begin{equation}\label{eq:cka}
+  \CKA(\bm{X}, \bm{Y}) = \frac{\HSIC(\bm{K}, \bm{L})}{\sqrt{\HSIC(\bm{K}, \bm{K}) \cdot \HSIC(\bm{L}, \bm{L})}}.
+\end{equation}
+\end{definition}
+
+CKA is invariant to isotropic scaling and orthogonal transformations, making it robust to superficial representational differences.
+
+\subsubsection{Justification}
+
+CKA complements MMD by providing a \emph{normalized similarity measure} (bounded in $[0, 1]$) that captures whether the two feature sets preserve the same relational structure among samples, even if their absolute positions in feature space differ. A low CKA ($\CKA \approx 0$) indicates that the internal geometry of glioma and meningioma representations are fundamentally different, not just shifted.
+
+
+% ----------------------------------------------------------------------------
+\subsection{Proxy $\mathcal{A}$-distance}\label{sec:pad}
+
+\subsubsection{Theoretical Foundation}
+
+The $\mathcal{A}$-distance \cite{ben-david2007,ben-david2010} is a central quantity in domain adaptation theory. For a hypothesis class $\Hcal$ of binary classifiers and two distributions $P$, $Q$:
+\begin{equation}\label{eq:a-dist}
+  d_\Hcal(P, Q) = 2 \sup_{h \in \Hcal} \left| \Pr_{\bm{x} \sim P}[h(\bm{x}) = 1] - \Pr_{\bm{y} \sim Q}[h(\bm{y}) = 1] \right|.
+\end{equation}
+
+The $\mathcal{A}$-distance appears directly in the target-domain generalization bound for domain adaptation \cite{ben-david2010}:
+\begin{equation}\label{eq:ben-david-bound}
+  \epsilon_T(h) \leq \epsilon_S(h) + \tfrac{1}{2} d_\Hcal(P_S, P_T) + \lambda^*,
+\end{equation}
+where $\epsilon_S(h)$ and $\epsilon_T(h)$ are the source and target errors, and $\lambda^*$ is the ideal joint error (typically small for related domains). This bound shows that larger $\mathcal{A}$-distance \emph{directly implies} worse transfer.
+
+\subsubsection{Empirical Proxy}
+
+Computing the exact $\mathcal{A}$-distance is intractable, so we use the \emph{Proxy $\mathcal{A}$-distance} (PAD) \cite{ben-david2007}:
+\begin{equation}\label{eq:pad}
+  \PAD = 2(1 - 2\varepsilon),
+\end{equation}
+where $\varepsilon$ is the generalization error of a linear classifier (logistic regression) trained to distinguish source from target samples. The PAD ranges from 0 (indistinguishable domains, $\varepsilon = 0.5$) to 2 (perfectly separable, $\varepsilon = 0$).
+
+\subsubsection{Justification}
+
+The PAD has direct theoretical relevance: it bounds the transfer gap. Unlike MMD, which measures distance in a kernel-defined function space, PAD specifically measures the distance as seen by the class of linear classifiers---the same class often used in downstream tasks (linear probes, logistic regression heads). This provides a functionally relevant measure of domain shift.
+
+
+% ----------------------------------------------------------------------------
+\subsection{Domain Classifier Accuracy}\label{sec:clf}
+
+A logistic regression classifier is trained on labeled domain data ($0 =$ source, $1 =$ target) using stratified $k$-fold cross-validation ($k = 5$). The mean test accuracy across folds directly indicates domain separability:
+
+\begin{itemize}[nosep]
+  \item $\text{Accuracy} = 50\%$: Domains are indistinguishable (chance level).
+  \item $\text{Accuracy} = 100\%$: Domains are perfectly separable.
+\end{itemize}
+
+While related to PAD (both use linear classifiers), the classifier accuracy is reported as a more intuitive metric. It is the raw classification accuracy, while PAD rescales it to the $[0, 2]$ theoretical range.
+
+
+% ----------------------------------------------------------------------------
+\subsection{Effective Rank}\label{sec:erank}
+
+\subsubsection{Definition}
+
+The effective rank \cite{roy2007effective} quantifies the ``intrinsic dimensionality'' of a feature matrix, measuring how many dimensions carry meaningful variance.
+
+\begin{definition}[Effective Rank]
+For a matrix $\bm{A} \in \R^{n \times d}$ with singular values $\sigma_1 \geq \cdots \geq \sigma_{\min(n,d)} \geq 0$, define the normalized singular value distribution:
+\begin{equation}\label{eq:sv-dist}
+  p_k = \frac{\sigma_k}{\sum_{j} \sigma_j}, \quad k = 1, \ldots, \min(n, d).
+\end{equation}
+The effective rank is the exponential of the Shannon entropy of this distribution:
+\begin{equation}\label{eq:erank}
+  \erank(\bm{A}) = \exp\!\left( -\sum_{k} p_k \ln p_k \right).
+\end{equation}
+\end{definition}
+
+The effective rank satisfies $1 \leq \erank(\bm{A}) \leq \rank(\bm{A})$, with $\erank = 1$ when all variance concentrates in a single direction and $\erank = d$ when variance is uniformly distributed.
+
+\subsubsection{Justification}
+
+Effective rank serves a diagnostic role: it reveals whether the encoder distributes information across the latent space or collapses it into a low-dimensional subspace. A substantial difference in effective rank between domains indicates that the encoder allocates its representational capacity differently for gliomas versus meningiomas, suggesting that the learned features are domain-specific.
+
+
+% ----------------------------------------------------------------------------
+\subsection{Kolmogorov--Smirnov Per-Dimension Test}\label{sec:ks}
+
+\subsubsection{Definition}
+
+The two-sample Kolmogorov--Smirnov (KS) test \cite{kolmogorov1933,smirnov1948} compares the empirical cumulative distribution functions (ECDFs) of two univariate samples. For each feature dimension $d \in \{1, \ldots, 768\}$:
+
+\begin{equation}\label{eq:ks}
+  D_d = \sup_{z \in \R} \left| \hat{F}_{X,d}(z) - \hat{F}_{Y,d}(z) \right|,
+\end{equation}
+
+where $\hat{F}_{X,d}$ and $\hat{F}_{Y,d}$ are the ECDFs of the $d$-th feature dimension for the source and target samples, respectively.
+
+\subsubsection{Complementarity with MMD}
+
+While MMD tests the \emph{joint} distribution over all 768 dimensions, the per-dimension KS test provides \emph{marginal} diagnostics that:
+\begin{itemize}[nosep]
+  \item \textbf{Localize} the shift: identify which specific feature dimensions contribute most to the domain gap.
+  \item \textbf{Visualize}: the top discriminative dimensions can be plotted as univariate KDE overlays, providing intuitive visual evidence.
+  \item \textbf{Assess pervasiveness}: the fraction of dimensions with significant KS $p$-values indicates whether the shift is concentrated in a few dimensions or diffused throughout the feature space.
+\end{itemize}
+
+Note that applying 768 simultaneous tests raises multiple-comparison concerns. While we report raw $p$-values for the top dimensions (which are so small as to survive even Bonferroni correction at $\alpha / 768 \approx 6.5 \times 10^{-5}$), the primary use of this metric is for visualization and dimension ranking, not hypothesis testing per se.
+
+
+% ----------------------------------------------------------------------------
+\subsection{Segmentation Dice Score}\label{sec:dice}
+
+\subsubsection{Definition}
+
+The S{\o}rensen--Dice coefficient \cite{dice1945} between a predicted segmentation $\hat{Y}$ and ground truth $Y$ is:
+\begin{equation}\label{eq:dice}
+  \text{Dice}(\hat{Y}, Y) = \frac{2 |\hat{Y} \cap Y|}{|\hat{Y}| + |Y|},
+\end{equation}
+ranging from 0 (no overlap) to 1 (perfect overlap).
+
+Following the BrainSegFounder convention, we evaluate three overlapping binary channels:
+\begin{align}
+  \text{TC (Tumor Core)} &: \quad (\text{label} = 1) \cup (\text{label} = 3), \\
+  \text{WT (Whole Tumor)} &: \quad (\text{label} = 1) \cup (\text{label} = 2) \cup (\text{label} = 3), \\
+  \text{ET (Enhancing Tumor)} &: \quad (\text{label} = 3).
+\end{align}
+
+\subsubsection{Statistical Comparison}
+
+We compare per-subject Dice scores between domains using Welch's $t$-test (unequal-variance two-sample $t$-test), which is appropriate when sample sizes are equal but variances may differ. The test statistic is:
+\begin{equation}\label{eq:welch}
+  t = \frac{\bar{X}_s - \bar{X}_t}{\sqrt{s_s^2/n_s + s_t^2/n_t}},
+\end{equation}
+with degrees of freedom estimated via the Welch--Satterthwaite approximation.
+
+\subsubsection{Justification}
+
+Dice provides a \emph{functionally grounded} measure of domain gap: it directly quantifies how much segmentation performance degrades when the model encounters out-of-distribution data. While the distributional metrics (MMD, CKA, PAD) operate in the latent space, Dice measures the end-to-end impact on the task the model was trained for.
+
+
+% ============================================================================
+% 4. COMPLEMENTARITY OF METRICS
+% ============================================================================
+\section{Complementarity of the Metric Battery}\label{sec:complementarity}
+
+No single metric suffices to fully characterize a domain gap. \Cref{tab:metric-properties} summarizes the properties of each metric and its role in the analysis.
+
+\begin{table}[h]
+  \centering
+  \caption{Properties and roles of the domain shift metrics. ``Joint'' means the metric considers feature dimensions jointly; ``Marginal'' means it operates per-dimension.}
+  \label{tab:metric-properties}
+  \begin{tabular}{lcccc}
+    \toprule
+    Metric & Scope & Range & Normality req. & Primary role \\
+    \midrule
+    MMD$^2$ & Joint & $[0, \infty)$ & No & Distributional hypothesis test \\
+    CKA & Joint & $[0, 1]$ & No & Normalized similarity \\
+    PAD & Joint (linear) & $[0, 2]$ & No & Theoretical transfer bound \\
+    Classifier Acc. & Joint (linear) & $[0.5, 1]$ & No & Intuitive separability \\
+    Effective Rank & Per-domain & $[1, d]$ & No & Structural diagnostic \\
+    KS statistic & Marginal & $[0, 1]$ per dim. & No & Dimension-level localization \\
+    Dice & Task-level & $[0, 1]$ per class & No & Functional impact \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The battery captures the domain gap at three levels:
+\begin{enumerate}[nosep]
+  \item \textbf{Joint distribution} (MMD, CKA, PAD, classifier): Does the overall feature distribution differ?
+  \item \textbf{Feature structure} (effective rank, KS): Where and how does the difference manifest?
+  \item \textbf{Functional impact} (Dice): Does the difference degrade task performance?
+\end{enumerate}
+
+Convergence of evidence across all three levels provides the strongest justification for domain adaptation.
+
+
+% ============================================================================
+% 5. RESULTS
+% ============================================================================
+\section{Results}\label{sec:results}
+
+All experiments were conducted with seed 42, using the frozen BrainSegFounder encoder (no LoRA adaptation). Feature extraction used $192^3$ input volumes and the \texttt{encoder10} bottleneck (768 dimensions after GAP).
+
+% ----------------------------------------------------------------------------
+\subsection{Domain Shift Metrics}
+
+\Cref{tab:domain-gap-results} presents the complete domain gap analysis.
+
+\begin{table}[t]
+  \centering
+  \caption{Domain gap analysis: frozen BrainSegFounder on BraTS-GLI vs.\ BraTS-MEN ($N = 100$ per domain). Dice scores reported as mean $\pm$ std. Significance from Welch's $t$-test: $^{***}p < 0.001$, $^{**}p < 0.01$, $^{*}p < 0.05$.}
+  \label{tab:domain-gap-results}
+  \begin{tabular}{lccc}
+    \toprule
+    Metric & BraTS-GLI & BraTS-MEN & $\Delta$ / $p$ \\
+    \midrule
+    Dice TC & $0.493 \pm 0.38$ & $0.672 \pm 0.41$ & $^{**}$ $(p = 0.002)$ \\
+    Dice WT & $0.740 \pm 0.21$ & $0.597 \pm 0.38$ & $^{**}$ $(p = 0.001)$ \\
+    Dice ET & $0.552 \pm 0.38$ & $0.677 \pm 0.41$ & $^{*}$ $(p = 0.027)$ \\
+    Dice Mean & $0.595 \pm 0.28$ & $0.648 \pm 0.39$ & n.s. $(p = 0.270)$ \\
+    \midrule
+    MMD$^2$ (RBF) & --- & --- & $\textbf{0.056}$ $(p < 0.001)$ \\
+    CKA & --- & --- & $0.021$ \\
+    Proxy $\mathcal{A}$-distance & --- & --- & $\textbf{0.92}$ \\
+    Classifier Acc. & --- & --- & $\textbf{73.0\%}$ \\
+    Effective Rank & $17.1$ & $21.2$ & --- \\
+    \midrule
+    Probe $R^2$ (vol) & N/A & $0.179$ & --- \\
+    Probe $R^2$ (loc) & N/A & $-0.257$ & --- \\
+    Probe $R^2$ (shape) & N/A & $-0.500$ & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Per-Dimension Kolmogorov--Smirnov Analysis}
+
+Of 768 feature dimensions, 287 (37.4\%) show significant distributional differences at $\alpha = 0.05$, with 195 (25.4\%) surviving a stricter threshold of $\alpha = 0.01$, and 54 (7.0\%) at $\alpha = 0.001$. The four most discriminative dimensions are:
+
+\begin{table}[h]
+  \centering
+  \caption{Top 4 most discriminative feature dimensions by KS statistic.}
+  \label{tab:ks-top4}
+  \begin{tabular}{cccc}
+    \toprule
+    Rank & Dimension & $D$ (KS stat.) & $p$-value \\
+    \midrule
+    1 & 276 & 0.360 & $3.75 \times 10^{-6}$ \\
+    2 & 114 & 0.340 & $1.61 \times 10^{-5}$ \\
+    3 & 187 & 0.340 & $1.61 \times 10^{-5}$ \\
+    4 & 416 & 0.330 & $3.21 \times 10^{-5}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+All four survive Bonferroni correction ($\alpha_\text{Bonf} = 0.05/768 \approx 6.5 \times 10^{-5}$).
+
+
+\subsection{Visual Summary}
+
+\Cref{fig:domain-gap} presents the three-panel visual summary.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{/media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/Domain_Gap/figures/domain_gap.png}
+  \caption{Domain gap analysis between BraTS-GLI (rose) and BraTS-MEN (blue) using frozen BrainSegFounder encoder features. \textbf{(a)} PCA projection of \texttt{encoder10} features ($768 \to 2$ dimensions) with kernel density estimation overlays. PC1 captures 94.8\% of variance. The filled contours (blue) represent the meningioma density; contour lines (rose) represent glioma density. Despite substantial overlap, the distributions are statistically distinct ($\MMD^2 = 0.06$, $p < 0.001$). \textbf{(b)} Per-class Dice scores for frozen model segmentation. Whole tumor (WT) shows the largest degradation on meningioma ($0.740 \to 0.597$, $p = 0.001$). Note the dramatically increased variance for meningioma, indicating inconsistent segmentation. \textbf{(c)} Univariate kernel density estimates for the four most discriminative feature dimensions (selected by Kolmogorov--Smirnov statistic). All four show clear distributional separation between domains.}
+  \label{fig:domain-gap}
+\end{figure}
+
+
+% ============================================================================
+% 6. DISCUSSION
+% ============================================================================
+\section{Discussion}\label{sec:discussion}
+
+\subsection{A Moderate but Statistically Significant Domain Gap}
+
+The MMD permutation test provides clear statistical evidence for distributional difference: $\MMD^2 = 0.056$ with $p < 0.001$ (1000 permutations), rejecting the null hypothesis that glioma and meningioma feature distributions are identical. This is corroborated by the domain classifier accuracy ($73.0\%$, above the $50\%$ chance level) and the Proxy $\mathcal{A}$-distance ($\PAD = 0.92$).
+
+However, several indicators suggest the gap is \emph{moderate} rather than catastrophic:
+\begin{itemize}[nosep]
+  \item The classifier accuracy of 73\%, while above chance, is far from perfect separation---roughly one in four samples is misclassified, indicating substantial distributional overlap.
+  \item The PCA analysis (\Cref{fig:domain-gap}a) shows heavy overlap in the 2D projection, with PC1 (94.8\% of variance) shared between domains. The domain-discriminative signal resides in the remaining $\sim$5\% of variance.
+  \item The overall mean Dice difference is \emph{not statistically significant} ($p = 0.270$), as discussed below.
+\end{itemize}
+
+The CKA value of $0.021$ appears to suggest low similarity, but this must be interpreted carefully. CKA measures representational \emph{alignment} normalized for scale and rotation---in the cross-domain setting (comparing GLI feature matrix against MEN feature matrix), a low CKA indicates that inter-subject similarity structures differ between domains, which is expected even for moderate domain shift since the underlying patient populations have different pathological characteristics.
+
+\subsection{Nature of the Feature-Space Shift}
+
+\paragraph{Diffuse across dimensions.} The KS analysis reveals that 37.4\% of feature dimensions (287/768) show statistically significant distributional differences at $\alpha = 0.05$, with 7.0\% (54/768) surviving at $\alpha = 0.001$. This diffuse pattern indicates that the shift is not concentrated in a few easily-correctable dimensions, but rather represents a subtle, distributed divergence across the feature space.
+
+\paragraph{Structural asymmetry.} The effective rank difference ($17.1$ for GLI vs.\ $21.2$ for MEN) reveals that the meningioma feature space is more evenly distributed across dimensions. The encoder was optimized for glioma segmentation, where it learned to compress information into a task-relevant subspace. Meningioma features, not having been optimized for, are spread more diffusely---the encoder has not learned which dimensions are most informative for this tumor type.
+
+\paragraph{PCA concentration.} PC1 captures 94.8\% of the total variance. This extreme concentration suggests that the bulk of feature variation is shared between domains---likely encoding broad brain structure information from pretraining on 41K+ subjects. The domain-discriminative information resides in the tail of the variance spectrum, consistent with the moderate MMD value and the visual overlap in \Cref{fig:domain-gap}a.
+
+\subsection{Segmentation Performance: A Nuanced Picture}
+
+The Dice analysis reveals that the frozen model does not simply ``fail'' on meningioma---the picture is more nuanced:
+
+\begin{itemize}[nosep]
+  \item \textbf{WT degradation}: Whole tumor Dice drops from $0.740$ (GLI) to $0.597$ (MEN), $p = 0.001$. This is the most clinically relevant metric for meningioma delineation, as WT encompasses the entire visible tumor mass. The degradation reflects the encoder's difficulty with meningioma-specific tumor boundaries (dural attachment, extra-axial extension).
+
+  \item \textbf{TC and ET reversal}: Tumor core ($0.493 \to 0.672$) and enhancing tumor ($0.552 \to 0.677$) Dice are \emph{higher} for meningioma. This reflects the fundamentally different substructure composition: meningiomas are predominantly contrast-enhancing, homogeneous masses, making TC and ET easier targets than in gliomas, which exhibit heterogeneous enhancement and diffuse infiltration.
+
+  \item \textbf{Increased variance}: For all Dice metrics, meningioma variance is substantially higher (e.g., WT std: $0.38$ vs.\ $0.21$). The frozen model's segmentation quality is \emph{inconsistent} on meningioma---some subjects are segmented well, others poorly---which is problematic for downstream growth forecasting requiring stable feature extraction.
+
+  \item \textbf{Mean Dice not significant}: The overall mean Dice difference ($0.595$ vs.\ $0.648$, $p = 0.270$) is not statistically significant, precisely because the TC/ET improvements and WT degradation partially cancel. This demonstrates that the domain shift does not produce uniform degradation---rather, it \emph{rearranges} where performance is allocated, reflecting the different anatomical characteristics of each tumor type.
+\end{itemize}
+
+In summary, the segmentation analysis shows that the frozen BrainSegFounder transfers to meningioma with mixed but not catastrophic results. The model can segment meningioma at a coarse level, but it does so inconsistently and with a performance profile misaligned to the tumor's actual anatomy.
+
+\subsection{The Critical Problem: Semantic Structure of Frozen Features}\label{sec:semantic-structure}
+
+While the distributional shift is statistically significant but moderate, and segmentation performance degrades partially but not catastrophically, the \emph{decisive} argument for encoder adaptation comes from the semantic probe analysis. The frozen encoder's representations are not merely shifted---they are \textbf{semantically unstructured} for the downstream growth prediction task.
+
+The Supervised Disentangled Projection (SDP) module, which is the next stage of the pipeline, requires latent features that encode three clinically meaningful semantic attributes:
+\begin{enumerate}[nosep]
+  \item \textbf{Volume} ($z_\text{vol} \in \R^4$): Tumor volume per sub-compartment (NCR, ED, ET, total).
+  \item \textbf{Location} ($z_\text{loc} \in \R^3$): Tumor centroid coordinates in normalized space.
+  \item \textbf{Shape} ($z_\text{shape} \in \R^3$): Tumor morphological descriptors (sphericity, surface regularity, extent).
+\end{enumerate}
+
+The frozen encoder's probe $R^2$ values on meningioma data are:
+\begin{itemize}[nosep]
+  \item Volume: $R^2 = 0.179$---only 17.9\% of volumetric variance explained. The encoder captures weak volumetric signal, but $82\%$ of the variance needed for growth trajectory modeling is missing.
+  \item Location: $R^2 = -0.257$---\emph{worse than predicting the mean}. The encoder has learned spatial priors tuned to glioma locations (periventricular, white-matter dominant), which are actively misleading for meningiomas (convexity, skull base, parasagittal).
+  \item Shape: $R^2 = -0.500$---\emph{strongly negative}. The encoder has internalized glioma-specific shape priors (irregular, infiltrative, heterogeneous morphology) that are anti-correlated with meningioma characteristics (spheroidal, well-circumscribed, smooth margins).
+\end{itemize}
+
+These negative $R^2$ values are decisive: they demonstrate not merely an absence of useful semantic signal, but the presence of \emph{actively misleading} structure. A downstream SDP module receiving these features would need to first \emph{suppress} the glioma-specific priors before it could learn meningioma-relevant semantics---an inefficient and error-prone strategy given the small sample size ($N = 33$ patients).
+
+\subsection{Motivation for LoRA Adaptation: Semantic Structuring over Domain Alignment}\label{sec:lora-motivation}
+
+The preceding analysis leads to a refined motivation for LoRA adaptation that goes beyond classical domain adaptation. The primary goal is not to ``close the domain gap'' in a distributional sense---the moderate gap and mixed segmentation results show the encoder already transfers tolerably well. Instead, the core motivation is to produce \textbf{semantically structured latent representations} optimized for the downstream SDP module.
+
+Concretely, the LoRA-adapted encoder is trained with:
+\begin{enumerate}[nosep]
+  \item A \textbf{segmentation loss} on meningioma data, which tunes the encoder to extract features relevant to meningioma anatomy and improves the consistency of feature extraction (reducing the high variance observed in frozen-model segmentation).
+  \item \textbf{Semantic auxiliary heads} during LoRA training, which provide explicit gradient signal to structure the latent space along the volume, location, and shape axes required by SDP. These heads map encoder features to semantic predictions and contribute auxiliary losses that guide the encoder to produce semantically informative representations.
+\end{enumerate}
+
+This dual-objective training transforms the latent space from one that incidentally captures some tumor information (as a byproduct of glioma segmentation) into one that \emph{explicitly encodes} the semantic attributes needed for growth prediction. The key insight is:
+
+\begin{tcolorbox}[colback=gray!5!white,colframe=gray!50!black]
+\emph{The purpose of LoRA adaptation is not primarily to improve segmentation or close a distributional gap, but to produce a feature space where semantic attributes---volume, location, and shape---are linearly decodable, as required by the subsequent SDP module.}
+\end{tcolorbox}
+
+LoRA \cite{hu2022lora} is ideally suited for this task because:
+\begin{itemize}[nosep]
+  \item It introduces low-rank perturbations $\Delta \bm{W} = \bm{B}\bm{A}$ to the frozen attention weights, modifying the internal feature computation with $O(r \cdot d)$ parameters instead of $O(d^2)$.
+  \item The moderate domain gap (73\% classifier accuracy, substantial distributional overlap) confirms the domains share substantial structure. LoRA need not learn entirely new representations but rather \emph{restructure} existing ones---exactly the regime where low-rank adaptation excels.
+  \item The parameter efficiency is critical given our dataset size ($N = 33$ meningioma patients, 112 longitudinal scan pairs): full fine-tuning would risk overfitting, whereas LoRA constrains the adaptation to a low-dimensional subspace.
+  \item The frozen encoder weights are preserved as initialization, ensuring that the strong pretrained representations for general brain anatomy (captured by the 94.8\% variance in PC1) are not destroyed during adaptation.
+\end{itemize}
+
+The success criterion for LoRA adaptation is therefore not a narrowing of the MMD or PAD values, but an \emph{improvement in downstream semantic probe $R^2$}---demonstrating that the adapted features are better structured for the SDP module. The domain gap analysis presented here establishes the baseline against which this improvement will be measured.
+
+
+% ============================================================================
+% 7. SUMMARY
+% ============================================================================
+\section{Summary}\label{sec:summary}
+
+This analysis characterizes the domain gap between BrainSegFounder representations of glioma and meningioma MRI through seven complementary metrics. The principal findings are:
+
+\begin{tcolorbox}[colback=blue!5!white,colframe=blue!50!black,title=Key Findings]
+\begin{enumerate}[nosep]
+  \item \textbf{Statistically significant distributional shift}: $\MMD^2 = 0.056$ ($p < 0.001$), $\PAD = 0.92$, classifier accuracy $= 73\%$.
+  \item \textbf{Low representational alignment}: $\CKA = 0.021$, indicating different inter-subject similarity structures.
+  \item \textbf{Structural asymmetry}: Effective rank 17.1 (GLI) vs.\ 21.2 (MEN)---the encoder compresses glioma features more efficiently.
+  \item \textbf{Diffuse marginal shift}: 287/768 dimensions (37.4\%) significantly different ($p < 0.05$).
+  \item \textbf{Mixed segmentation transfer}: WT Dice degrades ($0.740 \to 0.597$, $p = 0.001$) but TC and ET \emph{improve}; mean Dice difference is not significant ($p = 0.270$).
+  \item \textbf{Semantically unstructured features}: Frozen encoder probes yield negative $R^2$ for location ($-0.257$) and shape ($-0.500$)---features are anti-predictive for meningioma semantic attributes.
+\end{enumerate}
+\end{tcolorbox}
+
+\medskip
+
+The domain gap is real but moderate: the encoder transfers with substantial distributional overlap and mixed (not uniformly degraded) segmentation performance. The decisive problem is not the distributional shift itself, but its downstream consequence: the frozen encoder produces features that are \textbf{semantically unstructured} for meningioma growth prediction. Volume, location, and shape---the attributes required by the Supervised Disentangled Projection module---cannot be linearly decoded from frozen features.
+
+This motivates LoRA adaptation with semantic auxiliary heads: a parameter-efficient restructuring of the latent space that produces semantically informative representations, measured by improvement in downstream probe $R^2$ rather than by distributional alignment metrics alone.
+
+
+% ============================================================================
+% REFERENCES
+% ============================================================================
+\begingroup
+\renewcommand{\section}[2]{}
+\begin{thebibliography}{99}
+
+\bibitem{ben-david2007}
+S.~Ben-David, J.~Blitzer, K.~Crammer, and F.~Pereira,
+``Analysis of representations for domain adaptation,''
+in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, vol.~19, 2007.
+
+\bibitem{ben-david2010}
+S.~Ben-David, J.~Blitzer, K.~Crammer, A.~Kulesza, F.~Pereira, and J.~W.~Vaughan,
+``A theory of learning from different domains,''
+\emph{Machine Learning}, vol.~79, no.~1--2, pp.~151--175, 2010.
+
+\bibitem{brainsegfounder2024}
+J.~Ren, et al.,
+``BrainSegFounder: Towards 3D foundation models for neuroimage segmentation,''
+\emph{Medical Image Analysis}, 2024.
+
+\bibitem{dice1945}
+L.~R.~Dice,
+``Measures of the amount of ecologic association between species,''
+\emph{Ecology}, vol.~26, no.~3, pp.~297--302, 1945.
+
+\bibitem{gretton2012}
+A.~Gretton, K.~M.~Borgwardt, M.~J.~Rasch, B.~Sch\"olkopf, A.~Smola, and others,
+``A kernel two-sample test,''
+\emph{Journal of Machine Learning Research}, vol.~13, pp.~723--773, 2012.
+
+\bibitem{hatamizadeh2022swinunetr}
+A.~Hatamizadeh, V.~Nath, Y.~Tang, D.~Yang, H.~Roth, and D.~Xu,
+``Swin UNETR: Swin transformers for semantic segmentation of brain tumors in MRI images,''
+in \emph{BrainLes@MICCAI}, Springer, 2022.
+
+\bibitem{hu2022lora}
+E.~J.~Hu, Y.~Shen, P.~Wallis, Z.~Allen-Zhu, Y.~Li, S.~Wang, L.~Wang, and W.~Chen,
+``LoRA: Low-rank adaptation of large language models,''
+in \emph{International Conference on Learning Representations (ICLR)}, 2022.
+
+\bibitem{kolmogorov1933}
+A.~N.~Kolmogorov,
+``Sulla determinazione empirica di una legge di distribuzione,''
+\emph{Giornale dell'Istituto Italiano degli Attuari}, vol.~4, pp.~83--91, 1933.
+
+\bibitem{kornblith2019similarity}
+S.~Kornblith, M.~Norouzi, H.~Lee, and G.~Hinton,
+``Similarity of neural network representations revisited,''
+in \emph{International Conference on Machine Learning (ICML)}, 2019.
+
+\bibitem{phipson2010}
+B.~Phipson and G.~K.~Smyth,
+``Permutation $P$-values should never be zero: Calculating exact $P$-values when permutations are randomly drawn,''
+\emph{Statistical Applications in Genetics and Molecular Biology}, vol.~9, no.~1, 2010.
+
+\bibitem{quinonero-rosales2009}
+J.~Qui\~{n}onero-Candela, M.~Sugiyama, A.~Schwaighofer, and N.~D.~Lawrence,
+\emph{Dataset Shift in Machine Learning}.
+MIT Press, 2009.
+
+\bibitem{ramdas2015}
+A.~Ramdas, S.~J.~Reddi, B.~P\'{o}czos, A.~Singh, and L.~Wasserman,
+``On the decreasing power of kernel and distance based nonparametric hypothesis tests in high dimensions,''
+in \emph{AAAI Conference on Artificial Intelligence}, 2015.
+
+\bibitem{roy2007effective}
+O.~Roy and M.~Vetterli,
+``The effective rank: A measure of effective dimensionality,''
+in \emph{European Signal Processing Conference (EUSIPCO)}, 2007.
+
+\bibitem{smirnov1948}
+N.~Smirnov,
+``Table for estimating the goodness of fit of empirical distributions,''
+\emph{Annals of Mathematical Statistics}, vol.~19, no.~2, pp.~279--281, 1948.
+
+\end{thebibliography}
+\endgroup
+
+\end{document}

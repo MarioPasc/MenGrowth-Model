@@ -22,14 +22,26 @@
 
 set -euo pipefail
 
-REPO_ROOT="${REPO_SRC:-$(cd "$(dirname "$0")/../.." && pwd)}"
+# Resolve repo root: prefer REPO_SRC, then SLURM_SUBMIT_DIR (set by sbatch),
+# then fall back to dirname (only works when running directly, not via sbatch).
+REPO_ROOT="${REPO_SRC:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}}"
 CONDA_ENV="${CONDA_ENV_NAME:-growth}"
+
+# --- Results directory ---
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+RESULTS_DIR="${REPO_ROOT}/results/smoke_tests/${TIMESTAMP}"
+mkdir -p "${RESULTS_DIR}"
+LOGFILE="${RESULTS_DIR}/smoke_test_gpu.log"
+
+# Tee all output to both stdout and the log file
+exec > >(tee -a "${LOGFILE}") 2>&1
 
 echo "========================================"
 echo "GP Probe GPU Smoke Test"
 echo "Repo: ${REPO_ROOT}"
 echo "Conda: ${CONDA_ENV}"
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'N/A')"
+echo "Results: ${RESULTS_DIR}"
 echo "Date: $(date)"
 echo "========================================"
 
@@ -43,7 +55,7 @@ cd "${REPO_ROOT}"
 # --- Step 1: Run CPU smoke test first ---
 echo ""
 echo "=== Step 1: CPU smoke test ==="
-bash slurm/lora_adaptation/smoke_test_v4.sh
+bash "${REPO_ROOT}/slurm/lora_adaptation/smoke_test_v4.sh"
 
 # --- Step 2: GPU-accelerated end-to-end ---
 echo ""
@@ -76,23 +88,24 @@ python -m experiments.lora_ablation.pipeline.train_condition \
     --config "${CONFIG_PATH}" \
     --condition baseline_frozen \
     --max-epochs 3 \
-    --device cuda 2>&1 | tail -20
+    --device cuda 2>&1 | tee "${RESULTS_DIR}/train_condition.log" | tail -20
 
 echo ""
 echo "Running feature extraction..."
 python -m experiments.lora_ablation.pipeline.extract_features \
     --config "${CONFIG_PATH}" \
     --condition baseline_frozen \
-    --device cuda 2>&1 | tail -10
+    --device cuda 2>&1 | tee "${RESULTS_DIR}/extract_features.log" | tail -10
 
 echo ""
 echo "Running GP probe evaluation..."
 python -m experiments.lora_ablation.pipeline.evaluate_probes \
     --config "${CONFIG_PATH}" \
     --condition baseline_frozen \
-    --device cuda 2>&1 | tail -30
+    --device cuda 2>&1 | tee "${RESULTS_DIR}/evaluate_probes.log" | tail -30
 
 echo ""
 echo "========================================"
 echo "GPU Smoke Test PASSED"
+echo "Results saved to: ${RESULTS_DIR}"
 echo "========================================"

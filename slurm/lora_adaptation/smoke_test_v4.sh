@@ -18,7 +18,9 @@
 
 set -euo pipefail
 
-REPO_ROOT="${REPO_SRC:-$(cd "$(dirname "$0")/../.." && pwd)}"
+# Resolve repo root: prefer REPO_SRC, then SLURM_SUBMIT_DIR (set by sbatch),
+# then fall back to dirname (only works when running directly, not via sbatch).
+REPO_ROOT="${REPO_SRC:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}}"
 CONDA_ENV="${CONDA_ENV_NAME:-growth}"
 
 echo "========================================"

@@ -89,30 +89,33 @@ def generate_table(output_dir: Path) -> str:
 
     rows.append("    \\midrule")
 
-    # Domain shift metrics
+    # Domain shift metrics (pairwise — span across GLI/MEN columns)
     mmd_val = f"{metrics['mmd_sq']:.2f}"
-    rows.append(f"    MMD$^2$ (RBF) & --- & --- & {_fmt_bold(mmd_val)} ({mmd_p_str}) \\\\")
+    rows.append(
+        f"    MMD$^2$ (RBF) & \\multicolumn{{3}}{{c}}"
+        f"{{{_fmt_bold(mmd_val)} ({mmd_p_str})}} \\\\"
+    )
 
     cka_val = f"{metrics['cka']:.2f}"
-    rows.append(f"    CKA & --- & --- & {cka_val} \\\\")
+    rows.append(f"    CKA & \\multicolumn{{3}}{{c}}{{{cka_val}}} \\\\")
 
     pad_val = f"{metrics['proxy_a_distance']:.2f}"
-    rows.append(f"    Proxy A-distance & --- & --- & {_fmt_bold(pad_val)} \\\\")
+    rows.append(f"    Proxy A-distance & \\multicolumn{{3}}{{c}}{{{_fmt_bold(pad_val)}}} \\\\")
 
     clf_acc = f"{metrics['classifier_accuracy'] * 100:.1f}\\%"
-    rows.append(f"    Classifier Acc. & --- & --- & {_fmt_bold(clf_acc)} \\\\")
+    rows.append(f"    Classifier Acc. & \\multicolumn{{3}}{{c}}{{{_fmt_bold(clf_acc)}}} \\\\")
 
     eff_gli = f"{metrics['effective_rank_gli']:.1f}"
     eff_men = f"{metrics['effective_rank_men']:.1f}"
-    rows.append(f"    Effective Rank & {eff_gli} & {eff_men} & --- \\\\")
+    rows.append(f"    Effective Rank & {eff_gli} & {eff_men} & \\\\")
 
     rows.append("    \\midrule")
 
-    # Probe R² (hardcoded from baseline_frozen)
+    # Probe R² (hardcoded from baseline_frozen, MEN-only)
     for key, label in [("volume", "vol"), ("location", "loc"), ("shape", "shape")]:
         r2 = MEN_PROBE_R2[key]
         r2_str = f"{r2:.3f}"
-        rows.append(f"    Probe $R^2$ ({label}) & N/A & {r2_str} & --- \\\\")
+        rows.append(f"    Probe $R^2$ ({label}) & & {r2_str} & \\\\")
 
     row_block = "\n".join(rows)
 

@@ -49,8 +49,8 @@ def load_results(output_dir: Path) -> dict:
         Dict with gli_features, men_features, gli_dice, men_dice,
         domain_metrics, ks_statistics, ks_pvalues.
     """
-    gli_feat_data = np.load(output_dir / "features" / "gli_features.npz")
-    men_feat_data = np.load(output_dir / "features" / "men_features.npz")
+    gli_feat_data = np.load(output_dir / "features" / "gli_features.npz", allow_pickle=True)
+    men_feat_data = np.load(output_dir / "features" / "men_features.npz", allow_pickle=True)
 
     with open(output_dir / "dice" / "gli_dice.json") as f:
         gli_dice = json.load(f)
@@ -144,7 +144,6 @@ def plot_pca_with_density(
         c=DOMAIN_COLORS["glioma"],
         alpha=0.3,
         s=8,
-        label=f"BraTS-GLI (N={n_gli})",
         zorder=3,
     )
     ax.scatter(
@@ -153,7 +152,6 @@ def plot_pca_with_density(
         c=DOMAIN_COLORS["meningioma"],
         alpha=0.3,
         s=8,
-        label=f"BraTS-MEN (N={n_men})",
         zorder=3,
     )
 
@@ -161,22 +159,17 @@ def plot_pca_with_density(
     ax.set_xlabel(f"PC1 ({var_explained[0]:.1f}%)")
     ax.set_ylabel(f"PC2 ({var_explained[1]:.1f}%)")
 
-    # MMD annotation
+    # MMD annotation with N
+    n_total = n_gli + n_men
     p_str = f"p = {mmd_pvalue:.3f}" if mmd_pvalue >= 0.001 else "p < 0.001"
     ax.annotate(
-        f"MMD$^2$ = {mmd_sq:.2f}\n({p_str})",
-        xy=(0.03, 0.97),
+        f"MMD$^2$ = {mmd_sq:.2f}, N={n_total}\n({p_str})",
+        xy=(0.03, 0.05),
         xycoords="axes fraction",
         ha="left",
-        va="top",
+        va="bottom",
         fontsize=PLOT_SETTINGS["annotation_fontsize"],
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.8),
-    )
-
-    ax.legend(
-        fontsize=PLOT_SETTINGS["legend_fontsize"],
-        loc="lower right",
-        frameon=False,
     )
 
 
@@ -269,8 +262,8 @@ def plot_dice_comparison(
     ax.set_xticks(x)
     ax.set_xticklabels(classes)
     ax.set_ylabel("Dice Score")
-    ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=PLOT_SETTINGS["legend_fontsize"], frameon=False)
+    ax.set_ylim(0, 1.25)
+    ax.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
 
 
 # ============================================================================
@@ -356,7 +349,7 @@ def plot_top_ks_kde(
         # Annotation
         ks_val = ks_statistics[dim_idx]
         sub_ax.annotate(
-            f"dim {dim_idx} (D={ks_val:.2f})",
+            f"d{dim_idx} (D={ks_val:.2f})",
             xy=(0.97, 0.95),
             xycoords="axes fraction",
             ha="right",
@@ -450,6 +443,22 @@ def generate_figure(
         fontweight="bold",
         ha="left",
         va="top",
+    )
+
+    # Shared legend at bottom center
+    from matplotlib.patches import Patch
+
+    legend_handles = [
+        Patch(facecolor=DOMAIN_COLORS["glioma"], alpha=PLOT_SETTINGS["bar_alpha"], label="BraTS-GLI"),
+        Patch(facecolor=DOMAIN_COLORS["meningioma"], alpha=PLOT_SETTINGS["bar_alpha"], label="BraTS-MEN"),
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        ncol=2,
+        fontsize=PLOT_SETTINGS["legend_fontsize"],
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.1),
     )
 
     # Save
