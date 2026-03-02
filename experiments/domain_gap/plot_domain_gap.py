@@ -329,7 +329,7 @@ def plot_pca_3domain(
     ax.set_xlabel(f"PC1 ({var_explained[0]:.1f}%)")
     ax.set_ylabel(f"PC2 ({var_explained[1]:.1f}%)")
 
-    # Mini-table of pairwise MMD²
+    # Mini-table of pairwise MMD² — use legend(loc="best") for auto-placement
     mmd_lines = []
     for pair_key, label in _PAIR_DISPLAY.items():
         if pair_key in pairwise_metrics:
@@ -337,15 +337,19 @@ def plot_pca_3domain(
             mmd_lines.append(f"{label}: {mmd_val:.2f}")
     if mmd_lines:
         mmd_text = "MMD$^2$\n" + "\n".join(mmd_lines)
-        ax.annotate(
-            mmd_text,
-            xy=(0.03, 0.05),
-            xycoords="axes fraction",
-            ha="left",
-            va="bottom",
+        # Invisible handle so legend() renders just the text label
+        dummy = Patch(facecolor="none", edgecolor="none", label=mmd_text)
+        ax.legend(
+            handles=[dummy],
+            loc="best",
             fontsize=PLOT_SETTINGS["annotation_fontsize"] - 1,
-            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.8),
-            family="monospace",
+            frameon=True,
+            fancybox=True,
+            framealpha=0.8,
+            edgecolor="0.7",
+            prop=dict(family="monospace"),
+            handlelength=0,
+            handletextpad=0,
         )
 
 
@@ -678,14 +682,18 @@ def plot_top_ks_kde(
 def plot_pairwise_summary(
     ax: plt.Axes,
     pairwise_metrics: dict[str, dict],
-) -> None:
+) -> list:
     """Grouped horizontal bar chart of pairwise metrics.
 
     Shows MMD², PAD, and Clf. Acc. for each domain pair.
+    Legend is NOT drawn on the axes — caller should place it on the figure.
 
     Args:
         ax: Matplotlib axes.
         pairwise_metrics: Mapping pair_key -> metrics dict.
+
+    Returns:
+        List of legend handles for the pair bars.
     """
     metric_keys = [
         ("mmd_sq", "MMD$^2$"),
@@ -721,9 +729,13 @@ def plot_pairwise_summary(
             label=label,
         )
 
-        # Value labels
-        for i, v in enumerate(vals):
+        # Value labels (with significance stars for MMD²)
+        for i, (mk, _) in enumerate(metric_keys):
+            v = vals[i]
             fmt = f"{v:.2f}" if v < 1.0 else f"{v:.1f}"
+            if mk == "mmd_sq":
+                p = pairwise_metrics[pair_key].get("mmd_pvalue", 1.0)
+                fmt += get_significance_stars(p)
             ax.text(
                 v + 0.01,
                 y[i] + offsets[j],
@@ -736,12 +748,14 @@ def plot_pairwise_summary(
     ax.set_yticks(y)
     ax.set_yticklabels([label for _, label in metric_keys])
     ax.set_xlabel("Value")
-    ax.legend(
-        fontsize=PLOT_SETTINGS["legend_fontsize"] - 1,
-        loc="lower right",
-        frameon=False,
-    )
     ax.invert_yaxis()
+
+    # Return legend handles (caller places them on figure)
+    handles, labels = ax.get_legend_handles_labels()
+    return [
+        Patch(facecolor=_PAIR_COLORS[pk], alpha=PLOT_SETTINGS["bar_alpha"], label=_PAIR_DISPLAY[pk])
+        for pk in pairs
+    ]
 
 
 # ============================================================================
@@ -790,6 +804,8 @@ def generate_figure(
 
     panel_fs = PLOT_SETTINGS["panel_label_fontsize"]
 
+    pair_handles = None
+
     if is_3domain:
         # Panel (a): 3-domain PCA
         ax_a = fig.add_subplot(gs[0])
@@ -803,10 +819,10 @@ def generate_figure(
 
         # Panel (c): Pairwise metrics summary
         ax_c = fig.add_subplot(gs[2])
-        plot_pairwise_summary(ax_c, data["pairwise_metrics"])
+        pair_handles = plot_pairwise_summary(ax_c, data["pairwise_metrics"])
         ax_c.set_title("(c)", fontsize=panel_fs, fontweight="bold", loc="left")
 
-        # Shared legend
+        # Domain legend
         legend_handles = [
             Patch(
                 facecolor=DOMAIN_COLORS[_DOMAIN_COLOR_KEYS[ds]],
@@ -866,14 +882,26 @@ def generate_figure(
             ),
         ]
 
-    fig.legend(
-        handles=legend_handles,
-        loc="lower center",
-        ncol=len(legend_handles),
-        fontsize=PLOT_SETTINGS["legend_fontsize"],
-        frameon=False,
-        bbox_to_anchor=(0.5, -0.1),
-    )
+    # Unified legend: 2×3 grid if pair handles exist, else single row
+    if pair_handles:
+        all_handles = legend_handles + pair_handles
+        fig.legend(
+            handles=all_handles,
+            loc="lower center",
+            ncol=3,
+            fontsize=PLOT_SETTINGS["legend_fontsize"],
+            frameon=False,
+            bbox_to_anchor=(0.5, -0.14),
+        )
+    else:
+        fig.legend(
+            handles=legend_handles,
+            loc="lower center",
+            ncol=len(legend_handles),
+            fontsize=PLOT_SETTINGS["legend_fontsize"],
+            frameon=False,
+            bbox_to_anchor=(0.5, -0.1),
+        )
 
     # Save
     for fmt in formats:

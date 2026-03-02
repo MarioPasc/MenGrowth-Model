@@ -743,6 +743,126 @@ def save_results(
 
 
 # ============================================================================
+# PCA Outlier Report
+# ============================================================================
+
+
+def write_pca_outlier_report(
+    output_dir: Path,
+    features_dict: dict[str, np.ndarray],
+    ids_dict: dict[str, list[str]],
+    sigma_threshold: float = 3.0,
+    top_k: int = 10,
+) -> None:
+    """Detect PCA outliers per dataset and write a diagnostic report.
+
+    Fits PCA on all domains combined, then flags samples that exceed
+    ``sigma_threshold`` standard deviations on either PC, plus lists
+    the top-k most extreme points by Euclidean distance.
+
+    Args:
+        output_dir: Root output directory.
+        features_dict: Mapping domain -> features [N, D].
+        ids_dict: Mapping domain -> ID list (same length as features).
+        sigma_threshold: Number of std devs to flag as outlier.
+        top_k: Number of top outliers to list.
+    """
+    from sklearn.decomposition import PCA
+
+    diag_dir = output_dir / "diagnostics"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+
+    # Combine all features, track domain + id per row
+    all_feat = []
+    all_domains = []
+    all_ids = []
+    for domain in sorted(features_dict.keys()):
+        feat = features_dict[domain]
+        ids = ids_dict[domain]
+        all_feat.append(feat)
+        all_domains.extend([domain] * len(feat))
+        all_ids.extend(ids)
+
+    combined = np.vstack(all_feat)
+    pca = PCA(n_components=2)
+    proj = pca.fit_transform(combined)
+    var_pct = pca.explained_variance_ratio_ * 100
+
+    lines: list[str] = []
+    lines.append("PCA Outlier Report")
+    lines.append("=" * 72)
+    lines.append(f"PC1 explains {var_pct[0]:.1f}%, PC2 explains {var_pct[1]:.1f}%")
+    lines.append(f"Threshold: {sigma_threshold}σ")
+    lines.append(f"Total samples: {len(combined)}")
+    lines.append("")
+
+    # Per-PC outlier detection
+    for pc_idx in range(2):
+        vals = proj[:, pc_idx]
+        mean, std = vals.mean(), vals.std()
+        mask = np.abs(vals - mean) > sigma_threshold * std
+
+        lines.append(f"PC{pc_idx + 1} outliers (>{sigma_threshold}σ, mean={mean:.2f}, σ={std:.2f})")
+        lines.append("-" * 72)
+
+        if not mask.any():
+            lines.append("  (none)")
+        else:
+            for i in np.where(mask)[0]:
+                lines.append(
+                    f"  {all_domains[i]:<12s}  {all_ids[i]:<30s}  "
+                    f"PC1={proj[i, 0]:8.2f}  PC2={proj[i, 1]:8.2f}"
+                )
+        lines.append("")
+
+    # Top-k by Euclidean distance, grouped by dataset
+    dists = np.sqrt(proj[:, 0] ** 2 + proj[:, 1] ** 2)
+    top_idx = np.argsort(dists)[::-1][:top_k]
+
+    lines.append(f"Top {top_k} by Euclidean distance from PCA origin")
+    lines.append("-" * 72)
+    for rank, i in enumerate(top_idx, 1):
+        lines.append(
+            f"  {rank:2d}. {all_domains[i]:<12s}  {all_ids[i]:<30s}  "
+            f"PC1={proj[i, 0]:8.2f}  PC2={proj[i, 1]:8.2f}  "
+            f"dist={dists[i]:.2f}"
+        )
+    lines.append("")
+
+    # Per-dataset breakdown: top outliers within each domain
+    for domain in sorted(features_dict.keys()):
+        domain_mask = np.array([d == domain for d in all_domains])
+        domain_idx = np.where(domain_mask)[0]
+        domain_dists = dists[domain_idx]
+        top_in_domain = domain_idx[np.argsort(domain_dists)[::-1][:5]]
+
+        lines.append(f"Top 5 outliers in {domain}")
+        lines.append("-" * 72)
+        for rank, i in enumerate(top_in_domain, 1):
+            lines.append(
+                f"  {rank}. {all_ids[i]:<30s}  "
+                f"PC1={proj[i, 0]:8.2f}  PC2={proj[i, 1]:8.2f}  "
+                f"dist={dists[i]:.2f}"
+            )
+        lines.append("")
+
+    report = "\n".join(lines)
+
+    out_path = diag_dir / "pca_outliers.txt"
+    out_path.write_text(report)
+    logger.info(f"Saved PCA outlier report: {out_path}")
+
+    # Also log a summary
+    n_outliers = sum(
+        1
+        for pc in range(2)
+        for v in proj[:, pc]
+        if abs(v - proj[:, pc].mean()) > sigma_threshold * proj[:, pc].std()
+    )
+    logger.info(f"  {n_outliers} samples exceed {sigma_threshold}σ threshold")
+
+
+# ============================================================================
 # Main Pipeline
 # ============================================================================
 
@@ -981,6 +1101,12 @@ def main() -> None:
         pairwise_metrics,
         ks_dict,
     )
+
+    # ------------------------------------------------------------------
+    # 7. PCA outlier report
+    # ------------------------------------------------------------------
+    logger.info("Writing PCA outlier report...")
+    write_pca_outlier_report(output_dir, save_features, save_ids)
 
     logger.info("Domain gap analysis complete.")
 
