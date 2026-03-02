@@ -6,7 +6,7 @@ Features:
 - UMAP colored by semantic features (volume, location)
 - Variance per dimension plots
 - Prediction vs ground truth scatter plots
-- Linear vs MLP R² comparison
+- Linear vs GP-RBF R² comparison
 - Publication-quality figures
 
 Usage:
@@ -18,7 +18,6 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -26,16 +25,10 @@ import yaml
 
 # Import reusable visualization functions from growth library
 from growth.evaluation.visualization import (
-    set_publication_style,
-    save_figure,
-    plot_umap,
-    plot_variance_spectrum,
-    plot_prediction_scatter,
-    plot_r2_comparison,
-    plot_correlation_matrix,
     HAS_MATPLOTLIB,
     HAS_SEABORN,
     HAS_UMAP,
+    set_publication_style,
 )
 
 # Re-export for backward compatibility
@@ -44,8 +37,6 @@ HAS_PLOTTING = HAS_MATPLOTLIB
 # Conditional imports for this module
 if HAS_MATPLOTLIB:
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    from matplotlib.colors import Normalize
 else:
     plt = None
 
@@ -68,15 +59,13 @@ if HAS_MATPLOTLIB:
 from experiments.utils.settings import (
     CONDITION_COLORS,
     V3_SHAPE_LABELS,
-    get_color,
-    get_label,
 )
 
 
 def load_condition_data(
     condition_dir: Path,
     feature_level: str = "encoder10",
-) -> Dict:
+) -> dict:
     """Load all data for a condition."""
     data = {}
 
@@ -85,13 +74,13 @@ def load_condition_data(
     if not feat_path.exists():
         feat_path = condition_dir / "features_test.pt"
     if feat_path.exists():
-        data['features'] = torch.load(feat_path, weights_only=True).numpy()
+        data["features"] = torch.load(feat_path, weights_only=True).numpy()
 
     # Load targets
     tgt_path = condition_dir / "targets_test.pt"
     if tgt_path.exists():
         targets = torch.load(tgt_path, weights_only=True)
-        data['targets'] = {k: v.numpy() for k, v in targets.items() if k != 'all'}
+        data["targets"] = {k: v.numpy() for k, v in targets.items() if k != "all"}
 
     # Load metrics
     metrics_path = condition_dir / "metrics_enhanced.json"
@@ -99,68 +88,74 @@ def load_condition_data(
         metrics_path = condition_dir / "metrics.json"
     if metrics_path.exists():
         with open(metrics_path) as f:
-            data['metrics'] = json.load(f)
+            data["metrics"] = json.load(f)
 
     # Load predictions
     pred_path = condition_dir / "predictions_enhanced.json"
     if pred_path.exists():
         with open(pred_path) as f:
-            data['predictions'] = json.load(f)
+            data["predictions"] = json.load(f)
 
     return data
 
 
 def plot_r2_comparison_enhanced(
-    metrics_by_condition: Dict[str, Dict],
+    metrics_by_condition: dict[str, dict],
     output_dir: Path,
 ) -> None:
-    """Plot R² comparison with both linear and MLP probes."""
+    """Plot R² comparison with both linear and GP-RBF probes."""
     conditions = list(metrics_by_condition.keys())
 
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
 
-    feature_types = ['volume', 'location', 'shape']
-    titles = ['Volume R²', 'Location R²', 'Shape R²']
+    feature_types = ["volume", "location", "shape"]
+    titles = ["Volume R²", "Location R²", "Shape R²"]
 
     for ax, feat, title in zip(axes, feature_types, titles):
         linear_r2 = []
-        mlp_r2 = []
+        rbf_r2 = []
 
         for cond in conditions:
             m = metrics_by_condition[cond]
-            linear_r2.append(m.get(f'r2_{feat}_linear', m.get(f'r2_{feat}', 0)))
-            mlp_r2.append(m.get(f'r2_{feat}_mlp', 0))
+            linear_r2.append(m.get(f"r2_{feat}_linear", m.get(f"r2_{feat}", 0)))
+            rbf_r2.append(m.get(f"r2_{feat}_rbf", 0))
 
         x = np.arange(len(conditions))
         width = 0.35
 
-        bars1 = ax.bar(x - width/2, linear_r2, width, label='Linear',
-                      color='steelblue', alpha=0.8)
-        bars2 = ax.bar(x + width/2, mlp_r2, width, label='MLP',
-                      color='darkorange', alpha=0.8)
+        bars1 = ax.bar(
+            x - width / 2, linear_r2, width, label="Linear", color="steelblue", alpha=0.8
+        )
+        bars2 = ax.bar(x + width / 2, rbf_r2, width, label="GP-RBF", color="darkorange", alpha=0.8)
 
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-        ax.set_ylabel('R²')
+        ax.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
+        ax.set_ylabel("R²")
         ax.set_title(title)
         ax.set_xticks(x)
-        ax.set_xticklabels([c.replace('lora_', 'r=').replace('baseline', 'base')
-                          for c in conditions], rotation=45, ha='right')
+        ax.set_xticklabels(
+            [c.replace("lora_", "r=").replace("baseline", "base") for c in conditions],
+            rotation=45,
+            ha="right",
+        )
         ax.legend()
 
         # Add value labels
         for bar in bars1:
             height = bar.get_height()
             if abs(height) < 10:
-                ax.annotate(f'{height:.2f}',
-                           xy=(bar.get_x() + bar.get_width() / 2, height),
-                           xytext=(0, 3 if height > 0 else -10),
-                           textcoords="offset points",
-                           ha='center', va='bottom' if height > 0 else 'top',
-                           fontsize=7)
+                ax.annotate(
+                    f"{height:.2f}",
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3 if height > 0 else -10),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom" if height > 0 else "top",
+                    fontsize=7,
+                )
 
     plt.tight_layout()
 
-    for ext in ['pdf', 'png']:
+    for ext in ["pdf", "png"]:
         path = output_dir / f"r2_comparison_enhanced.{ext}"
         plt.savefig(path)
         logger.info(f"Saved {path}")
@@ -169,7 +164,7 @@ def plot_r2_comparison_enhanced(
 
 
 def plot_umap_by_semantic(
-    data_by_condition: Dict[str, Dict],
+    data_by_condition: dict[str, dict],
     output_dir: Path,
     n_neighbors: int = 15,
     min_dist: float = 0.1,
@@ -193,11 +188,11 @@ def plot_umap_by_semantic(
 
     for cond in conditions_to_show:
         data = data_by_condition[cond]
-        if 'features' not in data or 'targets' not in data:
+        if "features" not in data or "targets" not in data:
             continue
 
-        features = data['features'][:100]  # Subsample
-        volumes = data['targets']['volume'][:100, 0]  # Total volume
+        features = data["features"][:100]  # Subsample
+        volumes = data["targets"]["volume"][:100, 0]  # Total volume
 
         all_features.append(features)
         all_volumes.append(volumes)
@@ -221,26 +216,32 @@ def plot_umap_by_semantic(
     ax = axes[0]
     for cond in conditions_to_show:
         mask = np.array(all_condition_labels) == cond
-        ax.scatter(embedding[mask, 0], embedding[mask, 1],
-                  c=CONDITION_COLORS.get(cond, 'gray'),
-                  label=cond, s=10, alpha=0.6)
-    ax.set_xlabel('UMAP 1')
-    ax.set_ylabel('UMAP 2')
-    ax.set_title('Latent Space by Condition')
+        ax.scatter(
+            embedding[mask, 0],
+            embedding[mask, 1],
+            c=CONDITION_COLORS.get(cond, "gray"),
+            label=cond,
+            s=10,
+            alpha=0.6,
+        )
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+    ax.set_title("Latent Space by Condition")
     ax.legend(markerscale=2)
 
     # Right: colored by volume
     ax = axes[1]
-    scatter = ax.scatter(embedding[:, 0], embedding[:, 1],
-                        c=all_volumes, cmap='viridis', s=10, alpha=0.6)
-    ax.set_xlabel('UMAP 1')
-    ax.set_ylabel('UMAP 2')
-    ax.set_title('Latent Space by Tumor Volume')
-    plt.colorbar(scatter, ax=ax, label='log(Volume+1)')
+    scatter = ax.scatter(
+        embedding[:, 0], embedding[:, 1], c=all_volumes, cmap="viridis", s=10, alpha=0.6
+    )
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+    ax.set_title("Latent Space by Tumor Volume")
+    plt.colorbar(scatter, ax=ax, label="log(Volume+1)")
 
     plt.tight_layout()
 
-    for ext in ['pdf', 'png']:
+    for ext in ["pdf", "png"]:
         path = output_dir / f"umap_semantic.{ext}"
         plt.savefig(path)
         logger.info(f"Saved {path}")
@@ -249,31 +250,31 @@ def plot_umap_by_semantic(
 
 
 def plot_variance_per_dim(
-    data_by_condition: Dict[str, Dict],
+    data_by_condition: dict[str, dict],
     output_dir: Path,
 ) -> None:
     """Plot feature variance per dimension."""
     fig, ax = plt.subplots(figsize=(10, 4))
 
     for cond, data in data_by_condition.items():
-        if 'features' not in data:
+        if "features" not in data:
             continue
 
-        variance = data['features'].var(axis=0)
-        ax.plot(np.sort(variance)[::-1], label=cond,
-               color=CONDITION_COLORS.get(cond, 'gray'), alpha=0.8)
+        variance = data["features"].var(axis=0)
+        ax.plot(
+            np.sort(variance)[::-1], label=cond, color=CONDITION_COLORS.get(cond, "gray"), alpha=0.8
+        )
 
-    ax.set_xlabel('Dimension (sorted by variance)')
-    ax.set_ylabel('Variance')
-    ax.set_title('Feature Variance per Dimension')
-    ax.set_yscale('log')
-    ax.axhline(y=0.01, color='red', linestyle='--', alpha=0.5,
-              label='Low variance threshold')
+    ax.set_xlabel("Dimension (sorted by variance)")
+    ax.set_ylabel("Variance")
+    ax.set_title("Feature Variance per Dimension")
+    ax.set_yscale("log")
+    ax.axhline(y=0.01, color="red", linestyle="--", alpha=0.5, label="Low variance threshold")
     ax.legend()
 
     plt.tight_layout()
 
-    for ext in ['pdf', 'png']:
+    for ext in ["pdf", "png"]:
         path = output_dir / f"variance_per_dim.{ext}"
         plt.savefig(path)
         logger.info(f"Saved {path}")
@@ -282,7 +283,7 @@ def plot_variance_per_dim(
 
 
 def plot_predictions_scatter(
-    data_by_condition: Dict[str, Dict],
+    data_by_condition: dict[str, dict],
     output_dir: Path,
     condition: str = "lora_r8",
 ) -> None:
@@ -292,25 +293,25 @@ def plot_predictions_scatter(
         return
 
     data = data_by_condition[condition]
-    if 'predictions' not in data:
+    if "predictions" not in data:
         logger.warning(f"No predictions for {condition}")
         return
 
-    preds = data['predictions']
+    preds = data["predictions"]
 
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
 
-    feature_types = ['volume', 'location', 'shape']
+    feature_types = ["volume", "location", "shape"]
     dim_labels = {
-        'volume': ['Total', 'NCR', 'ED', 'ET'],
-        'location': ['X', 'Y', 'Z'],
-        'shape': V3_SHAPE_LABELS,
+        "volume": ["Total", "NCR", "ED", "ET"],
+        "location": ["X", "Y", "Z"],
+        "shape": V3_SHAPE_LABELS,
     }
 
     for col, feat in enumerate(feature_types):
-        gt = np.array(preds[feat]['ground_truth'])
-        linear_pred = np.array(preds[feat]['linear'])
-        mlp_pred = np.array(preds[feat]['mlp'])
+        gt = np.array(preds[feat]["ground_truth"])
+        linear_pred = np.array(preds[feat]["linear"])
+        rbf_pred = np.array(preds[feat]["rbf"])
 
         # Use first dimension for visualization
         dim_idx = 0
@@ -318,26 +319,27 @@ def plot_predictions_scatter(
         # Linear
         ax = axes[0, col]
         ax.scatter(gt[:, dim_idx], linear_pred[:, dim_idx], alpha=0.3, s=10)
-        lims = [min(gt[:, dim_idx].min(), linear_pred[:, dim_idx].min()),
-               max(gt[:, dim_idx].max(), linear_pred[:, dim_idx].max())]
-        ax.plot(lims, lims, 'r--', alpha=0.5)
-        ax.set_xlabel(f'Ground Truth ({dim_labels[feat][dim_idx]})')
-        ax.set_ylabel('Linear Prediction')
-        ax.set_title(f'{feat.capitalize()} - Linear')
+        lims = [
+            min(gt[:, dim_idx].min(), linear_pred[:, dim_idx].min()),
+            max(gt[:, dim_idx].max(), linear_pred[:, dim_idx].max()),
+        ]
+        ax.plot(lims, lims, "r--", alpha=0.5)
+        ax.set_xlabel(f"Ground Truth ({dim_labels[feat][dim_idx]})")
+        ax.set_ylabel("Linear Prediction")
+        ax.set_title(f"{feat.capitalize()} - Linear")
 
-        # MLP
+        # GP-RBF
         ax = axes[1, col]
-        ax.scatter(gt[:, dim_idx], mlp_pred[:, dim_idx], alpha=0.3, s=10,
-                  color='darkorange')
-        ax.plot(lims, lims, 'r--', alpha=0.5)
-        ax.set_xlabel(f'Ground Truth ({dim_labels[feat][dim_idx]})')
-        ax.set_ylabel('MLP Prediction')
-        ax.set_title(f'{feat.capitalize()} - MLP')
+        ax.scatter(gt[:, dim_idx], rbf_pred[:, dim_idx], alpha=0.3, s=10, color="darkorange")
+        ax.plot(lims, lims, "r--", alpha=0.5)
+        ax.set_xlabel(f"Ground Truth ({dim_labels[feat][dim_idx]})")
+        ax.set_ylabel("GP-RBF Prediction")
+        ax.set_title(f"{feat.capitalize()} - GP-RBF")
 
-    plt.suptitle(f'Predictions vs Ground Truth ({condition})', y=1.02)
+    plt.suptitle(f"Predictions vs Ground Truth ({condition})", y=1.02)
     plt.tight_layout()
 
-    for ext in ['pdf', 'png']:
+    for ext in ["pdf", "png"]:
         path = output_dir / f"scatter_{condition}.{ext}"
         plt.savefig(path)
         logger.info(f"Saved {path}")
@@ -345,22 +347,22 @@ def plot_predictions_scatter(
     plt.close()
 
 
-def plot_nonlinearity_gap(
-    metrics_by_condition: Dict[str, Dict],
+def plot_nonlinearity_evidence(
+    metrics_by_condition: dict[str, dict],
     output_dir: Path,
 ) -> None:
-    """Plot the nonlinearity gap (MLP R² - Linear R²)."""
+    """Plot the nonlinearity evidence (GP-RBF R² - Linear R²)."""
     conditions = list(metrics_by_condition.keys())
 
-    feature_types = ['volume', 'location', 'shape']
-    gaps = {feat: [] for feat in feature_types}
+    feature_types = ["volume", "location", "shape"]
+    evidence = {feat: [] for feat in feature_types}
 
     for cond in conditions:
         m = metrics_by_condition[cond]
         for feat in feature_types:
-            linear = m.get(f'r2_{feat}_linear', m.get(f'r2_{feat}', 0))
-            mlp = m.get(f'r2_{feat}_mlp', 0)
-            gaps[feat].append(mlp - linear)
+            linear = m.get(f"r2_{feat}_linear", m.get(f"r2_{feat}", 0))
+            rbf = m.get(f"r2_{feat}_rbf", 0)
+            evidence[feat].append(rbf - linear)
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -368,21 +370,24 @@ def plot_nonlinearity_gap(
     width = 0.25
 
     for i, feat in enumerate(feature_types):
-        ax.bar(x + i * width, gaps[feat], width, label=feat.capitalize())
+        ax.bar(x + i * width, evidence[feat], width, label=feat.capitalize())
 
-    ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-    ax.set_ylabel('Nonlinearity Gap (MLP R² - Linear R²)')
-    ax.set_xlabel('Condition')
-    ax.set_title('How Much Information is Nonlinearly Encoded?')
+    ax.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
+    ax.set_ylabel("Nonlinearity Evidence (GP-RBF R² - Linear R²)")
+    ax.set_xlabel("Condition")
+    ax.set_title("How Much Information is Nonlinearly Encoded?")
     ax.set_xticks(x + width)
-    ax.set_xticklabels([c.replace('lora_', 'r=').replace('baseline', 'base')
-                       for c in conditions], rotation=45, ha='right')
+    ax.set_xticklabels(
+        [c.replace("lora_", "r=").replace("baseline", "base") for c in conditions],
+        rotation=45,
+        ha="right",
+    )
     ax.legend()
 
     plt.tight_layout()
 
-    for ext in ['pdf', 'png']:
-        path = output_dir / f"nonlinearity_gap.{ext}"
+    for ext in ["pdf", "png"]:
+        path = output_dir / f"nonlinearity_evidence.{ext}"
         plt.savefig(path)
         logger.info(f"Saved {path}")
 
@@ -414,8 +419,8 @@ def generate_all_figures(config: dict) -> None:
         data = load_condition_data(cond_dir, feature_level)
         if data:
             data_by_condition[cond] = data
-            if 'metrics' in data:
-                metrics_by_condition[cond] = data['metrics']
+            if "metrics" in data:
+                metrics_by_condition[cond] = data["metrics"]
 
     if not metrics_by_condition:
         logger.warning("No metrics found. Run evaluation first.")
@@ -426,20 +431,21 @@ def generate_all_figures(config: dict) -> None:
     # Generate figures
     plot_r2_comparison_enhanced(metrics_by_condition, figures_dir)
     plot_variance_per_dim(data_by_condition, figures_dir)
-    plot_nonlinearity_gap(metrics_by_condition, figures_dir)
+    plot_nonlinearity_evidence(metrics_by_condition, figures_dir)
 
     # UMAP (if available)
     viz_config = config.get("visualization", {})
     if viz_config.get("color_by_semantic", True):
         plot_umap_by_semantic(
-            data_by_condition, figures_dir,
+            data_by_condition,
+            figures_dir,
             n_neighbors=viz_config.get("umap_n_neighbors", 15),
             min_dist=viz_config.get("umap_min_dist", 0.1),
         )
 
     # Scatter plots
     if viz_config.get("show_scatter_plots", True):
-        for cond in ['baseline', 'lora_r8', 'lora_r16']:
+        for cond in ["baseline", "lora_r8", "lora_r16"]:
             if cond in data_by_condition:
                 plot_predictions_scatter(data_by_condition, figures_dir, cond)
 

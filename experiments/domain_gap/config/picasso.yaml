@@ -1,0 +1,31 @@
+experiment:
+  name: domain_gap
+  seed: 42
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/domain_gap
+
+paths:
+  checkpoint: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/pretrained/finetuned_model_fold_0.pt
+  h5_file: /mnt/home/users/tic_163_uma/mpascual/data/brats_men/BraTS_MEN.h5
+  glioma_root: /mnt/home/users/tic_163_uma/mpascual/data/gliomas/BraTS-GLI-100
+
+data:
+  n_men_subjects: 100          # Match GLI count for balanced comparison
+  feature_roi_size: [192, 192, 192]
+
+feature_extraction:
+  level: encoder10
+  batch_size: 1
+  num_workers: 8
+
+dice_evaluation:
+  batch_size: 1
+  num_workers: 8
+
+metrics:
+  mmd_permutations: 1000
+  classifier_cv_folds: 5
+
+figure:
+  top_ks_dims: 4
+  dpi: 300
+  formats: [pdf, png]

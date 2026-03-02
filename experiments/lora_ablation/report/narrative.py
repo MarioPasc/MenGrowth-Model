@@ -326,7 +326,7 @@ def generate_feature_quality_section(exp: ExperimentData) -> SectionContent:
     section = SectionContent(
         section_id="feature_quality",
         title="3.4 Feature Quality",
-        figure_names=["probe_r2", "nonlinearity_gap"],
+        figure_names=["probe_r2", "nonlinearity_evidence"],
     )
 
     rank_conds = [c for c in exp.conditions if c.startswith(("lora_r", "dora_r"))]
@@ -351,22 +351,22 @@ def generate_feature_quality_section(exp: ExperimentData) -> SectionContent:
         f"shape = {_fmt(best.metrics_enhanced.get('r2_shape_linear', 0))}."
     )
 
-    # Compare linear vs MLP
-    best_mlp = best.metrics_enhanced.get("r2_mean_mlp", 0)
-    gap = best_mlp - best_r2
+    # Compare linear vs GP-RBF
+    best_rbf = best.metrics_enhanced.get("r2_mean_rbf", 0)
+    gap = best_rbf - best_r2
     if gap > 0.05:
         section.paragraphs.append(
-            f"MLP probe ({_fmt(best_mlp)}) substantially exceeds linear probe ({_fmt(best_r2)}), "
+            f"GP-RBF probe ({_fmt(best_rbf)}) substantially exceeds linear probe ({_fmt(best_r2)}), "
             f"indicating significant nonlinearly encoded information (gap = {_fmt(gap)})."
         )
     elif gap > 0:
         section.paragraphs.append(
-            f"MLP probe ({_fmt(best_mlp)}) marginally exceeds linear ({_fmt(best_r2)}), "
+            f"GP-RBF probe ({_fmt(best_rbf)}) marginally exceeds linear ({_fmt(best_r2)}), "
             f"suggesting most semantic information is linearly accessible."
         )
     else:
         section.paragraphs.append(
-            f"Linear probe ({_fmt(best_r2)}) matches or exceeds MLP ({_fmt(best_mlp)}), "
+            f"Linear probe ({_fmt(best_r2)}) matches or exceeds GP-RBF ({_fmt(best_rbf)}), "
             f"indicating semantic features are linearly encoded."
         )
 

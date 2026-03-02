@@ -24,27 +24,26 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 import yaml
 
 from .statistical_analysis import (
-    run_statistical_analysis,
-    save_results as save_statistical_results,
     AblationStatistics,
+    run_statistical_analysis,
+)
+from .statistical_analysis import (
+    save_results as save_statistical_results,
 )
 from .visualizations import generate_all_figures
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 
-def validate_experiment_outputs(config: dict) -> Dict[str, Dict[str, bool]]:
+def validate_experiment_outputs(config: dict) -> dict[str, dict[str, bool]]:
     """Pre-flight check: validate which experiment outputs exist.
 
     Returns a dict mapping condition -> {file_type: exists}.
@@ -76,7 +75,9 @@ def validate_experiment_outputs(config: dict) -> Dict[str, Dict[str, bool]]:
         expected_files = list(base_expected_files)
 
         # Checkpoint: accept either best_model.pt or checkpoint.pt
-        checkpoint_exists = (cond_dir / "best_model.pt").exists() or (cond_dir / "checkpoint.pt").exists()
+        checkpoint_exists = (cond_dir / "best_model.pt").exists() or (
+            cond_dir / "checkpoint.pt"
+        ).exists()
         status[name]["checkpoint"] = checkpoint_exists
 
         # Adapter: only expected for LoRA conditions (lora_rank is not None)
@@ -108,7 +109,7 @@ def validate_experiment_outputs(config: dict) -> Dict[str, Dict[str, bool]]:
     return status
 
 
-def load_all_metrics(config: dict) -> Dict[str, Dict]:
+def load_all_metrics(config: dict) -> dict[str, dict]:
     """Load metrics from all conditions."""
     output_dir = Path(config["experiment"]["output_dir"])
     all_metrics = {}
@@ -130,12 +131,14 @@ def load_all_metrics(config: dict) -> Dict[str, Dict]:
         if summary_path.exists():
             with open(summary_path) as f:
                 summary = yaml.safe_load(f)
-            metrics.update({
-                "val_dice": summary.get("best_val_dice"),
-                "best_epoch": summary.get("best_epoch"),
-                "training_time_minutes": summary.get("training_time_minutes"),
-                "param_counts": summary.get("param_counts"),
-            })
+            metrics.update(
+                {
+                    "val_dice": summary.get("best_val_dice"),
+                    "best_epoch": summary.get("best_epoch"),
+                    "training_time_minutes": summary.get("training_time_minutes"),
+                    "param_counts": summary.get("param_counts"),
+                }
+            )
 
         if metrics:
             all_metrics[condition_name] = metrics
@@ -145,10 +148,10 @@ def load_all_metrics(config: dict) -> Dict[str, Dict]:
 
 
 def generate_latex_table(
-    metrics: Dict[str, Dict],
+    metrics: dict[str, dict],
     config: dict,
-    stats: Optional[AblationStatistics] = None,
-    include_mlp: bool = True,
+    stats: AblationStatistics | None = None,
+    include_rbf: bool = True,
 ) -> str:
     """Generate LaTeX table for thesis.
 
@@ -156,34 +159,32 @@ def generate_latex_table(
         metrics: Dict of condition -> metrics.
         config: Experiment configuration.
         stats: Optional statistical analysis results.
-        include_mlp: Whether to include MLP probe results (creates wider table).
+        include_rbf: Whether to include GP-RBF probe results (creates wider table).
 
     Returns:
         Publication-ready LaTeX code.
     """
-    # Check if MLP data is available
-    has_mlp_data = include_mlp and any(
-        "r2_mean_mlp" in m for m in metrics.values()
-    )
+    # Check if GP-RBF data is available
+    has_rbf_data = include_rbf and any("r2_mean_rbf" in m for m in metrics.values())
 
-    if has_mlp_data:
-        # Extended table with both Linear and MLP probes
+    if has_rbf_data:
+        # Extended table with both Linear and GP-RBF probes
         lines = [
             r"\begin{table}[htbp]",
             r"\centering",
             r"\caption{Comparison of encoder adaptation strategies for meningioma feature learning. "
-            r"Both linear and MLP probe $R^2$ scores are reported. "
+            r"Both linear and GP-RBF probe $R^2$ scores are reported. "
             r"$\Delta$ indicates improvement over baseline.}",
             r"\label{tab:lora_ablation}",
             r"\resizebox{\textwidth}{!}{%",
             r"\begin{tabular}{lccc|ccc|cc}",
             r"\toprule",
-            r" & \multicolumn{3}{c|}{Linear Probe $R^2$} & \multicolumn{3}{c|}{MLP Probe $R^2$} & & \\",
+            r" & \multicolumn{3}{c|}{Linear Probe $R^2$} & \multicolumn{3}{c|}{GP-RBF Probe $R^2$} & & \\",
             r"Condition & Vol & Loc & Shape & Vol & Loc & Shape & $R^2_\mathrm{mean}$ (Lin) & Params \\",
             r"\midrule",
         ]
     else:
-        # Original table without MLP
+        # Original table without GP-RBF
         lines = [
             r"\begin{table}[htbp]",
             r"\centering",
@@ -215,7 +216,7 @@ def generate_latex_table(
         r2_mean = f"{m.get('r2_mean', 0):.3f}"
 
         # Prefer test Dice, fall back to validation Dice
-        test_dice = m.get('test_dice_mean') or m.get('val_dice')
+        test_dice = m.get("test_dice_mean") or m.get("val_dice")
         dice_str = f"{test_dice:.3f}" if test_dice else "---"
 
         # Format params
@@ -223,15 +224,15 @@ def generate_latex_table(
         if isinstance(params, dict):
             total_params = params.get("total", 0)
             if total_params > 1e6:
-                params_str = f"{total_params/1e6:.1f}M"
+                params_str = f"{total_params / 1e6:.1f}M"
             else:
-                params_str = f"{total_params/1e3:.0f}K"
+                params_str = f"{total_params / 1e3:.0f}K"
         else:
             params_str = "---"
 
         # Add delta annotation for non-baseline
         if name != "baseline":
-            delta = m.get('r2_mean', 0) - baseline_r2
+            delta = m.get("r2_mean", 0) - baseline_r2
             delta_sign = "+" if delta >= 0 else ""
             r2_mean = f"{m.get('r2_mean', 0):.3f} ({delta_sign}{delta:.3f})"
 
@@ -242,15 +243,15 @@ def generate_latex_table(
             rank = cond.get("lora_rank", "?")
             label = f"LoRA $r={rank}$"
 
-        if has_mlp_data:
-            # Format MLP R² values
-            r2_vol_mlp = f"{m.get('r2_volume_mlp', 0):.3f}"
-            r2_loc_mlp = f"{m.get('r2_location_mlp', 0):.3f}"
-            r2_shape_mlp = f"{m.get('r2_shape_mlp', 0):.3f}"
+        if has_rbf_data:
+            # Format GP-RBF R² values
+            r2_vol_rbf = f"{m.get('r2_volume_rbf', 0):.3f}"
+            r2_loc_rbf = f"{m.get('r2_location_rbf', 0):.3f}"
+            r2_shape_rbf = f"{m.get('r2_shape_rbf', 0):.3f}"
 
             lines.append(
                 f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & "
-                f"{r2_vol_mlp} & {r2_loc_mlp} & {r2_shape_mlp} & "
+                f"{r2_vol_rbf} & {r2_loc_rbf} & {r2_shape_rbf} & "
                 f"{r2_mean} & {params_str} \\\\"
             )
         else:
@@ -258,26 +259,30 @@ def generate_latex_table(
                 f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & {r2_mean} & {dice_str} & {params_str} \\\\"
             )
 
-    if has_mlp_data:
-        lines.extend([
-            r"\bottomrule",
-            r"\end{tabular}}",
-            r"\end{table}",
-        ])
+    if has_rbf_data:
+        lines.extend(
+            [
+                r"\bottomrule",
+                r"\end{tabular}}",
+                r"\end{table}",
+            ]
+        )
     else:
-        lines.extend([
-            r"\bottomrule",
-            r"\end{tabular}",
-            r"\end{table}",
-        ])
+        lines.extend(
+            [
+                r"\bottomrule",
+                r"\end{tabular}",
+                r"\end{table}",
+            ]
+        )
 
     return "\n".join(lines)
 
 
 def generate_markdown_report(
     config: dict,
-    metrics: Dict[str, Dict],
-    stats: Optional[AblationStatistics] = None,
+    metrics: dict[str, dict],
+    stats: AblationStatistics | None = None,
 ) -> str:
     """Generate comprehensive Markdown report for thesis appendix."""
     lines = [
@@ -312,18 +317,20 @@ def generate_markdown_report(
         desc = cond.get("description", "")
         lines.append(f"| {name} | {rank} | {alpha} | {desc} |")
 
-    lines.extend([
-        "",
-        "---",
-        "",
-        "## 2. Primary Results: Linear Probe R²",
-        "",
-        "The primary evaluation metric is R² from linear probes trained to predict ",
-        "semantic features (volume, location, shape) from encoder features.",
-        "",
-        "| Condition | R²_vol | R²_loc | R²_shape | R²_mean | ΔR²_mean |",
-        "|-----------|--------|--------|----------|---------|----------|",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 2. Primary Results: Linear Probe R²",
+            "",
+            "The primary evaluation metric is R² from linear probes trained to predict ",
+            "semantic features (volume, location, shape) from encoder features.",
+            "",
+            "| Condition | R²_vol | R²_loc | R²_shape | R²_mean | ΔR²_mean |",
+            "|-----------|--------|--------|----------|---------|----------|",
+        ]
+    )
 
     baseline_r2 = metrics.get("baseline", {}).get("r2_mean", 0)
 
@@ -341,25 +348,31 @@ def generate_markdown_report(
         if name == "baseline":
             delta = "---"
         else:
-            d = m.get('r2_mean', 0) - baseline_r2
+            d = m.get("r2_mean", 0) - baseline_r2
             sign = "+" if d >= 0 else ""
-            delta = f"{sign}{d:.4f} ({sign}{d/abs(baseline_r2)*100:.1f}%)" if baseline_r2 != 0 else f"{sign}{d:.4f}"
+            delta = (
+                f"{sign}{d:.4f} ({sign}{d / abs(baseline_r2) * 100:.1f}%)"
+                if baseline_r2 != 0
+                else f"{sign}{d:.4f}"
+            )
 
         lines.append(f"| {name} | {r2_vol} | {r2_loc} | {r2_shape} | {r2_mean} | {delta} |")
 
-    # Check if MLP probe data is available
-    has_mlp_data = any("r2_mean_mlp" in m for m in metrics.values())
+    # Check if GP-RBF probe data is available
+    has_rbf_data = any("r2_mean_rbf" in m for m in metrics.values())
 
-    if has_mlp_data:
-        lines.extend([
-            "",
-            "### MLP Probe R² (Nonlinear)",
-            "",
-            "MLP probes capture nonlinear relationships in the feature space.",
-            "",
-            "| Condition | R²_vol (MLP) | R²_loc (MLP) | R²_shape (MLP) | R²_mean (MLP) |",
-            "|-----------|--------------|--------------|----------------|---------------|",
-        ])
+    if has_rbf_data:
+        lines.extend(
+            [
+                "",
+                "### GP-RBF Probe R² (Nonlinear)",
+                "",
+                "GP-RBF probes capture nonlinear relationships in the feature space.",
+                "",
+                "| Condition | R²_vol (GP-RBF) | R²_loc (GP-RBF) | R²_shape (GP-RBF) | R²_mean (GP-RBF) |",
+                "|-----------|-----------------|-----------------|-------------------|------------------|",
+            ]
+        )
 
         for cond in config["conditions"]:
             name = cond["name"]
@@ -367,22 +380,26 @@ def generate_markdown_report(
                 continue
 
             m = metrics[name]
-            r2_vol_mlp = f"{m.get('r2_volume_mlp', 0):.4f}"
-            r2_loc_mlp = f"{m.get('r2_location_mlp', 0):.4f}"
-            r2_shape_mlp = f"{m.get('r2_shape_mlp', 0):.4f}"
-            r2_mean_mlp = f"{m.get('r2_mean_mlp', 0):.4f}"
+            r2_vol_rbf = f"{m.get('r2_volume_rbf', 0):.4f}"
+            r2_loc_rbf = f"{m.get('r2_location_rbf', 0):.4f}"
+            r2_shape_rbf = f"{m.get('r2_shape_rbf', 0):.4f}"
+            r2_mean_rbf = f"{m.get('r2_mean_rbf', 0):.4f}"
 
-            lines.append(f"| {name} | {r2_vol_mlp} | {r2_loc_mlp} | {r2_shape_mlp} | {r2_mean_mlp} |")
+            lines.append(
+                f"| {name} | {r2_vol_rbf} | {r2_loc_rbf} | {r2_shape_rbf} | {r2_mean_rbf} |"
+            )
 
-    lines.extend([
-        "",
-        "---",
-        "",
-        "## 3. Secondary Results: Segmentation Dice",
-        "",
-        "| Condition | Test Dice (Mean) | Test Dice (TC) | Test Dice (WT) | Test Dice (ET) |",
-        "|-----------|------------------|----------------|----------------|----------------|",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 3. Secondary Results: Segmentation Dice",
+            "",
+            "| Condition | Test Dice (Mean) | Test Dice (TC) | Test Dice (WT) | Test Dice (ET) |",
+            "|-----------|------------------|----------------|----------------|----------------|",
+        ]
+    )
 
     for cond in config["conditions"]:
         name = cond["name"]
@@ -391,20 +408,22 @@ def generate_markdown_report(
 
         m = metrics[name]
         # Use test dice from metrics.json
-        dice_mean = f"{m.get('test_dice_mean', 0):.4f}" if m.get('test_dice_mean') else "N/A"
-        dice_tc = f"{m.get('test_dice_TC', 0):.4f}" if m.get('test_dice_TC') else "N/A"
-        dice_wt = f"{m.get('test_dice_WT', 0):.4f}" if m.get('test_dice_WT') else "N/A"
-        dice_et = f"{m.get('test_dice_ET', 0):.4f}" if m.get('test_dice_ET') else "N/A"
+        dice_mean = f"{m.get('test_dice_mean', 0):.4f}" if m.get("test_dice_mean") else "N/A"
+        dice_tc = f"{m.get('test_dice_TC', 0):.4f}" if m.get("test_dice_TC") else "N/A"
+        dice_wt = f"{m.get('test_dice_WT', 0):.4f}" if m.get("test_dice_WT") else "N/A"
+        dice_et = f"{m.get('test_dice_ET', 0):.4f}" if m.get("test_dice_ET") else "N/A"
 
         lines.append(f"| {name} | {dice_mean} | {dice_tc} | {dice_wt} | {dice_et} |")
 
-    lines.extend([
-        "",
-        "---",
-        "",
-        "## 4. Statistical Analysis",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 4. Statistical Analysis",
+            "",
+        ]
+    )
 
     if stats and stats.recommendation:
         lines.append("### Statistical Test Results")
@@ -415,15 +434,17 @@ def generate_markdown_report(
     else:
         lines.append("*Run statistical_analysis.py for detailed statistical tests.*")
 
-    lines.extend([
-        "",
-        "---",
-        "",
-        "## 5. Feature Quality Analysis",
-        "",
-        "### Per-Dimension R² Breakdown",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 5. Feature Quality Analysis",
+            "",
+            "### Per-Dimension R² Breakdown",
+            "",
+        ]
+    )
 
     for cond in config["conditions"]:
         name = cond["name"]
@@ -441,12 +462,14 @@ def generate_markdown_report(
 
         lines.append("")
 
-    lines.extend([
-        "### Feature Variance",
-        "",
-        "| Condition | Variance (mean) | Variance (min) |",
-        "|-----------|-----------------|----------------|",
-    ])
+    lines.extend(
+        [
+            "### Feature Variance",
+            "",
+            "| Condition | Variance (mean) | Variance (min) |",
+            "|-----------|-----------------|----------------|",
+        ]
+    )
 
     for cond in config["conditions"]:
         name = cond["name"]
@@ -458,13 +481,15 @@ def generate_markdown_report(
         var_min = f"{m.get('variance_min', 0):.6f}"
         lines.append(f"| {name} | {var_mean} | {var_min} |")
 
-    lines.extend([
-        "",
-        "---",
-        "",
-        "## 6. Recommendation",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 6. Recommendation",
+            "",
+        ]
+    )
 
     # Generate recommendation
     best_name = "baseline"
@@ -479,63 +504,71 @@ def generate_markdown_report(
     improvement_pct = improvement / baseline_r2 * 100 if baseline_r2 > 0 else 0
 
     if best_name == "baseline" or improvement < 0.03:
-        lines.extend([
-            "### **RECOMMENDATION: Use Baseline (No LoRA)**",
-            "",
-            "**Rationale:**",
-            f"- Baseline R²_mean: {baseline_r2:.4f}",
-            f"- Best LoRA R²_mean: {best_r2_mean:.4f} ({best_name})",
-            f"- Improvement: {improvement:.4f} ({improvement_pct:.1f}%)",
-            "",
-            "The improvement from LoRA adaptation is marginal (<3%) and does not justify:",
-            "1. Additional training complexity",
-            "2. Increased parameter count",
-            "3. Risk of overfitting to meningioma-specific features",
-            "",
-            "The baseline encoder (trained on gliomas) already provides strong features ",
-            "for meningioma semantic prediction, demonstrating good cross-tumor generalization.",
-        ])
+        lines.extend(
+            [
+                "### **RECOMMENDATION: Use Baseline (No LoRA)**",
+                "",
+                "**Rationale:**",
+                f"- Baseline R²_mean: {baseline_r2:.4f}",
+                f"- Best LoRA R²_mean: {best_r2_mean:.4f} ({best_name})",
+                f"- Improvement: {improvement:.4f} ({improvement_pct:.1f}%)",
+                "",
+                "The improvement from LoRA adaptation is marginal (<3%) and does not justify:",
+                "1. Additional training complexity",
+                "2. Increased parameter count",
+                "3. Risk of overfitting to meningioma-specific features",
+                "",
+                "The baseline encoder (trained on gliomas) already provides strong features ",
+                "for meningioma semantic prediction, demonstrating good cross-tumor generalization.",
+            ]
+        )
     elif improvement < 0.05:
-        lines.extend([
-            f"### **RECOMMENDATION: Consider {best_name} (Marginal Benefit)**",
-            "",
-            "**Rationale:**",
-            f"- Baseline R²_mean: {baseline_r2:.4f}",
-            f"- {best_name} R²_mean: {best_r2_mean:.4f}",
-            f"- Improvement: {improvement:.4f} ({improvement_pct:.1f}%)",
-            "",
-            "The improvement is modest (3-5%). Consider:",
-            "1. If computational resources allow, use LoRA",
-            "2. If simplicity is prioritized, baseline is acceptable",
-            "3. Statistical significance should guide final decision",
-        ])
+        lines.extend(
+            [
+                f"### **RECOMMENDATION: Consider {best_name} (Marginal Benefit)**",
+                "",
+                "**Rationale:**",
+                f"- Baseline R²_mean: {baseline_r2:.4f}",
+                f"- {best_name} R²_mean: {best_r2_mean:.4f}",
+                f"- Improvement: {improvement:.4f} ({improvement_pct:.1f}%)",
+                "",
+                "The improvement is modest (3-5%). Consider:",
+                "1. If computational resources allow, use LoRA",
+                "2. If simplicity is prioritized, baseline is acceptable",
+                "3. Statistical significance should guide final decision",
+            ]
+        )
     else:
-        lines.extend([
-            f"### **RECOMMENDATION: Use {best_name}**",
-            "",
-            "**Rationale:**",
-            f"- Baseline R²_mean: {baseline_r2:.4f}",
-            f"- {best_name} R²_mean: {best_r2_mean:.4f}",
-            f"- Improvement: {improvement:.4f} ({improvement_pct:.1f}%)",
-            "",
-            "LoRA adaptation provides meaningful improvement (>5%) in semantic feature ",
-            "prediction, justifying the additional training complexity for downstream ",
-            "growth modeling tasks.",
-        ])
+        lines.extend(
+            [
+                f"### **RECOMMENDATION: Use {best_name}**",
+                "",
+                "**Rationale:**",
+                f"- Baseline R²_mean: {baseline_r2:.4f}",
+                f"- {best_name} R²_mean: {best_r2_mean:.4f}",
+                f"- Improvement: {improvement:.4f} ({improvement_pct:.1f}%)",
+                "",
+                "LoRA adaptation provides meaningful improvement (>5%) in semantic feature ",
+                "prediction, justifying the additional training complexity for downstream ",
+                "growth modeling tasks.",
+            ]
+        )
 
-    lines.extend([
-        "",
-        "---",
-        "",
-        "*Report generated by experiments/lora_ablation/analyze_results.py*",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "*Report generated by experiments/lora_ablation/analyze_results.py*",
+        ]
+    )
 
     return "\n".join(lines)
 
 
 def analyze_results(
     config_path: str,
-    glioma_features_path: Optional[str] = None,
+    glioma_features_path: str | None = None,
     skip_figures: bool = False,
 ) -> None:
     """Run complete analysis pipeline."""
@@ -603,26 +636,28 @@ def analyze_results(
         name = cond["name"]
         if name in metrics:
             m = metrics[name]
-            rows.append({
-                "condition": name,
-                # Linear probe R²
-                "r2_volume": m.get("r2_volume"),
-                "r2_location": m.get("r2_location"),
-                "r2_shape": m.get("r2_shape"),
-                "r2_mean": m.get("r2_mean"),
-                # MLP probe R² (if available)
-                "r2_volume_mlp": m.get("r2_volume_mlp"),
-                "r2_location_mlp": m.get("r2_location_mlp"),
-                "r2_shape_mlp": m.get("r2_shape_mlp"),
-                "r2_mean_mlp": m.get("r2_mean_mlp"),
-                # Test Dice
-                "test_dice_mean": m.get("test_dice_mean"),
-                "test_dice_TC": m.get("test_dice_TC"),
-                "test_dice_WT": m.get("test_dice_WT"),
-                "test_dice_ET": m.get("test_dice_ET"),
-                "val_dice": m.get("val_dice"),  # Keep for reference
-                "variance_mean": m.get("variance_mean"),
-            })
+            rows.append(
+                {
+                    "condition": name,
+                    # Linear probe R²
+                    "r2_volume": m.get("r2_volume"),
+                    "r2_location": m.get("r2_location"),
+                    "r2_shape": m.get("r2_shape"),
+                    "r2_mean": m.get("r2_mean"),
+                    # GP-RBF probe R² (if available)
+                    "r2_volume_rbf": m.get("r2_volume_rbf"),
+                    "r2_location_rbf": m.get("r2_location_rbf"),
+                    "r2_shape_rbf": m.get("r2_shape_rbf"),
+                    "r2_mean_rbf": m.get("r2_mean_rbf"),
+                    # Test Dice
+                    "test_dice_mean": m.get("test_dice_mean"),
+                    "test_dice_TC": m.get("test_dice_TC"),
+                    "test_dice_WT": m.get("test_dice_WT"),
+                    "test_dice_ET": m.get("test_dice_ET"),
+                    "val_dice": m.get("val_dice"),  # Keep for reference
+                    "variance_mean": m.get("variance_mean"),
+                }
+            )
 
     df = pd.DataFrame(rows)
     csv_path = output_dir / "comparison_table.csv"
@@ -638,7 +673,7 @@ def analyze_results(
     print(f"  - {md_path.name} (Markdown report)")
     print(f"  - {latex_path.name} (LaTeX table)")
     print(f"  - {csv_path.name} (CSV summary)")
-    print(f"  - figures/ (Publication figures)")
+    print("  - figures/ (Publication figures)")
     print(f"  - statistical_*.{'{json,csv,txt}'} (Statistical analysis)")
 
     if stats:
@@ -647,9 +682,7 @@ def analyze_results(
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Comprehensive analysis for LoRA ablation study"
-    )
+    parser = argparse.ArgumentParser(description="Comprehensive analysis for LoRA ablation study")
     parser.add_argument(
         "--config",
         type=str,

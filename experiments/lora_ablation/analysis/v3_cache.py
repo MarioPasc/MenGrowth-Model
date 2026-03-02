@@ -14,13 +14,10 @@ Usage:
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import torch
-import yaml
-
-from experiments.utils.settings import V3_CONDITIONS
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +26,8 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ============================================================================
 
-def _load_json(path: Path) -> Optional[Dict]:
+
+def _load_json(path: Path) -> dict | None:
     """Load JSON file, returning None on failure."""
     if not path.exists():
         return None
@@ -37,11 +35,12 @@ def _load_json(path: Path) -> Optional[Dict]:
         return json.load(f)
 
 
-def _load_csv_rows(path: Path) -> Optional[List[Dict[str, str]]]:
+def _load_csv_rows(path: Path) -> list[dict[str, str]] | None:
     """Load CSV as list of dicts, returning None on failure."""
     if not path.exists():
         return None
     import csv
+
     with open(path) as f:
         reader = csv.DictReader(f)
         return list(reader)
@@ -70,16 +69,17 @@ def _json_default(obj: Any) -> Any:
 # Per-cache builders
 # ============================================================================
 
+
 def _build_training_logs(
     config: dict,
     output_dir: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Consolidate all training_log.csv into a single dict.
 
     Returns:
         Dict mapping condition name to list of epoch records.
     """
-    logs: Dict[str, Any] = {}
+    logs: dict[str, Any] = {}
     for cond_cfg in config["conditions"]:
         name = cond_cfg["name"]
         csv_path = output_dir / "conditions" / name / "training_log.csv"
@@ -100,14 +100,14 @@ def _build_training_logs(
 def _build_dice_data(
     config: dict,
     output_dir: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Consolidate test_dice_men.json and test_dice_gli.json per condition.
 
     Returns:
         Dict mapping condition name to ``{"men": {...}, "gli": {...}}``.
         Falls back to flat MEN-only format if no GLI data exists.
     """
-    data: Dict[str, Any] = {}
+    data: dict[str, Any] = {}
     for cond_cfg in config["conditions"]:
         name = cond_cfg["name"]
         men_path = output_dir / "conditions" / name / "test_dice_men.json"
@@ -124,9 +124,9 @@ def _build_dice_data(
 def _build_feature_quality_data(
     config: dict,
     output_dir: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Consolidate all feature_quality.json into a single dict."""
-    data: Dict[str, Any] = {}
+    data: dict[str, Any] = {}
     for cond_cfg in config["conditions"]:
         name = cond_cfg["name"]
         fq_path = output_dir / "conditions" / name / "feature_quality.json"
@@ -139,9 +139,9 @@ def _build_feature_quality_data(
 def _build_probe_metrics(
     config: dict,
     output_dir: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Consolidate all metrics.json / metrics_enhanced.json into a single dict."""
-    data: Dict[str, Any] = {}
+    data: dict[str, Any] = {}
     for cond_cfg in config["conditions"]:
         name = cond_cfg["name"]
         # Prefer enhanced metrics
@@ -157,12 +157,12 @@ def _build_probe_metrics(
 def _build_predictions(
     config: dict,
     output_dir: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Find the best condition and consolidate its predictions.
 
     Best condition = highest r2_mean from probe metrics.
     """
-    best_name: Optional[str] = None
+    best_name: str | None = None
     best_r2: float = -float("inf")
 
     for cond_cfg in config["conditions"]:
@@ -172,7 +172,7 @@ def _build_predictions(
             metrics_path = output_dir / "conditions" / name / "metrics.json"
         metrics = _load_json(metrics_path)
         if metrics is not None:
-            r2 = metrics.get("r2_mean", metrics.get("r2_mean_mlp", -1.0))
+            r2 = metrics.get("r2_mean", metrics.get("r2_mean_rbf", -1.0))
             if r2 is not None and r2 > best_r2:
                 best_r2 = r2
                 best_name = name
@@ -201,7 +201,7 @@ def _build_variance_spectrum(
 
     Saves as NPZ with keys = condition names, values = sorted variance arrays.
     """
-    arrays: Dict[str, np.ndarray] = {}
+    arrays: dict[str, np.ndarray] = {}
     for cond_cfg in config["conditions"]:
         name = cond_cfg["name"]
         feat_path = output_dir / "conditions" / name / "features_test.pt"
@@ -245,10 +245,10 @@ def _build_umap_embedding(
         logger.warning("sklearn or umap not available; skipping UMAP cache.")
         return
 
-    all_features: List[np.ndarray] = []
-    all_conditions: List[str] = []
-    all_volumes: List[np.ndarray] = []
-    all_shape0: List[np.ndarray] = []
+    all_features: list[np.ndarray] = []
+    all_conditions: list[str] = []
+    all_volumes: list[np.ndarray] = []
+    all_shape0: list[np.ndarray] = []
 
     for cond_cfg in config["conditions"]:
         name = cond_cfg["name"]
@@ -356,9 +356,9 @@ def _build_domain_umap_grid(
         logger.warning("sklearn or umap not available; skipping domain UMAP grid.")
         return
 
-    all_features: List[np.ndarray] = []
-    all_domains: List[str] = []
-    all_conditions: List[str] = []
+    all_features: list[np.ndarray] = []
+    all_domains: list[str] = []
+    all_conditions: list[str] = []
 
     for cond_cfg in config["conditions"]:
         name = cond_cfg["name"]
@@ -406,7 +406,7 @@ def _build_domain_umap_grid(
     embedding = umap.fit_transform(X_pca)
 
     # Per-condition silhouette scores
-    save_dict: Dict[str, Any] = {
+    save_dict: dict[str, Any] = {
         "embedding": embedding.astype(np.float32),
         "domains": domains_arr,
         "conditions": conditions_arr,
@@ -431,6 +431,7 @@ def _build_domain_umap_grid(
 # ============================================================================
 # Main entry point
 # ============================================================================
+
 
 def precompute_all(config: dict, output_dir: Path) -> Path:
     """Precompute all figure data from raw condition outputs.

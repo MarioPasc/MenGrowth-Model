@@ -26,11 +26,9 @@ import torch
 
 from experiments.sdp.output_paths import load_run_paths
 from growth.evaluation.latent_quality import (
-    LinearProbe,
     compute_dci,
     compute_effective_rank,
 )
-from growth.models.projection.partition import DEFAULT_PARTITIONS
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -74,17 +72,15 @@ def compute_performance_metrics(
     train_data: dict[str, np.ndarray],
     eval_data: dict[str, np.ndarray],
 ) -> dict[str, Any]:
-    """Compute linear and MLP R² per partition.
+    """Compute GP-linear and GP-RBF R² per partition.
 
     Args:
         train_data: Training latent data dict.
         eval_data: Evaluation latent data dict.
 
     Returns:
-        Dict with per-partition linear/MLP R² and per-dimension breakdown.
+        Dict with per-partition linear/RBF R² and per-dimension breakdown.
     """
-    from growth.evaluation.enhanced_probes import EnhancedLinearProbe, MLPProbe
-
     results = {}
 
     for part_name in SUPERVISED_PARTITIONS:
@@ -100,30 +96,32 @@ def compute_performance_metrics(
         if y_eval.ndim == 1:
             y_eval = y_eval.reshape(-1, 1)
 
-        # Linear probe
-        linear = EnhancedLinearProbe(alpha=1.0)
-        linear.fit(X_train, y_train)
-        linear_res = linear.evaluate(X_eval, y_eval)
+        # GP-Linear probe
+        gp_linear = GPProbe(kernel_type="linear", r2_ci_samples=0)
+        gp_linear.fit(X_train, y_train)
+        linear_res = gp_linear.evaluate(X_eval, y_eval)
 
-        # MLP probe
-        mlp = MLPProbe(hidden_sizes=(128,), alpha=1e-3)
-        mlp.fit(X_train, y_train)
-        mlp_res = mlp.evaluate(X_eval, y_eval)
+        # GP-RBF probe
+        gp_rbf = GPProbe(kernel_type="rbf", n_restarts=3, r2_ci_samples=0)
+        gp_rbf.fit(X_train, y_train)
+        rbf_res = gp_rbf.evaluate(X_eval, y_eval)
 
         results[part_name] = {
-            "r2_linear": float(linear_res["r2"]),
-            "r2_mlp": float(mlp_res["r2"]),
-            "r2_per_dim_linear": [float(x) for x in linear_res["r2_per_dim"]],
-            "r2_per_dim_mlp": [float(x) for x in mlp_res["r2_per_dim"]],
-            "mse_linear": float(linear_res["mse"]),
-            "mse_mlp": float(mlp_res["mse"]),
-            "nonlinearity_gap": float(mlp_res["r2"] - linear_res["r2"]),
+            "r2_linear": float(linear_res.r2),
+            "r2_rbf": float(rbf_res.r2),
+            "r2_per_dim_linear": [float(x) for x in linear_res.r2_per_dim],
+            "r2_per_dim_rbf": [float(x) for x in rbf_res.r2_per_dim],
+            "mse_linear": float(linear_res.mse),
+            "mse_rbf": float(rbf_res.mse),
+            "nonlinearity_evidence": float(
+                rbf_res.log_marginal_likelihood - linear_res.log_marginal_likelihood
+            ),
         }
 
     # Summary
     results["summary"] = {
         "r2_mean_linear": np.mean([results[p]["r2_linear"] for p in SUPERVISED_PARTITIONS]),
-        "r2_mean_mlp": np.mean([results[p]["r2_mlp"] for p in SUPERVISED_PARTITIONS]),
+        "r2_mean_rbf": np.mean([results[p]["r2_rbf"] for p in SUPERVISED_PARTITIONS]),
     }
 
     return results
@@ -159,11 +157,7 @@ def compute_cross_probing(
             if y_eval.ndim == 1:
                 y_eval = y_eval.reshape(-1, 1)
 
-            probe = LinearProbe(
-                input_dim=X_train.shape[1],
-                output_dim=y_train.shape[1],
-                alpha=1.0,
-            )
+            probe = GPProbe(kernel_type="linear", r2_ci_samples=0)
             probe.fit(X_train, y_train)
             result = probe.evaluate(X_eval, y_eval)
 

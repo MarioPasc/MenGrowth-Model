@@ -16,19 +16,16 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List
 
 from experiments.lora_ablation.report.data_loader import (
     ExperimentData,
     load_all_experiments,
 )
 from experiments.lora_ablation.report.figures import (
-    FigureResult,
     generate_all_figures,
 )
 from experiments.lora_ablation.report.html_builder import build_report
 from experiments.lora_ablation.report.narrative import (
-    SectionContent,
     generate_all_sections,
 )
 from experiments.lora_ablation.report.style import EXPERIMENT_LABELS
@@ -37,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def _export_summary_json(
-    experiments: List[ExperimentData],
+    experiments: list[ExperimentData],
     output_path: Path,
 ) -> None:
     """Export aggregated metrics as JSON for programmatic access.
@@ -46,10 +43,10 @@ def _export_summary_json(
         experiments: Loaded experiments.
         output_path: Path to write summary.json.
     """
-    summary: Dict = {"experiments": []}
+    summary: dict = {"experiments": []}
 
     for exp in experiments:
-        exp_data: Dict = {
+        exp_data: dict = {
             "name": exp.name,
             "adapter_type": exp.adapter_type,
             "semantic_heads": exp.semantic_heads,
@@ -62,7 +59,7 @@ def _export_summary_json(
                 "dice_gli": cond.dice_gli,
                 "domain_metrics": cond.domain_metrics,
                 "r2_mean_linear": cond.metrics_enhanced.get("r2_mean_linear"),
-                "r2_mean_mlp": cond.metrics_enhanced.get("r2_mean_mlp"),
+                "r2_mean_rbf": cond.metrics_enhanced.get("r2_mean_rbf"),
                 "best_val_dice": cond.training_summary.get("best_val_dice"),
                 "best_epoch": cond.training_summary.get("best_epoch"),
                 "training_time_minutes": cond.training_summary.get("training_time_minutes"),
@@ -78,9 +75,9 @@ def _export_summary_json(
 
 
 def _export_tables(
-    experiments: List[ExperimentData],
+    experiments: list[ExperimentData],
     output_dir: Path,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Generate CSV and LaTeX table exports.
 
     Args:
@@ -97,7 +94,7 @@ def _export_tables(
     tables_dir = output_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
 
-    html_tables: Dict[str, str] = {}
+    html_tables: dict[str, str] = {}
 
     for exp in experiments:
         # Build comprehensive results table
@@ -108,7 +105,7 @@ def _export_tables(
                 "Dice MEN": cond.dice_men.get("dice_mean"),
                 "Dice GLI": cond.dice_gli.get("dice_mean"),
                 "R² Linear": cond.metrics_enhanced.get("r2_mean_linear"),
-                "R² MLP": cond.metrics_enhanced.get("r2_mean_mlp"),
+                "R² GP-RBF": cond.metrics_enhanced.get("r2_mean_rbf"),
                 "MMD²": cond.domain_metrics.get("mmd"),
                 "Best Epoch": cond.training_summary.get("best_epoch"),
             }

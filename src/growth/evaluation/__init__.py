@@ -2,30 +2,26 @@
 """
 Evaluation module for the growth forecasting pipeline.
 
-Provides metrics for latent quality, ODE predictions, and clinical risk assessment.
+Provides metrics for latent quality, GP probes, and clinical risk assessment.
 
 Components:
-- latent_quality: Linear probes, R² metrics, correlation analysis
-- enhanced_probes: MLP probes, target normalization, nonlinearity analysis
+- gp_probes: GP-based probes (linear + RBF kernels) for feature evaluation
+- latent_quality: R² metrics, correlation analysis, domain shift metrics
 - statistics: Bootstrap CIs, effect sizes, statistical tests
 - segmentation_metrics: Dice evaluation utilities
 - visualization: Publication-quality plots
 """
 
-from .enhanced_probes import (
-    EnhancedLinearProbe,
-    EnhancedProbeResults,
-    EnhancedSemanticProbes,
-    MLPProbe,
-    analyze_feature_quality,
-    compute_multi_scale_features,
+from .gp_probes import (
+    GPProbe,
+    GPProbeResults,
+    GPSemanticProbes,
+    GPSemanticResults,
+    extract_sausage_data,
 )
 from .latent_quality import (
     DCIResults,
     DomainShiftMetrics,
-    LinearProbe,
-    ProbeResults,
-    SemanticProbes,
     compute_cka,
     compute_cross_correlation,
     compute_dci,
@@ -74,10 +70,13 @@ from .visualization import (
 )
 
 __all__ = [
-    # Basic probes
-    "ProbeResults",
-    "LinearProbe",
-    "SemanticProbes",
+    # GP probes (replaces Ridge + MLP)
+    "GPProbe",
+    "GPProbeResults",
+    "GPSemanticProbes",
+    "GPSemanticResults",
+    "extract_sausage_data",
+    # Latent quality metrics
     "compute_r2_scores",
     "compute_cross_correlation",
     "compute_partition_correlation",
@@ -97,13 +96,6 @@ __all__ = [
     "compute_proxy_a_distance",
     "DomainShiftMetrics",
     "compute_domain_shift_metrics",
-    # Enhanced probes
-    "EnhancedProbeResults",
-    "EnhancedLinearProbe",
-    "MLPProbe",
-    "EnhancedSemanticProbes",
-    "analyze_feature_quality",
-    "compute_multi_scale_features",
     # Statistics
     "BootstrapCI",
     "PairedTestResult",

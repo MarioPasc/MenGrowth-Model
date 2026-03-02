@@ -118,7 +118,9 @@ class TumorAwarePoolExtractor:
     Requires the full model (encoder + decoder) to produce segmentation.
 
     Args:
-        full_model: Full model with forward_with_semantics or standard forward.
+        full_model: Full model with get_hidden_states() and forward() methods.
+            Supports CompletelyFrozenModel, BaselineOriginalDecoderModel,
+            and LoRAOriginalDecoderModel.
         device: Device to use.
         floor: Minimum weight for non-tumor regions (prevents zero-weight).
     """
@@ -134,6 +136,31 @@ class TumorAwarePoolExtractor:
         self.floor = floor
         self.full_model.eval()
 
+        # Resolve encoder10 module once at init (model-agnostic)
+        self.encoder10 = self._find_encoder10(full_model)
+
+    @staticmethod
+    def _find_encoder10(model: torch.nn.Module) -> torch.nn.Module:
+        """Find encoder10 module across different model architectures.
+
+        Args:
+            model: Any ablation model type.
+
+        Returns:
+            The encoder10 module.
+        """
+        # LoRAOriginalDecoderModel / BaselineOriginalDecoderModel
+        if hasattr(model, "decoder") and hasattr(model.decoder, "encoder10"):
+            return model.decoder.encoder10
+        # CompletelyFrozenModel (self.model is SwinUNETR)
+        if hasattr(model, "model"):
+            if hasattr(model.model, "encoder10"):
+                return model.model.encoder10
+            # BaselineOriginalDecoderModel.model = OriginalDecoderSegmentationModel
+            if hasattr(model.model, "decoder") and hasattr(model.model.decoder, "encoder10"):
+                return model.model.decoder.encoder10
+        raise AttributeError(f"Cannot find encoder10 on model type {type(model).__name__}")
+
     @torch.no_grad()
     def extract(
         self,
@@ -148,13 +175,11 @@ class TumorAwarePoolExtractor:
             Dict with 'encoder10_tap' (768-dim TAP features) and
             'encoder10_gap' (768-dim GAP features for comparison).
         """
-        # Get hidden states from the encoder
-        hidden_states = self.full_model.model.encoder.swinViT(
-            x, self.full_model.model.encoder.normalize
-        )
+        # Use common interface for hidden states (works with all model types)
+        hidden_states = self.full_model.get_hidden_states(x)
 
         # encoder10 features: [B, 768, S, S, S]
-        enc10 = self.full_model.model.encoder.encoder10(hidden_states[4])
+        enc10 = self.encoder10(hidden_states[4])
 
         # GAP baseline
         gap_features = F.adaptive_avg_pool3d(enc10, 1).flatten(1)  # [B, 768]
@@ -380,11 +405,21 @@ def extract_features_for_split(
 
         # Extract TAP features (if enabled)
         if tap_extractor is not None:
-            with amp_ctx:
-                tap_features = tap_extractor.extract(images)
-            all_features["encoder10_tap"].append(
-                tap_features["encoder10_tap"].cpu().float().numpy()
-            )
+            try:
+                with amp_ctx:
+                    tap_features = tap_extractor.extract(images)
+                all_features["encoder10_tap"].append(
+                    tap_features["encoder10_tap"].cpu().float().numpy()
+                )
+            except torch.cuda.OutOfMemoryError:
+                logger.warning(
+                    "TAP extraction OOM — disabling TAP for remaining batches. "
+                    "GAP features are unaffected."
+                )
+                torch.cuda.empty_cache()
+                # Remove partial TAP data and disable for rest of loop
+                all_features.pop("encoder10_tap", None)
+                tap_extractor = None
 
         # Semantic targets
         all_volumes.append(batch["semantic_features"]["volume"].numpy())

@@ -1,156 +1,22 @@
 # tests/growth/test_latent_quality.py
-"""Tests for latent space quality metrics."""
+"""Tests for latent space quality metrics (domain-shift, correlation, variance).
+
+Probe-specific tests are in test_gp_probes.py.
+"""
 
 import numpy as np
 import pytest
 
 from growth.evaluation.latent_quality import (
-    LinearProbe,
-    SemanticProbes,
-    ProbeResults,
-    compute_r2_scores,
-    distance_correlation,
-    compute_partition_correlation,
-    compute_dcor_matrix,
-    compute_variance_per_dim,
-    evaluate_latent_quality,
     compute_cka,
+    compute_dcor_matrix,
+    compute_partition_correlation,
+    compute_r2_scores,
+    compute_variance_per_dim,
+    distance_correlation,
+    evaluate_latent_quality,
     mmd_permutation_test,
 )
-
-
-class TestLinearProbe:
-    """Tests for LinearProbe class."""
-
-    def test_fit_and_predict(self):
-        """Test basic fit and predict."""
-        np.random.seed(42)
-        X = np.random.randn(100, 64)
-        y = np.random.randn(100, 4)
-
-        probe = LinearProbe(input_dim=64, output_dim=4)
-        probe.fit(X[:80], y[:80])
-        predictions = probe.predict(X[80:])
-
-        assert predictions.shape == (20, 4)
-
-    def test_high_r2_for_linear_data(self):
-        """Test high R² for linearly related data."""
-        np.random.seed(42)
-        n_samples = 500
-        input_dim = 64
-        output_dim = 4
-
-        X = np.random.randn(n_samples, input_dim)
-        W = np.random.randn(input_dim, output_dim) * 0.1
-        y = X @ W + np.random.randn(n_samples, output_dim) * 0.01
-
-        probe = LinearProbe(input_dim=input_dim, output_dim=output_dim)
-        probe.fit(X[:400], y[:400])
-        results = probe.evaluate(X[400:], y[400:])
-
-        assert results.r2 > 0.95
-
-    def test_low_r2_for_random_data(self):
-        """Test low R² for unrelated data."""
-        np.random.seed(42)
-        X = np.random.randn(200, 32)
-        y = np.random.randn(200, 4)
-
-        probe = LinearProbe(input_dim=32, output_dim=4)
-        probe.fit(X[:160], y[:160])
-        results = probe.evaluate(X[160:], y[160:])
-
-        assert results.r2 < 0.3
-
-    def test_evaluate_returns_probe_results(self):
-        """Test evaluate returns ProbeResults dataclass."""
-        np.random.seed(42)
-        X = np.random.randn(100, 32)
-        y = np.random.randn(100, 4)
-
-        probe = LinearProbe(input_dim=32, output_dim=4)
-        probe.fit(X[:80], y[:80])
-        results = probe.evaluate(X[80:], y[80:])
-
-        assert isinstance(results, ProbeResults)
-        assert isinstance(results.r2, float)
-        assert results.r2_per_dim.shape == (4,)
-        assert results.predictions.shape == (20, 4)
-        assert results.coefficients.shape == (4, 32)
-
-    def test_input_dim_validation(self):
-        """Test input dimension validation."""
-        probe = LinearProbe(input_dim=64, output_dim=4)
-
-        with pytest.raises(ValueError, match="Expected input_dim"):
-            probe.fit(np.random.randn(100, 32), np.random.randn(100, 4))
-
-    def test_output_dim_validation(self):
-        """Test output dimension validation."""
-        probe = LinearProbe(input_dim=64, output_dim=4)
-
-        with pytest.raises(ValueError, match="Expected output_dim"):
-            probe.fit(np.random.randn(100, 64), np.random.randn(100, 8))
-
-    def test_predict_before_fit_raises(self):
-        """Test predicting before fitting raises error."""
-        probe = LinearProbe(input_dim=64, output_dim=4)
-
-        with pytest.raises(RuntimeError, match="must be fitted"):
-            probe.predict(np.random.randn(10, 64))
-
-
-class TestSemanticProbes:
-    """Tests for SemanticProbes class."""
-
-    def test_fit_and_evaluate(self):
-        """Test fitting and evaluating all probes."""
-        np.random.seed(42)
-        X = np.random.randn(200, 768)
-        targets = {
-            "volume": np.random.randn(200, 4),
-            "location": np.random.randn(200, 3),
-            "shape": np.random.randn(200, 3),
-        }
-
-        probes = SemanticProbes(input_dim=768)
-        probes.fit(X[:160], {k: v[:160] for k, v in targets.items()})
-        results = probes.evaluate(X[160:], {k: v[160:] for k, v in targets.items()})
-
-        assert "volume" in results
-        assert "location" in results
-        assert "shape" in results
-        assert all(isinstance(r, ProbeResults) for r in results.values())
-
-    def test_missing_target_raises(self):
-        """Test missing target in fit raises error."""
-        probes = SemanticProbes(input_dim=768)
-        X = np.random.randn(100, 768)
-        targets = {"volume": np.random.randn(100, 4)}  # Missing location, shape
-
-        with pytest.raises(ValueError, match="Missing target"):
-            probes.fit(X, targets)
-
-    def test_get_summary(self):
-        """Test get_summary returns R² dict."""
-        np.random.seed(42)
-        X = np.random.randn(200, 768)
-        targets = {
-            "volume": np.random.randn(200, 4),
-            "location": np.random.randn(200, 3),
-            "shape": np.random.randn(200, 3),
-        }
-
-        probes = SemanticProbes(input_dim=768)
-        probes.fit(X[:160], {k: v[:160] for k, v in targets.items()})
-        results = probes.evaluate(X[160:], {k: v[160:] for k, v in targets.items()})
-        summary = probes.get_summary(results)
-
-        assert "r2_volume" in summary
-        assert "r2_location" in summary
-        assert "r2_shape" in summary
-        assert "r2_mean" in summary
 
 
 class TestDistanceCorrelation:
@@ -312,9 +178,7 @@ class TestEvaluateLatentQuality:
             "shape": (18, 32),
         }
 
-        quality = evaluate_latent_quality(
-            features, semantic_targets, partition_indices
-        )
+        quality = evaluate_latent_quality(features, semantic_targets, partition_indices)
 
         assert "partition_correlation" in quality
         assert "dcor" in quality

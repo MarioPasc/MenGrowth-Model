@@ -20,13 +20,9 @@ from pathlib import Path
 import h5py
 import numpy as np
 from sklearn.decomposition import PCA
-from sklearn.linear_model import Ridge
-from sklearn.metrics import r2_score
 from sklearn.preprocessing import StandardScaler
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -49,44 +45,38 @@ def compute_linear_probe_ceiling(
     h_val: np.ndarray,
     targets_val: dict[str, np.ndarray],
 ) -> dict[str, dict]:
-    """Ridge regression from raw 768-dim features to each target group."""
-    scaler = StandardScaler()
-    h_train_s = scaler.fit_transform(h_train)
-    h_val_s = scaler.transform(h_val)
+    """GP probe ceiling from raw 768-dim features to each target group.
 
+    Fits both GP-linear and GP-RBF probes per target group.
+    """
     results = {}
     for key in ["vol", "loc", "shape"]:
-        # Normalize targets
-        t_scaler = StandardScaler()
-        y_train = t_scaler.fit_transform(targets_train[key])
-        y_val = t_scaler.transform(targets_val[key])
+        key_results = {}
+        for kernel in ["linear", "rbf"]:
+            n_restarts = 3 if kernel == "rbf" else 0
+            probe = GPProbe(
+                kernel_type=kernel,
+                n_restarts=n_restarts,
+                r2_ci_samples=0,
+            )
+            probe.fit(h_train, targets_train[key])
+            res = probe.evaluate(h_val, targets_val[key])
+            key_results[kernel] = {
+                "r2_overall": res.r2,
+                "r2_per_dim": res.r2_per_dim.tolist(),
+                "lml": res.log_marginal_likelihood,
+                "n_dims": targets_val[key].shape[1],
+            }
 
-        best_r2 = -np.inf
-        best_alpha = None
-
-        for alpha in [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]:
-            model = Ridge(alpha=alpha)
-            model.fit(h_train_s, y_train)
-            y_pred = model.predict(h_val_s)
-            r2 = r2_score(y_val, y_pred)
-            if r2 > best_r2:
-                best_r2 = r2
-                best_alpha = alpha
-
-        # Get per-dim R² at best alpha
-        model = Ridge(alpha=best_alpha)
-        model.fit(h_train_s, y_train)
-        y_pred = model.predict(h_val_s)
-        r2_per_dim = []
-        for d in range(y_val.shape[1]):
-            r2_d = r2_score(y_val[:, d], y_pred[:, d])
-            r2_per_dim.append(r2_d)
-
+        # Use linear as primary result for backwards compatibility with report
         results[key] = {
-            "r2_overall": float(best_r2),
-            "r2_per_dim": r2_per_dim,
-            "best_alpha": float(best_alpha),
-            "n_dims": y_val.shape[1],
+            "r2_overall": key_results["linear"]["r2_overall"],
+            "r2_per_dim": key_results["linear"]["r2_per_dim"],
+            "best_alpha": 0.0,  # GP optimizes noise ratio automatically
+            "n_dims": key_results["linear"]["n_dims"],
+            "r2_rbf": key_results["rbf"]["r2_overall"],
+            "lml_linear": key_results["linear"]["lml"],
+            "lml_rbf": key_results["rbf"]["lml"],
         }
 
     return results
@@ -151,9 +141,9 @@ def compute_target_analysis(targets: dict[str, np.ndarray]) -> dict:
     n_loc = targets["loc"].shape[1]
     n_shape = targets["shape"].shape[1]
 
-    vol_loc_corr = np.abs(corr_matrix[:n_vol, n_vol:n_vol + n_loc]).max()
-    vol_shape_corr = np.abs(corr_matrix[:n_vol, n_vol + n_loc:]).max()
-    loc_shape_corr = np.abs(corr_matrix[n_vol:n_vol + n_loc, n_vol + n_loc:]).max()
+    vol_loc_corr = np.abs(corr_matrix[:n_vol, n_vol : n_vol + n_loc]).max()
+    vol_shape_corr = np.abs(corr_matrix[:n_vol, n_vol + n_loc :]).max()
+    loc_shape_corr = np.abs(corr_matrix[n_vol : n_vol + n_loc, n_vol + n_loc :]).max()
 
     return {
         "stats": stats,
@@ -167,9 +157,7 @@ def compute_target_analysis(targets: dict[str, np.ndarray]) -> dict:
     }
 
 
-def compute_feature_target_correlation(
-    h: np.ndarray, targets: dict[str, np.ndarray]
-) -> dict:
+def compute_feature_target_correlation(h: np.ndarray, targets: dict[str, np.ndarray]) -> dict:
     """Correlation between individual encoder dimensions and targets."""
     scaler = StandardScaler()
     h_s = scaler.fit_transform(h)
@@ -178,11 +166,12 @@ def compute_feature_target_correlation(
     for key, t in targets.items():
         t_s = StandardScaler().fit_transform(t)
         # Correlation: [768, n_targets]
-        corr = np.array([
-            [np.corrcoef(h_s[:, i], t_s[:, j])[0, 1]
-             for j in range(t_s.shape[1])]
-            for i in range(h_s.shape[1])
-        ])
+        corr = np.array(
+            [
+                [np.corrcoef(h_s[:, i], t_s[:, j])[0, 1] for j in range(t_s.shape[1])]
+                for i in range(h_s.shape[1])
+            ]
+        )
         # Max absolute correlation per target dim
         max_abs_corr = np.abs(corr).max(axis=0)
         # Number of features with |corr| > 0.3 for each target dim
@@ -212,7 +201,7 @@ def generate_report(
         "## Data Summary",
         f"- Training samples: {n_train}",
         f"- Validation samples: {n_val}",
-        f"- Feature dim: 768 (encoder10)",
+        "- Feature dim: 768 (encoder10)",
         "",
         "---",
         "",
@@ -231,43 +220,51 @@ def generate_report(
         per_dim_str = ", ".join(f"{d:.3f}" for d in r["r2_per_dim"])
         lines.append(f"| {key} | {r['r2_overall']:.4f} | [{per_dim_str}] | {r['best_alpha']:.1f} |")
 
-    lines.extend([
-        "",
-        "### 2. PCA Analysis of Encoder Features",
-        "",
-        f"- **Effective rank**: {pca_results['effective_rank']:.1f} / 768",
-        f"- Dims for 90% variance: {pca_results['dim_90pct']}",
-        f"- Dims for 95% variance: {pca_results['dim_95pct']}",
-        f"- Dims for 99% variance: {pca_results['dim_99pct']}",
-        "",
-        "Cumulative explained variance (top 10 PCs):",
-        "```",
-    ])
+    lines.extend(
+        [
+            "",
+            "### 2. PCA Analysis of Encoder Features",
+            "",
+            f"- **Effective rank**: {pca_results['effective_rank']:.1f} / 768",
+            f"- Dims for 90% variance: {pca_results['dim_90pct']}",
+            f"- Dims for 95% variance: {pca_results['dim_95pct']}",
+            f"- Dims for 99% variance: {pca_results['dim_99pct']}",
+            "",
+            "Cumulative explained variance (top 10 PCs):",
+            "```",
+        ]
+    )
     for i, v in enumerate(pca_results["top_10_explained"]):
-        lines.append(f"  PC{i+1:2d}: {v:.4f}")
+        lines.append(f"  PC{i + 1:2d}: {v:.4f}")
     lines.extend(["```", ""])
 
-    lines.extend([
-        "### 3. Target Distribution Analysis",
-        "",
-        "Cross-group max absolute correlations between targets:",
-        f"- vol ↔ loc: {target_analysis['cross_group_max_corr']['vol_loc']:.4f}",
-        f"- vol ↔ shape: {target_analysis['cross_group_max_corr']['vol_shape']:.4f}",
-        f"- loc ↔ shape: {target_analysis['cross_group_max_corr']['loc_shape']:.4f}",
-        "",
-    ])
+    lines.extend(
+        [
+            "### 3. Target Distribution Analysis",
+            "",
+            "Cross-group max absolute correlations between targets:",
+            f"- vol ↔ loc: {target_analysis['cross_group_max_corr']['vol_loc']:.4f}",
+            f"- vol ↔ shape: {target_analysis['cross_group_max_corr']['vol_shape']:.4f}",
+            f"- loc ↔ shape: {target_analysis['cross_group_max_corr']['loc_shape']:.4f}",
+            "",
+        ]
+    )
 
-    if max(target_analysis['cross_group_max_corr'].values()) > 0.3:
-        lines.append("**WARNING**: Targets have non-trivial cross-group correlation. "
-                      "Perfect disentanglement may be geometrically impossible.")
+    if max(target_analysis["cross_group_max_corr"].values()) > 0.3:
+        lines.append(
+            "**WARNING**: Targets have non-trivial cross-group correlation. "
+            "Perfect disentanglement may be geometrically impossible."
+        )
         lines.append("")
 
-    lines.extend([
-        "### 4. Feature-Target Correlation",
-        "",
-        "| Target | Mean max |r| | Max |r| per dim | Informative features (|r|>0.3) |",
-        "|--------|-------------|------------------|-------------------------------|",
-    ])
+    lines.extend(
+        [
+            "### 4. Feature-Target Correlation",
+            "",
+            "| Target | Mean max |r| | Max |r| per dim | Informative features (|r|>0.3) |",
+            "|--------|-------------|------------------|-------------------------------|",
+        ]
+    )
 
     for key in ["vol", "loc", "shape"]:
         r = feature_target_corr[key]
@@ -275,11 +272,13 @@ def generate_report(
         info_str = ", ".join(str(d) for d in r["n_informative_features"])
         lines.append(f"| {key} | {r['mean_max_corr']:.4f} | [{max_str}] | [{info_str}] |")
 
-    lines.extend([
-        "",
-        "---",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+        ]
+    )
 
     return "\n".join(lines)
 
@@ -331,8 +330,12 @@ def main(features_dir: str) -> str:
 
     # Generate report
     report = generate_report(
-        probe_results, pca_results, target_analysis, feature_target_corr,
-        n_train=h_train.shape[0], n_val=h_val.shape[0],
+        probe_results,
+        pca_results,
+        target_analysis,
+        feature_target_corr,
+        n_train=h_train.shape[0],
+        n_val=h_val.shape[0],
     )
 
     return report

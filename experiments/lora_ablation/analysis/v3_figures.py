@@ -13,19 +13,18 @@ Usage:
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
 from experiments.utils.settings import (
-    V3_CONDITIONS,
-    V3_SHAPE_LABELS,
-    PROBE_COLORS,
     DCI_COLORS,
     DOMAIN_COLORS,
-    DOMAIN_MARKERS,
-    SEMANTIC_COLORS,
     PLOT_SETTINGS,
+    PROBE_COLORS,
+    SEMANTIC_COLORS,
+    V3_CONDITIONS,
+    V3_SHAPE_LABELS,
     apply_ieee_style,
     get_color,
     get_label,
@@ -38,9 +37,10 @@ logger = logging.getLogger(__name__)
 
 try:
     import matplotlib
+
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
 
     HAS_MATPLOTLIB = True
 except ImportError:
@@ -52,7 +52,8 @@ except ImportError:
 # Helpers
 # ============================================================================
 
-def _load_json(path: Path) -> Optional[Dict]:
+
+def _load_json(path: Path) -> dict | None:
     """Load JSON, returning None on failure."""
     if not path.exists():
         logger.warning(f"Cache file not found: {path}")
@@ -73,7 +74,7 @@ def _save_fig(fig: Any, figures_dir: Path, name: str) -> None:
     logger.info(f"Saved {name}.pdf + png")
 
 
-def _ordered_conditions(data: Dict) -> List[str]:
+def _ordered_conditions(data: dict) -> list[str]:
     """Return conditions from data in canonical V3 order."""
     return [c for c in V3_CONDITIONS if c in data]
 
@@ -81,6 +82,7 @@ def _ordered_conditions(data: Dict) -> List[str]:
 # ============================================================================
 # Fig 1: Training Dynamics
 # ============================================================================
+
 
 def fig1_training_dynamics(
     cache_dir: Path,
@@ -125,8 +127,9 @@ def fig1_training_dynamics(
             valid_dice = [(e, d) for e, d in zip(epochs, dice) if d is not None]
             if valid_dice:
                 best_epoch, best_dice = max(valid_dice, key=lambda x: x[1])
-                ax.axvline(x=best_epoch, color=get_color(cond), linestyle="--",
-                           alpha=0.3, linewidth=0.8)
+                ax.axvline(
+                    x=best_epoch, color=get_color(cond), linestyle="--", alpha=0.3, linewidth=0.8
+                )
     ax.set_ylabel("Validation Dice")
     ax.set_title("(b) Validation Dice")
     ax.legend(fontsize=7, ncol=2)
@@ -139,11 +142,23 @@ def fig1_training_dynamics(
         var_loss = [r.get("vicreg_var", r.get("var_loss", None)) for r in logs[cond]]
         cov_loss = [r.get("vicreg_cov", r.get("cov_loss", None)) for r in logs[cond]]
         if any(v is not None for v in var_loss):
-            ax.plot(epochs, var_loss, label=f"{get_label(cond)} var",
-                    color=get_color(cond), alpha=0.8, linestyle="-")
+            ax.plot(
+                epochs,
+                var_loss,
+                label=f"{get_label(cond)} var",
+                color=get_color(cond),
+                alpha=0.8,
+                linestyle="-",
+            )
         if any(v is not None for v in cov_loss):
-            ax.plot(epochs, cov_loss, label=f"{get_label(cond)} cov",
-                    color=get_color(cond), alpha=0.6, linestyle="--")
+            ax.plot(
+                epochs,
+                cov_loss,
+                label=f"{get_label(cond)} cov",
+                color=get_color(cond),
+                alpha=0.6,
+                linestyle="--",
+            )
     ax.set_xlabel("Epoch")
     ax.set_ylabel("VICReg Loss")
     ax.set_title("(c) VICReg Components (LoRA only)")
@@ -158,7 +173,8 @@ def fig1_training_dynamics(
 # Fig 2: Segmentation Quality
 # ============================================================================
 
-def _get_men_dice(dice_data: Dict, condition: str) -> Dict:
+
+def _get_men_dice(dice_data: dict, condition: str) -> dict:
     """Extract MEN dice dict from either new or legacy format.
 
     New format: ``{cond: {"men": {...}, "gli": {...}}}``
@@ -171,7 +187,7 @@ def _get_men_dice(dice_data: Dict, condition: str) -> Dict:
     return entry
 
 
-def _get_gli_dice(dice_data: Dict, condition: str) -> Optional[Dict]:
+def _get_gli_dice(dice_data: dict, condition: str) -> dict | None:
     """Extract GLI dice dict (new format only)."""
     entry = dice_data.get(condition, {})
     if "gli" in entry:
@@ -221,6 +237,7 @@ def fig2_dice_comparison(
 # Fig 3: Feature Quality Dashboard
 # ============================================================================
 
+
 def fig3_feature_quality(
     cache_dir: Path,
     figures_dir: Path,
@@ -259,8 +276,10 @@ def fig3_feature_quality(
 
     # (b) Mean inter-dim |r|
     ax = axes[0, 1]
-    corrs = [fq_data[c].get("mean_interdim_corr",
-             fq_data[c].get("mean_abs_correlation", 0)) for c in conditions]
+    corrs = [
+        fq_data[c].get("mean_interdim_corr", fq_data[c].get("mean_abs_correlation", 0))
+        for c in conditions
+    ]
     ax.bar(x, corrs, color=colors, alpha=0.85)
     ax.axhline(y=0.30, color="red", linestyle="--", alpha=0.5, label="Threshold (0.30)")
     ax.set_ylabel("Mean |r|")
@@ -288,8 +307,9 @@ def fig3_feature_quality(
 
     # (d) Collapsed dimensions
     ax = axes[1, 1]
-    collapsed = [fq_data[c].get("collapsed_dims",
-                  fq_data[c].get("n_collapsed", 0)) for c in conditions]
+    collapsed = [
+        fq_data[c].get("collapsed_dims", fq_data[c].get("n_collapsed", 0)) for c in conditions
+    ]
     ax.bar(x, collapsed, color=colors, alpha=0.85)
     ax.set_ylabel("Collapsed Dims (var < 0.01)")
     ax.set_title("(d) Dimensional Collapse")
@@ -304,13 +324,14 @@ def fig3_feature_quality(
 # Fig 4: Probe R^2 Comparison
 # ============================================================================
 
+
 def fig4_probe_r2(
     cache_dir: Path,
     figures_dir: Path,
 ) -> None:
     """Probe R^2 Comparison (1x3, 12x4).
 
-    Volume, Location, Shape grouped bars (Linear vs MLP) with delta over
+    Volume, Location, Shape grouped bars (Linear vs GP-RBF) with delta over
     baseline annotated.
     """
     probe_data = _load_json(cache_dir / "probe_metrics.json")
@@ -331,25 +352,33 @@ def fig4_probe_r2(
     baseline_r2 = {}
     if "baseline" in probe_data:
         for ft in feature_types:
-            baseline_r2[ft] = probe_data["baseline"].get(
-                f"r2_{ft}_linear", probe_data["baseline"].get(f"r2_{ft}", 0)
-            ) or 0
+            baseline_r2[ft] = (
+                probe_data["baseline"].get(
+                    f"r2_{ft}_linear", probe_data["baseline"].get(f"r2_{ft}", 0)
+                )
+                or 0
+            )
 
     for ax, feat, title in zip(axes, feature_types, titles):
         linear_r2 = []
-        mlp_r2 = []
+        rbf_r2 = []
         for cond in conditions:
             m = probe_data[cond]
             linear_r2.append(m.get(f"r2_{feat}_linear", m.get(f"r2_{feat}", 0)) or 0)
-            mlp_r2.append(m.get(f"r2_{feat}_mlp", 0) or 0)
+            rbf_r2.append(m.get(f"r2_{feat}_rbf", 0) or 0)
 
         x = np.arange(len(conditions))
         width = 0.35
 
-        ax.bar(x - width / 2, linear_r2, width, label="Linear",
-               color=PROBE_COLORS["linear"], alpha=0.85)
-        ax.bar(x + width / 2, mlp_r2, width, label="MLP",
-               color=PROBE_COLORS["mlp"], alpha=0.85)
+        ax.bar(
+            x - width / 2,
+            linear_r2,
+            width,
+            label="Linear",
+            color=PROBE_COLORS["linear"],
+            alpha=0.85,
+        )
+        ax.bar(x + width / 2, rbf_r2, width, label="GP-RBF", color=PROBE_COLORS["rbf"], alpha=0.85)
 
         # Delta annotation over baseline
         base_val = baseline_r2.get(feat, 0)
@@ -358,17 +387,21 @@ def fig4_probe_r2(
                 delta = linear_r2[i] - base_val
                 if abs(delta) > 0.01:
                     sign = "+" if delta > 0 else ""
-                    ax.annotate(f"{sign}{delta:.2f}",
-                                xy=(x[i] - width / 2, linear_r2[i]),
-                                xytext=(0, 3), textcoords="offset points",
-                                ha="center", fontsize=6, color="#333333")
+                    ax.annotate(
+                        f"{sign}{delta:.2f}",
+                        xy=(x[i] - width / 2, linear_r2[i]),
+                        xytext=(0, 3),
+                        textcoords="offset points",
+                        ha="center",
+                        fontsize=6,
+                        color="#333333",
+                    )
 
         ax.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
         ax.set_ylabel("R\u00b2")
         ax.set_title(title)
         ax.set_xticks(x)
-        ax.set_xticklabels([get_label(c) for c in conditions], rotation=35, ha="right",
-                           fontsize=7)
+        ax.set_xticklabels([get_label(c) for c in conditions], rotation=35, ha="right", fontsize=7)
         ax.legend(fontsize=7)
 
     plt.tight_layout()
@@ -378,6 +411,7 @@ def fig4_probe_r2(
 # ============================================================================
 # Fig 5: Variance Spectrum
 # ============================================================================
+
 
 def fig5_variance_spectrum(
     cache_dir: Path,
@@ -418,6 +452,7 @@ def fig5_variance_spectrum(
 # Fig 6: UMAP Latent Space
 # ============================================================================
 
+
 def fig6_umap_latent(
     cache_dir: Path,
     figures_dir: Path,
@@ -447,8 +482,14 @@ def fig6_umap_latent(
     unique_conds = [c for c in V3_CONDITIONS if c in set(conditions)]
     for cond in unique_conds:
         mask = conditions == cond
-        ax.scatter(embedding[mask, 0], embedding[mask, 1],
-                   c=get_color(cond), label=get_label(cond), s=8, alpha=0.6)
+        ax.scatter(
+            embedding[mask, 0],
+            embedding[mask, 1],
+            c=get_color(cond),
+            label=get_label(cond),
+            s=8,
+            alpha=0.6,
+        )
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
     ax.set_title("(a) By Condition")
@@ -456,8 +497,7 @@ def fig6_umap_latent(
 
     # (b) By tumor volume
     ax = axes[1]
-    sc = ax.scatter(embedding[:, 0], embedding[:, 1],
-                    c=volumes, cmap="viridis", s=8, alpha=0.6)
+    sc = ax.scatter(embedding[:, 0], embedding[:, 1], c=volumes, cmap="viridis", s=8, alpha=0.6)
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
     ax.set_title("(b) By Tumor Volume")
@@ -465,8 +505,7 @@ def fig6_umap_latent(
 
     # (c) By sphericity
     ax = axes[2]
-    sc = ax.scatter(embedding[:, 0], embedding[:, 1],
-                    c=shape0, cmap="plasma", s=8, alpha=0.6)
+    sc = ax.scatter(embedding[:, 0], embedding[:, 1], c=shape0, cmap="plasma", s=8, alpha=0.6)
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
     ax.set_title("(c) By Sphericity")
@@ -480,13 +519,14 @@ def fig6_umap_latent(
 # Fig 7: Prediction Scatter
 # ============================================================================
 
+
 def fig7_prediction_scatter(
     cache_dir: Path,
     figures_dir: Path,
 ) -> None:
     """Prediction Scatter (2x3, 12x8).
 
-    Best condition. Row 1: Linear. Row 2: MLP.
+    Best condition. Row 1: Linear. Row 2: GP-RBF.
     Columns: [Sphericity, Enhancement Ratio, Infiltration Index]
     """
     pred_data = _load_json(cache_dir / "predictions.json")
@@ -504,7 +544,7 @@ def fig7_prediction_scatter(
 
     gt = np.array(preds["shape"]["ground_truth"])
     linear = np.array(preds["shape"].get("linear", preds["shape"].get("prediction", [])))
-    mlp = np.array(preds["shape"].get("mlp", []))
+    rbf = np.array(preds["shape"].get("rbf", []))
 
     n_dims = min(gt.shape[1] if gt.ndim > 1 else 1, len(V3_SHAPE_LABELS))
 
@@ -516,7 +556,7 @@ def fig7_prediction_scatter(
         gt_col = gt[:, col] if gt.ndim > 1 else gt
         label = V3_SHAPE_LABELS[col] if col < len(V3_SHAPE_LABELS) else f"Dim {col}"
 
-        for row, (pred_arr, probe_type) in enumerate([(linear, "Linear"), (mlp, "MLP")]):
+        for row, (pred_arr, probe_type) in enumerate([(linear, "Linear"), (rbf, "GP-RBF")]):
             ax = axes[row, col]
             if pred_arr is None or len(pred_arr) == 0:
                 ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes)
@@ -524,12 +564,16 @@ def fig7_prediction_scatter(
 
             pred_col = pred_arr[:, col] if pred_arr.ndim > 1 else pred_arr
 
-            ax.scatter(gt_col, pred_col, alpha=0.3, s=10,
-                       color=PROBE_COLORS.get(probe_type.lower(), "#333333"))
+            ax.scatter(
+                gt_col,
+                pred_col,
+                alpha=0.3,
+                s=10,
+                color=PROBE_COLORS.get(probe_type.lower(), "#333333"),
+            )
 
             # Identity line
-            lims = [min(gt_col.min(), pred_col.min()),
-                    max(gt_col.max(), pred_col.max())]
+            lims = [min(gt_col.min(), pred_col.min()), max(gt_col.max(), pred_col.max())]
             ax.plot(lims, lims, "k--", alpha=0.4)
 
             # R^2 and RMSE
@@ -537,8 +581,14 @@ def fig7_prediction_scatter(
             ss_tot = np.sum((gt_col - gt_col.mean()) ** 2)
             r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
             rmse = np.sqrt(np.mean((gt_col - pred_col) ** 2))
-            ax.text(0.05, 0.92, f"R\u00b2={r2:.3f}\nRMSE={rmse:.3f}",
-                    transform=ax.transAxes, fontsize=8, va="top")
+            ax.text(
+                0.05,
+                0.92,
+                f"R\u00b2={r2:.3f}\nRMSE={rmse:.3f}",
+                transform=ax.transAxes,
+                fontsize=8,
+                va="top",
+            )
 
             if row == 0:
                 ax.set_title(label)
@@ -556,6 +606,7 @@ def fig7_prediction_scatter(
 # Fig 8: DCI Disentanglement
 # ============================================================================
 
+
 def fig8_dci_scores(
     cache_dir: Path,
     figures_dir: Path,
@@ -571,10 +622,7 @@ def fig8_dci_scores(
         return
 
     # Check if DCI data exists
-    has_dci = any(
-        "dci_disentanglement" in fq_data[c] or "dci_D" in fq_data[c]
-        for c in conditions
-    )
+    has_dci = any("dci_disentanglement" in fq_data[c] or "dci_D" in fq_data[c] for c in conditions)
     if not has_dci:
         logger.warning("No DCI scores in feature quality data; skipping fig8.")
         return
@@ -594,8 +642,9 @@ def fig8_dci_scores(
         for c in conditions:
             v = fq_data[c].get(key1, fq_data[c].get(key2, 0)) or 0
             values.append(v)
-        ax.bar(x + i * width, values, width, label=f"DCI-{label}",
-               color=DCI_COLORS[label], alpha=0.85)
+        ax.bar(
+            x + i * width, values, width, label=f"DCI-{label}", color=DCI_COLORS[label], alpha=0.85
+        )
 
     ax.set_ylabel("Score")
     ax.set_title("DCI Disentanglement Scores")
@@ -611,6 +660,7 @@ def fig8_dci_scores(
 # ============================================================================
 # Fig 9: Domain UMAP Grid
 # ============================================================================
+
 
 def fig9_domain_umap_grid(
     cache_dir: Path,
@@ -651,16 +701,28 @@ def fig9_domain_umap_grid(
         # GLI points
         gli_mask = cond_domains == "glioma"
         ax.scatter(
-            cond_emb[gli_mask, 0], cond_emb[gli_mask, 1],
-            c=DOMAIN_COLORS["glioma"], marker="o", s=12, alpha=0.5,
-            linewidths=0.3, edgecolors="none", label="GLI",
+            cond_emb[gli_mask, 0],
+            cond_emb[gli_mask, 1],
+            c=DOMAIN_COLORS["glioma"],
+            marker="o",
+            s=12,
+            alpha=0.5,
+            linewidths=0.3,
+            edgecolors="none",
+            label="GLI",
         )
         # MEN points
         men_mask = cond_domains == "meningioma"
         ax.scatter(
-            cond_emb[men_mask, 0], cond_emb[men_mask, 1],
-            c=DOMAIN_COLORS["meningioma"], marker="^", s=12, alpha=0.5,
-            linewidths=0.3, edgecolors="none", label="MEN",
+            cond_emb[men_mask, 0],
+            cond_emb[men_mask, 1],
+            c=DOMAIN_COLORS["meningioma"],
+            marker="^",
+            s=12,
+            alpha=0.5,
+            linewidths=0.3,
+            edgecolors="none",
+            label="MEN",
         )
 
         # Silhouette annotation
@@ -668,8 +730,12 @@ def fig9_domain_umap_grid(
         if sil_key in data:
             sil = float(data[sil_key])
             ax.text(
-                0.95, 0.05, f"S = {sil:.2f}",
-                transform=ax.transAxes, ha="right", va="bottom",
+                0.95,
+                0.05,
+                f"S = {sil:.2f}",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
                 fontsize=PLOT_SETTINGS["annotation_fontsize"],
                 bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="0.7", alpha=0.8),
             )
@@ -695,13 +761,14 @@ def fig9_domain_umap_grid(
 # Fig 10: Semantic Probe R² Summary
 # ============================================================================
 
+
 def fig10_semantic_summary(
     cache_dir: Path,
     figures_dir: Path,
 ) -> None:
     """Semantic Probe R² Summary (7x4) - grouped bar chart across all conditions.
 
-    vol/loc/shape R² with solid (Linear) and hatched (MLP) bars, delta-over-frozen
+    vol/loc/shape R² with solid (Linear) and hatched (GP-RBF) bars, delta-over-frozen
     annotation on LoRA conditions.
     """
     probe_data = _load_json(cache_dir / "probe_metrics.json")
@@ -722,9 +789,9 @@ def fig10_semantic_summary(
 
     fig, ax = plt.subplots(figsize=(7.0, 4.0))
 
-    # 6 bars per condition group: 3 linear (solid) + 3 MLP (hatched)
+    # 6 bars per condition group: 3 linear (solid) + 3 GP-RBF (hatched)
     bar_w = PLOT_SETTINGS["bar_width"]
-    group_width = (2 * n_feat + 1) * bar_w  # gap between linear and MLP sub-groups
+    group_width = (2 * n_feat + 1) * bar_w  # gap between linear and GP-RBF sub-groups
 
     x_centers = np.arange(n_cond) * group_width * 1.3
 
@@ -733,31 +800,42 @@ def fig10_semantic_summary(
     frozen_key = "baseline_frozen" if "baseline_frozen" in probe_data else None
     if frozen_key:
         for ft in feature_types:
-            frozen_r2[ft] = probe_data[frozen_key].get(
-                f"r2_{ft}_linear", probe_data[frozen_key].get(f"r2_{ft}", 0)
-            ) or 0
+            frozen_r2[ft] = (
+                probe_data[frozen_key].get(
+                    f"r2_{ft}_linear", probe_data[frozen_key].get(f"r2_{ft}", 0)
+                )
+                or 0
+            )
 
     for j, (ft, fc, fl) in enumerate(zip(feature_types, feat_colors, feat_labels)):
         linear_vals = []
-        mlp_vals = []
+        rbf_vals = []
         for cond in conditions:
             m = probe_data[cond]
             linear_vals.append(m.get(f"r2_{ft}_linear", m.get(f"r2_{ft}", 0)) or 0)
-            mlp_vals.append(m.get(f"r2_{ft}_mlp", 0) or 0)
+            rbf_vals.append(m.get(f"r2_{ft}_rbf", 0) or 0)
 
         # Linear bars (solid)
         offset_lin = (j - n_feat / 2 + 0.5) * bar_w
         bars_lin = ax.bar(
-            x_centers + offset_lin, linear_vals, bar_w,
-            color=fc, alpha=0.85, label=f"{fl} (Lin)" if j < n_feat else None,
+            x_centers + offset_lin,
+            linear_vals,
+            bar_w,
+            color=fc,
+            alpha=0.85,
+            label=f"{fl} (Lin)" if j < n_feat else None,
         )
 
-        # MLP bars (hatched, offset by n_feat*bar_w + gap)
-        offset_mlp = offset_lin + n_feat * bar_w + bar_w * 0.5
-        bars_mlp = ax.bar(
-            x_centers + offset_mlp, mlp_vals, bar_w,
-            color=fc, alpha=0.55, hatch="//",
-            label=f"{fl} (MLP)" if j < n_feat else None,
+        # GP-RBF bars (hatched, offset by n_feat*bar_w + gap)
+        offset_rbf = offset_lin + n_feat * bar_w + bar_w * 0.5
+        bars_rbf = ax.bar(
+            x_centers + offset_rbf,
+            rbf_vals,
+            bar_w,
+            color=fc,
+            alpha=0.55,
+            hatch="//",
+            label=f"{fl} (GP-RBF)" if j < n_feat else None,
         )
 
         # Delta-over-frozen annotation for LoRA conditions (linear only)
@@ -772,13 +850,16 @@ def fig10_semantic_summary(
                     ax.annotate(
                         f"{sign}{delta:.2f}",
                         xy=(x_centers[k] + offset_lin, linear_vals[k]),
-                        xytext=(0, 3), textcoords="offset points",
-                        ha="center", fontsize=5, color="#333333",
+                        xytext=(0, 3),
+                        textcoords="offset points",
+                        ha="center",
+                        fontsize=5,
+                        color="#333333",
                     )
 
     ax.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
     ax.set_ylabel(r"R$^2$")
-    ax.set_title("Semantic Probe R\u00b2 (Linear + MLP)")
+    ax.set_title("Semantic Probe R\u00b2 (Linear + GP-RBF)")
     ax.set_xticks(x_centers + n_feat * bar_w * 0.25)
     ax.set_xticklabels([get_label(c) for c in conditions], rotation=30, ha="right", fontsize=8)
     ax.legend(fontsize=7, ncol=2, loc="upper left")
@@ -790,6 +871,7 @@ def fig10_semantic_summary(
 # ============================================================================
 # Fig 11: Dice + Generalization
 # ============================================================================
+
 
 def fig11_dice_generalization(
     cache_dir: Path,
@@ -815,7 +897,10 @@ def fig11_dice_generalization(
     conditions_to_plot = [c for c in conditions if c in has_gli or _get_men_dice(dice_data, c)]
 
     fig, (ax_top, ax_bot) = plt.subplots(
-        2, 1, figsize=(7.0, 5.5), sharex=True,
+        2,
+        1,
+        figsize=(7.0, 5.5),
+        sharex=True,
         gridspec_kw={"height_ratios": [2, 1]},
     )
 
@@ -845,14 +930,24 @@ def fig11_dice_generalization(
 
     # Top panel: grouped bars
     ax_top.bar(
-        x - width / 2, men_means, width, yerr=men_stds,
-        label="BraTS-MEN", color=DOMAIN_COLORS["meningioma"],
-        alpha=0.85, capsize=PLOT_SETTINGS["errorbar_capsize"],
+        x - width / 2,
+        men_means,
+        width,
+        yerr=men_stds,
+        label="BraTS-MEN",
+        color=DOMAIN_COLORS["meningioma"],
+        alpha=0.85,
+        capsize=PLOT_SETTINGS["errorbar_capsize"],
     )
     ax_top.bar(
-        x + width / 2, gli_means, width, yerr=gli_stds,
-        label="BraTS-GLI", color=DOMAIN_COLORS["glioma"],
-        alpha=0.85, capsize=PLOT_SETTINGS["errorbar_capsize"],
+        x + width / 2,
+        gli_means,
+        width,
+        yerr=gli_stds,
+        label="BraTS-GLI",
+        color=DOMAIN_COLORS["glioma"],
+        alpha=0.85,
+        capsize=PLOT_SETTINGS["errorbar_capsize"],
     )
     ax_top.set_ylabel("Mean Dice")
     ax_top.set_title("(a) In-Domain vs Out-of-Domain Dice")
@@ -870,8 +965,11 @@ def fig11_dice_generalization(
     for i, (r, cond) in enumerate(zip(retention, conditions_to_plot)):
         if r > 0:
             ax_bot.text(
-                x[i], r + 0.01, f"{r:.2f}",
-                ha="center", va="bottom",
+                x[i],
+                r + 0.01,
+                f"{r:.2f}",
+                ha="center",
+                va="bottom",
                 fontsize=PLOT_SETTINGS["annotation_fontsize"],
             )
 
@@ -886,10 +984,11 @@ def fig11_dice_generalization(
 # Master function
 # ============================================================================
 
+
 def generate_all_v3_figures(
     cache_dir: Path,
     figures_dir: Path,
-    config: Optional[dict] = None,
+    config: dict | None = None,
 ) -> None:
     """Generate all 11 thesis-quality figures from cached data.
 

@@ -2,298 +2,37 @@
 """Latent space quality metrics for evaluating encoder features.
 
 This module provides tools to evaluate the quality of learned representations
-through linear probing - a standard technique for assessing feature quality.
-
-The primary metric is R² from linear probes trained to predict semantic
-features (volume, location, shape) from encoder features. High R² indicates
-that the encoder has learned features that are linearly predictive of
-clinically meaningful attributes.
+through GP probing and domain-shift metrics.
 
 Key Components:
-    - LinearProbe: Ridge regression probe for feature evaluation
+    - GP probes (via gp_probes.py): GPProbe, GPSemanticProbes for feature evaluation
     - R² metrics: Per-dimension and aggregate R² scores
+    - Domain shift: CKA, MMD, distance correlation, DCI
     - Correlation analysis: Cross-partition correlation matrices
-    - Distance correlation: Nonlinear independence measure
 """
 
 import logging
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ProbeResults:
-    """Results from linear probe evaluation.
-
-    Attributes:
-        r2: Overall R² score.
-        r2_per_dim: R² score per target dimension.
-        mse: Mean squared error.
-        predictions: Model predictions on test set.
-        coefficients: Learned linear weights.
-    """
-
-    r2: float
-    r2_per_dim: np.ndarray
-    mse: float
-    predictions: np.ndarray
-    coefficients: np.ndarray
-
-
-class LinearProbe:
-    """Linear regression probe for evaluating feature quality.
-
-    Trains a ridge regression model to predict semantic features from
-    encoder features. The R² score indicates how well the encoder has
-    learned the target semantics.
-
-    Args:
-        input_dim: Dimension of encoder features.
-        output_dim: Dimension of target features.
-        alpha: Ridge regularization strength.
-        normalize: Whether to standardize inputs before fitting.
-
-    Example:
-        >>> probe = LinearProbe(input_dim=768, output_dim=4)
-        >>> probe.fit(X_train, y_train)
-        >>> results = probe.evaluate(X_test, y_test)
-        >>> print(f"R² = {results.r2:.4f}")
-    """
-
-    def __init__(
-        self,
-        input_dim: int,
-        output_dim: int,
-        alpha: float = 1.0,
-        normalize: bool = True,
-    ):
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.alpha = alpha
-        self.normalize = normalize
-
-        self.model = Ridge(alpha=alpha)
-        self.scaler = StandardScaler() if normalize else None
-        self.fitted = False
-
-    def fit(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-    ) -> "LinearProbe":
-        """Fit linear probe on training data.
-
-        Args:
-            X: Encoder features [N, input_dim].
-            y: Target semantic features [N, output_dim].
-
-        Returns:
-            Self for method chaining.
-        """
-        if X.shape[1] != self.input_dim:
-            raise ValueError(f"Expected input_dim={self.input_dim}, got {X.shape[1]}")
-        if y.shape[1] != self.output_dim:
-            raise ValueError(f"Expected output_dim={self.output_dim}, got {y.shape[1]}")
-
-        # Normalize inputs
-        if self.scaler is not None:
-            X = self.scaler.fit_transform(X)
-
-        # Fit ridge regression
-        self.model.fit(X, y)
-        self.fitted = True
-
-        logger.debug(f"LinearProbe fitted on {X.shape[0]} samples")
-        return self
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Predict semantic features from encoder features.
-
-        Args:
-            X: Encoder features [N, input_dim].
-
-        Returns:
-            Predicted semantic features [N, output_dim].
-        """
-        if not self.fitted:
-            raise RuntimeError("LinearProbe must be fitted before prediction")
-
-        if self.scaler is not None:
-            X = self.scaler.transform(X)
-
-        predictions = self.model.predict(X)
-        # Ensure 2D output (single-target Ridge returns 1D)
-        if predictions.ndim == 1:
-            predictions = predictions.reshape(-1, 1)
-        return predictions
-
-    def evaluate(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-    ) -> ProbeResults:
-        """Evaluate linear probe on test data.
-
-        Args:
-            X: Encoder features [N, input_dim].
-            y: Target semantic features [N, output_dim].
-
-        Returns:
-            ProbeResults with R², MSE, and predictions.
-        """
-        predictions = self.predict(X)
-
-        # Overall R²
-        r2 = r2_score(y, predictions)
-
-        # Per-dimension R²
-        r2_per_dim = np.array([r2_score(y[:, i], predictions[:, i]) for i in range(y.shape[1])])
-
-        # MSE
-        mse = mean_squared_error(y, predictions)
-
-        return ProbeResults(
-            r2=r2,
-            r2_per_dim=r2_per_dim,
-            mse=mse,
-            predictions=predictions,
-            coefficients=self.model.coef_,
-        )
-
-    def get_coefficients(self) -> np.ndarray:
-        """Get learned linear weights.
-
-        Returns:
-            Coefficient matrix [output_dim, input_dim].
-        """
-        if not self.fitted:
-            raise RuntimeError("LinearProbe must be fitted first")
-        return self.model.coef_
-
-
-class SemanticProbes:
-    """Collection of linear probes for all semantic features.
-
-    Manages separate probes for volume, location, and shape features,
-    providing a unified interface for training and evaluation.
-
-    Args:
-        input_dim: Dimension of encoder features.
-        alpha: Ridge regularization strength for all probes.
-
-    Example:
-        >>> probes = SemanticProbes(input_dim=768)
-        >>> probes.fit(X_train, {
-        ...     "volume": y_vol_train,
-        ...     "location": y_loc_train,
-        ...     "shape": y_shape_train,
-        ... })
-        >>> results = probes.evaluate(X_test, {
-        ...     "volume": y_vol_test,
-        ...     "location": y_loc_test,
-        ...     "shape": y_shape_test,
-        ... })
-    """
-
-    # Standard dimensions for BraTS semantic features
-    FEATURE_DIMS = {
-        "volume": 4,  # total, NCR, ED, ET
-        "location": 3,  # centroid x, y, z
-        "shape": 3,  # sphericity, surface_area_log, solidity
-    }
-
-    def __init__(
-        self,
-        input_dim: int = 768,
-        alpha: float = 1.0,
-    ):
-        self.input_dim = input_dim
-        self.alpha = alpha
-
-        self.probes = {
-            name: LinearProbe(input_dim, dim, alpha=alpha)
-            for name, dim in self.FEATURE_DIMS.items()
-        }
-
-    def fit(
-        self,
-        X: np.ndarray,
-        targets: dict[str, np.ndarray],
-    ) -> "SemanticProbes":
-        """Fit all probes on training data.
-
-        Args:
-            X: Encoder features [N, input_dim].
-            targets: Dict mapping feature names to target arrays.
-
-        Returns:
-            Self for method chaining.
-        """
-        for name, probe in self.probes.items():
-            if name not in targets:
-                raise ValueError(f"Missing target: {name}")
-            probe.fit(X, targets[name])
-
-        logger.info(f"Fitted {len(self.probes)} semantic probes on {X.shape[0]} samples")
-        return self
-
-    def evaluate(
-        self,
-        X: np.ndarray,
-        targets: dict[str, np.ndarray],
-    ) -> dict[str, ProbeResults]:
-        """Evaluate all probes on test data.
-
-        Args:
-            X: Encoder features [N, input_dim].
-            targets: Dict mapping feature names to target arrays.
-
-        Returns:
-            Dict mapping feature names to ProbeResults.
-        """
-        results = {}
-        for name, probe in self.probes.items():
-            if name not in targets:
-                raise ValueError(f"Missing target: {name}")
-            results[name] = probe.evaluate(X, targets[name])
-
-        return results
-
-    def get_summary(self, results: dict[str, ProbeResults]) -> dict[str, float]:
-        """Get summary R² scores from results.
-
-        Args:
-            results: Results from evaluate().
-
-        Returns:
-            Dict with R² for each feature type and overall.
-        """
-        summary = {f"r2_{name}": res.r2 for name, res in results.items()}
-        summary["r2_mean"] = np.mean([res.r2 for res in results.values()])
-        return summary
-
-
 def compute_r2_scores(
     X: np.ndarray,
     y: np.ndarray,
-    alpha: float = 1.0,
     test_split: float = 0.2,
     random_state: int = 42,
 ) -> dict[str, float]:
-    """Compute R² scores using train/test split.
+    """Compute R² scores using train/test split with GP-linear probe.
 
     Convenience function for quick R² evaluation.
 
     Args:
         X: Encoder features [N, D].
         y: Target features [N, K].
-        alpha: Ridge regularization.
         test_split: Fraction of data for testing.
         random_state: Random seed for split.
 
@@ -302,15 +41,13 @@ def compute_r2_scores(
     """
     from sklearn.model_selection import train_test_split
 
+    from .gp_probes import GPProbe
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_split, random_state=random_state
     )
 
-    probe = LinearProbe(
-        input_dim=X.shape[1],
-        output_dim=y.shape[1],
-        alpha=alpha,
-    )
+    probe = GPProbe(kernel_type="linear", r2_ci_samples=0)
     probe.fit(X_train, y_train)
     results = probe.evaluate(X_test, y_test)
 
@@ -837,7 +574,10 @@ def compute_dci(
         n_cv = min(5, max(2, len(z_scaled)))
         cv_scores = cross_val_score(
             Lasso(alpha=alpha, max_iter=max_iter, random_state=42),
-            z_scaled, y, cv=n_cv, scoring='r2',
+            z_scaled,
+            y,
+            cv=n_cv,
+            scoring="r2",
         )
         r2_per_factor[j] = max(0.0, float(cv_scores.mean()))
 
@@ -903,7 +643,6 @@ def evaluate_latent_quality(
     features: np.ndarray,
     semantic_targets: dict[str, np.ndarray],
     partition_indices: dict[str, tuple[int, int]] | None = None,
-    alpha: float = 1.0,
     test_split: float = 0.2,
 ) -> dict[str, float | dict | np.ndarray]:
     """Comprehensive latent space quality evaluation.
@@ -912,7 +651,6 @@ def evaluate_latent_quality(
         features: Encoder features [N, D].
         semantic_targets: Dict with 'volume', 'location', 'shape' arrays.
         partition_indices: Optional partition boundaries for correlation analysis.
-        alpha: Ridge regularization.
         test_split: Fraction for test set.
 
     Returns:
@@ -932,20 +670,25 @@ def evaluate_latent_quality(
 
     results = {}
 
-    # Linear probe R² scores
-    probes = SemanticProbes(input_dim=features.shape[1], alpha=alpha)
+    # GP-linear probe R² scores
+    from .gp_probes import GPSemanticProbes
 
     targets_train = {k: v[train_idx] for k, v in semantic_targets.items()}
     targets_test = {k: v[test_idx] for k, v in semantic_targets.items()}
 
+    probes = GPSemanticProbes(
+        input_dim=features.shape[1],
+        n_restarts=0,
+        r2_ci_samples=0,
+    )
     probes.fit(X_train, targets_train)
-    probe_results = probes.evaluate(X_test, targets_test)
+    gp_results = probes.evaluate(X_test, targets_test)
 
-    for name, res in probe_results.items():
+    for name, res in gp_results.linear.items():
         results[f"r2_{name}"] = res.r2
         results[f"r2_{name}_per_dim"] = res.r2_per_dim.tolist()
 
-    results["r2_mean"] = np.mean([res.r2 for res in probe_results.values()])
+    results["r2_mean"] = np.mean([res.r2 for res in gp_results.linear.values()])
 
     # Correlation analysis (if partitions provided)
     if partition_indices is not None:

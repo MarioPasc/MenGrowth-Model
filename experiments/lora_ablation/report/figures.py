@@ -9,10 +9,8 @@ import io
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import pandas as pd
 
 from experiments.lora_ablation.report.data_loader import (
     ConditionData,
@@ -21,7 +19,6 @@ from experiments.lora_ablation.report.data_loader import (
 )
 from experiments.lora_ablation.report.style import (
     ADAPTER_COLORS,
-    CONDITION_COLORS,
     CONDITION_LABELS,
     DOMAIN_COLORS,
     PROBE_COLORS,
@@ -66,8 +63,8 @@ class FigureResult:
     """Result of a single figure generation."""
 
     name: str
-    png_path: Optional[Path] = None
-    pdf_path: Optional[Path] = None
+    png_path: Path | None = None
+    pdf_path: Path | None = None
     png_base64: str = ""
     caption: str = ""
 
@@ -121,12 +118,12 @@ def _save_and_encode(
     )
 
 
-def _get_condition_list(exp: ExperimentData) -> List[str]:
+def _get_condition_list(exp: ExperimentData) -> list[str]:
     """Get ordered condition names from experiment."""
     return list(exp.conditions.keys())
 
 
-def _get_rank_conditions(exp: ExperimentData) -> List[str]:
+def _get_rank_conditions(exp: ExperimentData) -> list[str]:
     """Get only the rank-based conditions (exclude baselines)."""
     prefix = "dora_r" if exp.adapter_type == "dora" else "lora_r"
     return [c for c in exp.conditions if c.startswith(prefix)]
@@ -151,7 +148,7 @@ def _rank_from_condition(condition: str) -> int:
 def fig_dice_men_by_rank(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """Grouped bar chart of MEN Dice (mean/TC/WT/ET) across conditions.
 
     Args:
@@ -213,7 +210,7 @@ def fig_dice_men_by_rank(
 def fig_dice_dual_domain(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """Side-by-side MEN vs GLI Dice across conditions.
 
     Args:
@@ -239,12 +236,20 @@ def fig_dice_dual_domain(
         width = 0.35
 
         ax.bar(
-            x - width / 2, men_vals, width,
-            label="Meningioma", color=DOMAIN_COLORS["meningioma"], alpha=0.8,
+            x - width / 2,
+            men_vals,
+            width,
+            label="Meningioma",
+            color=DOMAIN_COLORS["meningioma"],
+            alpha=0.8,
         )
         ax.bar(
-            x + width / 2, gli_vals, width,
-            label="Glioma", color=DOMAIN_COLORS["glioma"], alpha=0.8,
+            x + width / 2,
+            gli_vals,
+            width,
+            label="Glioma",
+            color=DOMAIN_COLORS["glioma"],
+            alpha=0.8,
         )
 
         ax.set_ylabel("Dice Score")
@@ -257,7 +262,9 @@ def fig_dice_dual_domain(
 
     fig.suptitle(
         "Segmentation: Meningioma (In-Domain) vs Glioma (Out-of-Domain)",
-        fontsize=12, fontweight="bold", y=1.02,
+        fontsize=12,
+        fontweight="bold",
+        y=1.02,
     )
     fig.tight_layout()
 
@@ -277,7 +284,7 @@ def fig_dice_dual_domain(
 def fig_domain_metrics(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """4-panel bar chart of MMD, classifier acc, proxy-A, CKA.
 
     Args:
@@ -316,8 +323,13 @@ def fig_domain_metrics(
         if ref_val is not None:
             ax.axhline(y=ref_val, color="black", linestyle="--", alpha=0.4, linewidth=0.8)
             ax.text(
-                len(x) - 0.5, ref_val, ref_label,
-                ha="right", va="bottom", fontsize=7, alpha=0.6,
+                len(x) - 0.5,
+                ref_val,
+                ref_label,
+                ha="right",
+                va="bottom",
+                fontsize=7,
+                alpha=0.6,
             )
 
         for bar, val in zip(bars, values):
@@ -356,7 +368,7 @@ def fig_domain_umap(
     exp: ExperimentData,
     results_dir: Path,
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """Side-by-side UMAP: frozen vs best rank.
 
     Args:
@@ -426,12 +438,20 @@ def fig_domain_umap(
         gli_emb = embedding[len(men_feat) :]
 
         ax.scatter(
-            men_emb[:, 0], men_emb[:, 1],
-            c=DOMAIN_COLORS["meningioma"], label="Meningioma", s=10, alpha=0.6,
+            men_emb[:, 0],
+            men_emb[:, 1],
+            c=DOMAIN_COLORS["meningioma"],
+            label="Meningioma",
+            s=10,
+            alpha=0.6,
         )
         ax.scatter(
-            gli_emb[:, 0], gli_emb[:, 1],
-            c=DOMAIN_COLORS["glioma"], label="Glioma", s=10, alpha=0.6,
+            gli_emb[:, 0],
+            gli_emb[:, 1],
+            c=DOMAIN_COLORS["glioma"],
+            label="Glioma",
+            s=10,
+            alpha=0.6,
         )
         ax.set_xlabel("UMAP 1")
         ax.set_ylabel("UMAP 2")
@@ -440,7 +460,10 @@ def fig_domain_umap(
         ax.legend(fontsize=8, markerscale=2)
 
     fig.suptitle(
-        "Domain Overlap in Feature Space", fontsize=12, fontweight="bold", y=1.02,
+        "Domain Overlap in Feature Space",
+        fontsize=12,
+        fontweight="bold",
+        y=1.02,
     )
     fig.tight_layout()
 
@@ -461,7 +484,7 @@ def fig_domain_umap(
 def fig_retention_ratio(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """GLI/MEN Dice retention + absolute Dice drop.
 
     Args:
@@ -475,7 +498,9 @@ def fig_retention_ratio(
         return None
 
     conditions = _get_condition_list(exp)
-    conditions = [c for c in conditions if exp.conditions[c].dice_men and exp.conditions[c].dice_gli]
+    conditions = [
+        c for c in conditions if exp.conditions[c].dice_men and exp.conditions[c].dice_gli
+    ]
     if not conditions:
         return None
 
@@ -503,8 +528,11 @@ def fig_retention_ratio(
         ax1.annotate(
             f"{val:.2f}",
             xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-            xytext=(0, 3), textcoords="offset points",
-            ha="center", va="bottom", fontsize=7,
+            xytext=(0, 3),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=7,
         )
 
     # Dice drop
@@ -519,8 +547,11 @@ def fig_retention_ratio(
         ax2.annotate(
             f"{val:.3f}",
             xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-            xytext=(0, 3), textcoords="offset points",
-            ha="center", va="bottom", fontsize=7,
+            xytext=(0, 3),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=7,
         )
 
     fig.tight_layout()
@@ -542,8 +573,8 @@ def fig_retention_ratio(
 def fig_probe_r2(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
-    """Linear vs MLP R² grouped bars for volume/location/shape.
+) -> FigureResult | None:
+    """Linear vs GP-RBF R² grouped bars for volume/location/shape.
 
     Args:
         exp: Loaded experiment data.
@@ -567,22 +598,30 @@ def fig_probe_r2(
 
     for ax, feat, title in zip(axes, feature_types, titles):
         linear_r2 = []
-        mlp_r2 = []
+        rbf_r2 = []
         for c in conditions:
             m = exp.conditions[c].metrics_enhanced
             linear_r2.append(m.get(f"r2_{feat}_linear", m.get(f"r2_{feat}", 0)))
-            mlp_r2.append(m.get(f"r2_{feat}_mlp", 0))
+            rbf_r2.append(m.get(f"r2_{feat}_rbf", 0))
 
         x = np.arange(len(conditions))
         width = 0.35
 
         ax.bar(
-            x - width / 2, linear_r2, width,
-            label="Linear", color=PROBE_COLORS["linear"], alpha=0.8,
+            x - width / 2,
+            linear_r2,
+            width,
+            label="Linear",
+            color=PROBE_COLORS["linear"],
+            alpha=0.8,
         )
         ax.bar(
-            x + width / 2, mlp_r2, width,
-            label="MLP", color=PROBE_COLORS["mlp"], alpha=0.8,
+            x + width / 2,
+            rbf_r2,
+            width,
+            label="GP-RBF",
+            color=PROBE_COLORS["rbf"],
+            alpha=0.8,
         )
 
         ax.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
@@ -599,20 +638,20 @@ def fig_probe_r2(
         fig,
         "probe_r2",
         output_dir,
-        "Linear vs MLP probe R² for volume, location, and shape predictions.",
+        "Linear vs GP-RBF probe R² for volume, location, and shape predictions.",
     )
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Figure 7: Nonlinearity gap
+# Figure 7: Nonlinearity Evidence
 # ─────────────────────────────────────────────────────────────────────
 
 
-def fig_nonlinearity_gap(
+def fig_nonlinearity_evidence(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
-    """MLP − Linear R² per feature type.
+) -> FigureResult | None:
+    """GP-RBF − Linear R² per feature type.
 
     Args:
         exp: Loaded experiment data.
@@ -630,14 +669,14 @@ def fig_nonlinearity_gap(
         return None
 
     feature_types = ["volume", "location", "shape"]
-    gaps: Dict[str, List[float]] = {feat: [] for feat in feature_types}
+    gaps: dict[str, list[float]] = {feat: [] for feat in feature_types}
 
     for c in conditions:
         m = exp.conditions[c].metrics_enhanced
         for feat in feature_types:
             linear = m.get(f"r2_{feat}_linear", m.get(f"r2_{feat}", 0))
-            mlp = m.get(f"r2_{feat}_mlp", 0)
-            gaps[feat].append(mlp - linear)
+            rbf = m.get(f"r2_{feat}_rbf", 0)
+            gaps[feat].append(rbf - linear)
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -649,7 +688,7 @@ def fig_nonlinearity_gap(
         ax.bar(x + i * width, gaps[feat], width, label=feat.capitalize(), color=color, alpha=0.8)
 
     ax.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
-    ax.set_ylabel("Nonlinearity Gap (MLP R² − Linear R²)")
+    ax.set_ylabel("Nonlinearity Evidence (GP-RBF R² − Linear R²)")
     ax.set_xlabel("Condition")
     ax.set_title("Nonlinearly Encoded Information", fontweight="bold")
     ax.set_xticks(x + width)
@@ -660,9 +699,9 @@ def fig_nonlinearity_gap(
 
     return _save_and_encode(
         fig,
-        "nonlinearity_gap",
+        "nonlinearity_evidence",
         output_dir,
-        "Nonlinearity gap: MLP R² minus Linear R² per semantic feature type.",
+        "Nonlinearity Evidence: GP-RBF R² minus Linear R² per semantic feature type.",
     )
 
 
@@ -674,7 +713,7 @@ def fig_nonlinearity_gap(
 def fig_training_curves(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """Validation Dice over epochs, overlaid per condition.
 
     Args:
@@ -741,7 +780,7 @@ def fig_training_curves(
 def fig_statistical_heatmap(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """Corrected p-values heatmap from statistical comparisons.
 
     Args:
@@ -770,8 +809,11 @@ def fig_statistical_heatmap(
 
     # Filter to key metrics for readability
     priority_metrics = [
-        "volume_neg_mse", "location_neg_mse", "shape_neg_mse",
-        "dice_men_mean", "dice_gli_mean",
+        "volume_neg_mse",
+        "location_neg_mse",
+        "shape_neg_mse",
+        "dice_men_mean",
+        "dice_gli_mean",
     ]
     metric_keys = [m for m in priority_metrics if m in metric_keys]
     if not metric_keys:
@@ -796,10 +838,17 @@ def fig_statistical_heatmap(
     fig, ax = plt.subplots(figsize=(max(8, len(metric_keys) * 1.5), max(4, len(cond_names) * 0.6)))
 
     sns.heatmap(
-        data, ax=ax, annot=True, fmt=".3f",
-        xticklabels=metric_labels, yticklabels=cond_labels,
-        cmap="RdYlGn_r", vmin=0, vmax=0.1,
-        linewidths=0.5, linecolor="white",
+        data,
+        ax=ax,
+        annot=True,
+        fmt=".3f",
+        xticklabels=metric_labels,
+        yticklabels=cond_labels,
+        cmap="RdYlGn_r",
+        vmin=0,
+        vmax=0.1,
+        linewidths=0.5,
+        linecolor="white",
         cbar_kws={"label": "Corrected p-value"},
     )
 
@@ -823,7 +872,7 @@ def fig_statistical_heatmap(
 def fig_rank_summary(
     exp: ExperimentData,
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """3-panel line plot: Dice/R²/MMD vs rank.
 
     Args:
@@ -867,9 +916,9 @@ def fig_rank_summary(
 
     # Panel 2: R² mean
     r2_linear = [exp.conditions[c].metrics_enhanced.get("r2_mean_linear", 0) for c in rank_conds]
-    r2_mlp = [exp.conditions[c].metrics_enhanced.get("r2_mean_mlp", 0) for c in rank_conds]
+    r2_rbf = [exp.conditions[c].metrics_enhanced.get("r2_mean_rbf", 0) for c in rank_conds]
     ax2.plot(ranks, r2_linear, "o-", color=PROBE_COLORS["linear"], label="Linear", linewidth=2)
-    ax2.plot(ranks, r2_mlp, "s--", color=PROBE_COLORS["mlp"], label="MLP", linewidth=2)
+    ax2.plot(ranks, r2_rbf, "s--", color=PROBE_COLORS["rbf"], label="GP-RBF", linewidth=2)
 
     if "baseline_frozen" in exp.conditions:
         frozen_r2 = exp.conditions["baseline_frozen"].metrics_enhanced.get("r2_mean_linear", 0)
@@ -916,9 +965,9 @@ def fig_rank_summary(
 
 
 def fig_lora_vs_dora(
-    experiments: List[ExperimentData],
+    experiments: list[ExperimentData],
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """3-panel comparison: paired bars LoRA vs DoRA per rank.
 
     Args:
@@ -957,8 +1006,14 @@ def fig_lora_vs_dora(
     rank_labels = [str(r) for r in RANKS]
 
     # Panel 1: MEN Dice
-    lora_dice = [lora_exp.conditions.get(f"lora_r{r}", ConditionData(name="")).dice_men.get("dice_mean", 0) for r in RANKS]
-    dora_dice = [dora_exp.conditions.get(f"dora_r{r}", ConditionData(name="")).dice_men.get("dice_mean", 0) for r in RANKS]
+    lora_dice = [
+        lora_exp.conditions.get(f"lora_r{r}", ConditionData(name="")).dice_men.get("dice_mean", 0)
+        for r in RANKS
+    ]
+    dora_dice = [
+        dora_exp.conditions.get(f"dora_r{r}", ConditionData(name="")).dice_men.get("dice_mean", 0)
+        for r in RANKS
+    ]
 
     ax1.bar(x - width / 2, lora_dice, width, label="LoRA", color=ADAPTER_COLORS["lora"], alpha=0.8)
     ax1.bar(x + width / 2, dora_dice, width, label="DoRA", color=ADAPTER_COLORS["dora"], alpha=0.8)
@@ -971,8 +1026,18 @@ def fig_lora_vs_dora(
     ax1.set_ylim(0, 1)
 
     # Panel 2: R² mean
-    lora_r2 = [lora_exp.conditions.get(f"lora_r{r}", ConditionData(name="")).metrics_enhanced.get("r2_mean_linear", 0) for r in RANKS]
-    dora_r2 = [dora_exp.conditions.get(f"dora_r{r}", ConditionData(name="")).metrics_enhanced.get("r2_mean_linear", 0) for r in RANKS]
+    lora_r2 = [
+        lora_exp.conditions.get(f"lora_r{r}", ConditionData(name="")).metrics_enhanced.get(
+            "r2_mean_linear", 0
+        )
+        for r in RANKS
+    ]
+    dora_r2 = [
+        dora_exp.conditions.get(f"dora_r{r}", ConditionData(name="")).metrics_enhanced.get(
+            "r2_mean_linear", 0
+        )
+        for r in RANKS
+    ]
 
     ax2.bar(x - width / 2, lora_r2, width, label="LoRA", color=ADAPTER_COLORS["lora"], alpha=0.8)
     ax2.bar(x + width / 2, dora_r2, width, label="DoRA", color=ADAPTER_COLORS["dora"], alpha=0.8)
@@ -984,8 +1049,14 @@ def fig_lora_vs_dora(
     ax2.legend(fontsize=8)
 
     # Panel 3: MMD
-    lora_mmd = [lora_exp.conditions.get(f"lora_r{r}", ConditionData(name="")).domain_metrics.get("mmd", 0) for r in RANKS]
-    dora_mmd = [dora_exp.conditions.get(f"dora_r{r}", ConditionData(name="")).domain_metrics.get("mmd", 0) for r in RANKS]
+    lora_mmd = [
+        lora_exp.conditions.get(f"lora_r{r}", ConditionData(name="")).domain_metrics.get("mmd", 0)
+        for r in RANKS
+    ]
+    dora_mmd = [
+        dora_exp.conditions.get(f"dora_r{r}", ConditionData(name="")).domain_metrics.get("mmd", 0)
+        for r in RANKS
+    ]
 
     ax3.bar(x - width / 2, lora_mmd, width, label="LoRA", color=ADAPTER_COLORS["lora"], alpha=0.8)
     ax3.bar(x + width / 2, dora_mmd, width, label="DoRA", color=ADAPTER_COLORS["dora"], alpha=0.8)
@@ -1013,9 +1084,9 @@ def fig_lora_vs_dora(
 
 
 def fig_semantic_comparison(
-    experiments: List[ExperimentData],
+    experiments: list[ExperimentData],
     output_dir: Path,
-) -> Optional[FigureResult]:
+) -> FigureResult | None:
     """2-panel Dice + R² comparison: semantic vs no-semantic.
 
     Args:
@@ -1048,11 +1119,33 @@ def fig_semantic_comparison(
     width = 0.35
 
     # Panel 1: MEN Dice
-    sem_dice = [sem_exp.conditions.get(f"{prefix}{r}", ConditionData(name="")).dice_men.get("dice_mean", 0) for r in RANKS]
-    nosem_dice = [no_sem_exp.conditions.get(f"{prefix}{r}", ConditionData(name="")).dice_men.get("dice_mean", 0) for r in RANKS]
+    sem_dice = [
+        sem_exp.conditions.get(f"{prefix}{r}", ConditionData(name="")).dice_men.get("dice_mean", 0)
+        for r in RANKS
+    ]
+    nosem_dice = [
+        no_sem_exp.conditions.get(f"{prefix}{r}", ConditionData(name="")).dice_men.get(
+            "dice_mean", 0
+        )
+        for r in RANKS
+    ]
 
-    ax1.bar(x - width / 2, sem_dice, width, label="+ Semantic", color=SEMANTIC_COLORS["semantic"], alpha=0.8)
-    ax1.bar(x + width / 2, nosem_dice, width, label="No Semantic", color=SEMANTIC_COLORS["no_semantic"], alpha=0.8)
+    ax1.bar(
+        x - width / 2,
+        sem_dice,
+        width,
+        label="+ Semantic",
+        color=SEMANTIC_COLORS["semantic"],
+        alpha=0.8,
+    )
+    ax1.bar(
+        x + width / 2,
+        nosem_dice,
+        width,
+        label="No Semantic",
+        color=SEMANTIC_COLORS["no_semantic"],
+        alpha=0.8,
+    )
     ax1.set_ylabel("Dice (MEN)")
     ax1.set_title("Segmentation Performance", fontweight="bold")
     ax1.set_xticks(x)
@@ -1062,11 +1155,35 @@ def fig_semantic_comparison(
     ax1.set_ylim(0, 1)
 
     # Panel 2: R² mean
-    sem_r2 = [sem_exp.conditions.get(f"{prefix}{r}", ConditionData(name="")).metrics_enhanced.get("r2_mean_linear", 0) for r in RANKS]
-    nosem_r2 = [no_sem_exp.conditions.get(f"{prefix}{r}", ConditionData(name="")).metrics_enhanced.get("r2_mean_linear", 0) for r in RANKS]
+    sem_r2 = [
+        sem_exp.conditions.get(f"{prefix}{r}", ConditionData(name="")).metrics_enhanced.get(
+            "r2_mean_linear", 0
+        )
+        for r in RANKS
+    ]
+    nosem_r2 = [
+        no_sem_exp.conditions.get(f"{prefix}{r}", ConditionData(name="")).metrics_enhanced.get(
+            "r2_mean_linear", 0
+        )
+        for r in RANKS
+    ]
 
-    ax2.bar(x - width / 2, sem_r2, width, label="+ Semantic", color=SEMANTIC_COLORS["semantic"], alpha=0.8)
-    ax2.bar(x + width / 2, nosem_r2, width, label="No Semantic", color=SEMANTIC_COLORS["no_semantic"], alpha=0.8)
+    ax2.bar(
+        x - width / 2,
+        sem_r2,
+        width,
+        label="+ Semantic",
+        color=SEMANTIC_COLORS["semantic"],
+        alpha=0.8,
+    )
+    ax2.bar(
+        x + width / 2,
+        nosem_r2,
+        width,
+        label="No Semantic",
+        color=SEMANTIC_COLORS["no_semantic"],
+        alpha=0.8,
+    )
     ax2.set_ylabel("R² (mean linear)")
     ax2.set_title("Feature Quality", fontweight="bold")
     ax2.set_xticks(x)
@@ -1077,7 +1194,9 @@ def fig_semantic_comparison(
     adapter_label = sem_exp.adapter_type.upper()
     fig.suptitle(
         f"Effect of Semantic Heads ({adapter_label})",
-        fontsize=12, fontweight="bold", y=1.02,
+        fontsize=12,
+        fontweight="bold",
+        y=1.02,
     )
     fig.tight_layout()
 
@@ -1096,12 +1215,12 @@ def fig_semantic_comparison(
 
 
 def generate_all_figures(
-    experiments: List[ExperimentData],
+    experiments: list[ExperimentData],
     results_dir: Path,
     output_dir: Path,
     skip_umap: bool = False,
     compare_semantic: bool = False,
-) -> List[FigureResult]:
+) -> list[FigureResult]:
     """Generate all report figures.
 
     Args:
@@ -1118,7 +1237,7 @@ def generate_all_figures(
         logger.error("Matplotlib not available, cannot generate figures")
         return []
 
-    figures: List[FigureResult] = []
+    figures: list[FigureResult] = []
 
     # Use first experiment as primary
     primary = experiments[0]
@@ -1131,7 +1250,7 @@ def generate_all_figures(
         ("Domain metrics", lambda: fig_domain_metrics(primary, output_dir)),
         ("Retention ratio", lambda: fig_retention_ratio(primary, output_dir)),
         ("Probe R²", lambda: fig_probe_r2(primary, output_dir)),
-        ("Nonlinearity gap", lambda: fig_nonlinearity_gap(primary, output_dir)),
+        ("Nonlinearity Evidence", lambda: fig_nonlinearity_evidence(primary, output_dir)),
         ("Training curves", lambda: fig_training_curves(primary, output_dir)),
         ("Statistical heatmap", lambda: fig_statistical_heatmap(primary, output_dir)),
         ("Rank summary", lambda: fig_rank_summary(primary, output_dir)),

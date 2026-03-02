@@ -109,9 +109,8 @@ loss:
 # Probe evaluation (simplified MLP)
 probe:
   alpha_linear: 1.0           # Ridge regularization
-  use_mlp_probes: true        # Enable MLP probes
-  alpha_mlp: 0.01             # MLP L2 regularization (increased to prevent overfitting)
-  hidden_sizes: [128]         # Simplified from [256, 128]
+  n_restarts: 3               # Random restarts for GP-RBF optimization
+  r2_ci_samples: 500          # Posterior samples for R² credible intervals
   normalize_features: true
   normalize_targets: true     # Normalize targets for stable training
 

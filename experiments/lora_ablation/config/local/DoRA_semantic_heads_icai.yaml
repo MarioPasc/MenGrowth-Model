@@ -112,9 +112,8 @@ loss:
 # Probe evaluation
 probe:
   alpha_linear: 1.0
-  use_mlp_probes: true
-  alpha_mlp: 0.01
-  hidden_sizes: [128]
+  n_restarts: 3               # Random restarts for GP-RBF optimization
+  r2_ci_samples: 500          # Posterior samples for R² credible intervals
   normalize_features: true
   normalize_targets: true
 

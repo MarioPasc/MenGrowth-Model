@@ -28,19 +28,18 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
-from .v3_cache import precompute_all
-from .v3_figures import generate_all_v3_figures
 from .generate_tables import (
-    load_all_metrics,
     generate_comprehensive_csv,
     generate_comprehensive_latex,
-    generate_simplified_latex,
     generate_domain_shift_csv,
+    generate_simplified_latex,
+    load_all_metrics,
 )
+from .v3_cache import precompute_all
+from .v3_figures import generate_all_v3_figures
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +51,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Directory creation
 # ============================================================================
+
 
 def _create_output_dirs(output_dir: Path) -> None:
     """Create the reorganized output directory tree."""
@@ -70,6 +70,7 @@ def _create_output_dirs(output_dir: Path) -> None:
 # Table generation (redirected to tables/ dir)
 # ============================================================================
 
+
 def _generate_tables(config: dict, output_dir: Path) -> None:
     """Generate LaTeX and CSV tables in the tables/ directory."""
     metrics = load_all_metrics(config)
@@ -81,24 +82,16 @@ def _generate_tables(config: dict, output_dir: Path) -> None:
     results_dir = output_dir / "results"
 
     # CSVs go to results/
-    generate_comprehensive_csv(
-        metrics, config, results_dir / "comprehensive.csv"
-    )
-    generate_domain_shift_csv(
-        metrics, config, results_dir / "domain_shift.csv"
-    )
+    generate_comprehensive_csv(metrics, config, results_dir / "comprehensive.csv")
+    generate_domain_shift_csv(metrics, config, results_dir / "domain_shift.csv")
 
     # Also generate feature quality and dice CSVs if data exists
     _generate_feature_quality_csv(config, output_dir, results_dir)
     _generate_dice_summary_csv(config, output_dir, results_dir)
 
     # LaTeX goes to tables/
-    generate_comprehensive_latex(
-        metrics, config, tables_dir / "tab_comprehensive.tex"
-    )
-    generate_simplified_latex(
-        metrics, config, tables_dir / "tab_main_results.tex"
-    )
+    generate_comprehensive_latex(metrics, config, tables_dir / "tab_comprehensive.tex")
+    generate_simplified_latex(metrics, config, tables_dir / "tab_main_results.tex")
 
     # Feature quality LaTeX
     _generate_feature_quality_latex(config, output_dir, tables_dir)
@@ -177,6 +170,7 @@ def _generate_feature_quality_latex(
 ) -> None:
     """Generate feature quality LaTeX table."""
     from datetime import datetime
+
     from experiments.utils.settings import get_label
 
     fq_by_cond = {}
@@ -226,11 +220,13 @@ def _generate_feature_quality_latex(
             f"{int(collapsed) if collapsed else 0} & {fmt(dci_d)} & {fmt(dci_c)} \\\\"
         )
 
-    lines.extend([
-        r"\bottomrule",
-        r"\end{tabular}",
-        r"\end{table}",
-    ])
+    lines.extend(
+        [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\end{table}",
+        ]
+    )
 
     out_path = tables_dir / "tab_feature_quality.tex"
     with open(out_path, "w") as f:
@@ -241,6 +237,7 @@ def _generate_feature_quality_latex(
 # ============================================================================
 # Report generation
 # ============================================================================
+
 
 def _generate_reports(config: dict, output_dir: Path) -> None:
     """Copy/generate analysis reports into the reports/ directory."""
@@ -271,7 +268,7 @@ def _generate_recommendation(
     """Generate a short recommendation based on probe metrics."""
     from experiments.utils.settings import get_label
 
-    best_name: Optional[str] = None
+    best_name: str | None = None
     best_r2: float = -float("inf")
 
     for cond_cfg in config["conditions"]:
@@ -283,7 +280,7 @@ def _generate_recommendation(
             continue
         with open(metrics_path) as f:
             m = json.load(f)
-        r2 = m.get("r2_mean", m.get("r2_mean_mlp", -1.0))
+        r2 = m.get("r2_mean", m.get("r2_mean_rbf", -1.0))
         if r2 is not None and r2 > best_r2:
             best_r2 = r2
             best_name = name
@@ -307,6 +304,7 @@ def _generate_recommendation(
 # ============================================================================
 # Main pipeline
 # ============================================================================
+
 
 def main(
     config_path: str,
@@ -357,10 +355,10 @@ def main(
     logger.info("=" * 60)
     logger.info("REGENERATION COMPLETE")
     logger.info("=" * 60)
-    logger.info(f"  figures/    : 11 PDF + PNG")
-    logger.info(f"  tables/     : LaTeX tables")
-    logger.info(f"  results/    : aggregated CSVs")
-    logger.info(f"  reports/    : analysis + recommendation")
+    logger.info("  figures/    : 11 PDF + PNG")
+    logger.info("  tables/     : LaTeX tables")
+    logger.info("  results/    : aggregated CSVs")
+    logger.info("  reports/    : analysis + recommendation")
 
 
 if __name__ == "__main__":
@@ -368,19 +366,24 @@ if __name__ == "__main__":
         description="Regenerate all v3 analysis outputs (figures, tables, reports)"
     )
     parser.add_argument(
-        "--config", type=str, required=True,
+        "--config",
+        type=str,
+        required=True,
         help="Path to experiment YAML config",
     )
     parser.add_argument(
-        "--skip-cache", action="store_true",
+        "--skip-cache",
+        action="store_true",
         help="Reuse existing figure cache (skip precomputation)",
     )
     parser.add_argument(
-        "--figures-only", action="store_true",
+        "--figures-only",
+        action="store_true",
         help="Only regenerate figures",
     )
     parser.add_argument(
-        "--tables-only", action="store_true",
+        "--tables-only",
+        action="store_true",
         help="Only regenerate tables",
     )
     args = parser.parse_args()
