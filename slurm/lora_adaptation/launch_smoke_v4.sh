@@ -81,6 +81,14 @@ if [ -z "${H5_PATH}" ] || [ ! -f "${H5_PATH}" ]; then
 fi
 
 echo "H5 data found: ${H5_PATH}"
+
+# --- Generate splits if they don't exist ---
+echo ""
+echo "=== Step 2a: Ensure data splits exist ==="
+python -m experiments.lora_ablation.pipeline.data_splits \
+    --config "${CONFIG_PATH}" 2>&1 | tail -20
+
+echo ""
 echo "Running baseline_frozen condition (3 epochs)..."
 
 # Run a quick training + extraction + probe evaluation for one condition
