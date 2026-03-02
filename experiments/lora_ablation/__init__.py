@@ -9,8 +9,8 @@ Decoder types (via decoder_type config):
 - "lightweight": Custom SegmentationHead (~2M params)
 - "original": Full SwinUNETR decoder (~30M params, recommended)
 
-Primary metric: Linear probe R² for semantic features.
-Secondary metrics: MLP probe R², Segmentation Dice.
+Primary metric: GP-Linear probe R² for semantic features.
+Secondary metrics: GP-RBF probe R², Segmentation Dice.
 
 Usage:
     growth-exp-lora-ablation run-all --config path/to/ablation.yaml

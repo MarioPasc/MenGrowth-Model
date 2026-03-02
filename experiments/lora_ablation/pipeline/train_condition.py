@@ -827,7 +827,10 @@ def evaluate_feature_quality_inline(
     device: str,
     use_amp: bool = False,
 ) -> dict[str, float]:
-    """Quick Ridge-probe R² on validation features. ~30s overhead.
+    """Quick GP-Linear probe R² on validation features. ~30s overhead.
+
+    Uses a lightweight GP with linear kernel (mathematically equivalent to
+    Ridge regression but consistent with our GP-based evaluation pipeline).
 
     Args:
         model: Model with forward_with_semantics method.
@@ -857,17 +860,21 @@ def evaluate_feature_quality_inline(
     if not all_features or not all_vol:
         return {}
 
-    from sklearn.linear_model import Ridge
-    from sklearn.model_selection import cross_val_score
-    from sklearn.preprocessing import StandardScaler
+    from growth.evaluation.gp_probes import GPProbe
 
-    X = StandardScaler().fit_transform(np.concatenate(all_features))
+    X = np.concatenate(all_features)
     results: dict[str, float] = {}
     for name, y_list in [("vol", all_vol), ("loc", all_loc), ("shape", all_shape)]:
         Y = np.concatenate(y_list)
-        n_cv = min(5, max(2, len(X)))
-        scores = cross_val_score(Ridge(alpha=1.0), X, Y, cv=n_cv, scoring='r2')
-        results[f"probe_{name}_r2"] = max(0.0, float(scores.mean()))
+        probe = GPProbe(
+            kernel_type="linear",
+            normalize_features=True,
+            normalize_targets=True,
+            r2_ci_samples=0,  # Skip CI for speed during training
+        )
+        probe.fit(X, Y)
+        gp_results = probe.evaluate(X, Y)
+        results[f"probe_{name}_r2"] = max(0.0, gp_results.r2)
 
     results["probe_mean_r2"] = float(np.mean([
         results["probe_vol_r2"], results["probe_loc_r2"], results["probe_shape_r2"]

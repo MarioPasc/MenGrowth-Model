@@ -1,8 +1,12 @@
 """Domain gap analysis pipeline (GPU).
 
-Extracts encoder10 features and computes segmentation Dice for both
-BraTS-GLI (glioma) and BraTS-MEN (meningioma) using the frozen
-BrainSegFounder model, then computes domain shift metrics.
+Extracts encoder10 features and computes segmentation Dice for
+BraTS-GLI (glioma), BraTS-MEN (meningioma), and optionally MenGrowth
+using the frozen BrainSegFounder model, then computes domain shift metrics.
+
+If ``paths.mengrowth_root`` is null in config, the pipeline behaves
+identically to the two-domain version.  When present it computes all
+three datasets and all C(3,2)=3 pairwise comparisons.
 
 Usage:
     python -m experiments.domain_gap.run_domain_gap --config <path>
@@ -11,8 +15,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -114,6 +120,142 @@ class BraTSGLIDataset(Dataset):
             "image": transformed["image"],
             "subject_id": subject_id,
             "domain": "glioma",
+        }
+
+        if "seg" in transformed:
+            result["seg"] = transformed["seg"]
+
+        return result
+
+
+# ============================================================================
+# MenGrowth Dataset
+# ============================================================================
+
+MENGROWTH_MODALITY_KEYS = ["t2f", "t1c", "t1n", "t2w"]
+
+
+def _find_nifti(scan_dir: Path, name: str) -> Path:
+    """Find a NIfTI file in *scan_dir* by modality/seg name.
+
+    Supports two naming conventions:
+      1. Bare names:     ``{name}.nii.gz``  (e.g. ``t2f.nii.gz``)
+      2. Prefixed names: ``{scan_id}-{name}.nii.gz``
+         (e.g. ``MenGrowth-0001-000-t2f.nii.gz``)
+
+    The scan_id prefix is taken from the directory name.
+
+    Args:
+        scan_dir: Directory containing NIfTI files for one scan.
+        name: Modality key (``t2f``, ``t1c``, …) or ``seg``.
+
+    Returns:
+        Path to the matching NIfTI file.
+
+    Raises:
+        FileNotFoundError: If no matching file is found.
+    """
+    # Try bare name first (current convention)
+    bare = scan_dir / f"{name}.nii.gz"
+    if bare.exists():
+        return bare
+
+    # Try prefixed name: {scan_dir.name}-{name}.nii.gz
+    prefixed = scan_dir / f"{scan_dir.name}-{name}.nii.gz"
+    if prefixed.exists():
+        return prefixed
+
+    raise FileNotFoundError(f"Missing {name} in {scan_dir}: tried {bare.name} and {prefixed.name}")
+
+
+class MenGrowthDataset(Dataset):
+    """MenGrowth dataset for feature extraction and Dice evaluation.
+
+    Directory layout::
+
+        data_root/
+            MenGrowth-XXXX/
+                MenGrowth-XXXX-YYY/
+                    {t2f,t1c,t1n,t2w,seg}.nii.gz   (bare)
+                    OR
+                    MenGrowth-XXXX-YYY-{t2f,...}.nii.gz  (prefixed)
+
+    Args:
+        data_root: Path to MenGrowth data root directory.
+        first_timepoint_only: If True, keep only the first scan per subject
+            (``-000`` suffix). Gives N=33 independent samples.
+        transform: MONAI transform pipeline.
+    """
+
+    def __init__(
+        self,
+        data_root: str | Path,
+        first_timepoint_only: bool = False,
+        transform=None,
+    ) -> None:
+        self.data_root = Path(data_root)
+        self.transform = transform or get_val_transforms()
+        self.scans = self._discover_scans(first_timepoint_only)
+        logger.info(
+            f"MenGrowthDataset initialized: {len(self.scans)} scans, "
+            f"{len(set(s[0] for s in self.scans))} subjects"
+        )
+
+    def _discover_scans(self, first_timepoint_only: bool) -> list[tuple[str, str, Path]]:
+        """Discover (subject_id, scan_id, scan_dir) tuples.
+
+        Returns:
+            Sorted list of (subject_id, scan_id, scan_dir).
+        """
+        scans: list[tuple[str, str, Path]] = []
+        subject_pattern = re.compile(r"^MenGrowth-\d+$")
+
+        for subject_dir in sorted(self.data_root.iterdir()):
+            if not subject_dir.is_dir():
+                continue
+            if not subject_pattern.match(subject_dir.name):
+                continue
+
+            subject_id = subject_dir.name
+
+            for scan_dir in sorted(subject_dir.iterdir()):
+                if not scan_dir.is_dir():
+                    continue
+                if not scan_dir.name.startswith(subject_id):
+                    continue
+
+                scan_id = scan_dir.name
+
+                if first_timepoint_only:
+                    # Keep only -000 scans
+                    suffix = scan_id[len(subject_id) :]  # e.g. "-000"
+                    if suffix != "-000":
+                        continue
+
+                scans.append((subject_id, scan_id, scan_dir))
+
+        return scans
+
+    def __len__(self) -> int:
+        return len(self.scans)
+
+    def __getitem__(self, idx: int) -> dict:
+        subject_id, scan_id, scan_dir = self.scans[idx]
+
+        data = {}
+        for modality in MENGROWTH_MODALITY_KEYS:
+            data[modality] = str(_find_nifti(scan_dir, modality))
+
+        seg_path = _find_nifti(scan_dir, "seg")
+        data["seg"] = str(seg_path)
+
+        transformed = self.transform(data)
+
+        result = {
+            "image": transformed["image"],
+            "subject_id": subject_id,
+            "scan_id": scan_id,
+            "domain": "mengrowth",
         }
 
         if "seg" in transformed:
@@ -251,29 +393,60 @@ def compute_dice_scores(
 
 
 # ============================================================================
+# Subject-Level Averaging (for MenGrowth longitudinal data)
+# ============================================================================
+
+
+def average_features_by_subject(
+    features: np.ndarray,
+    subject_ids: list[str],
+) -> tuple[np.ndarray, list[str]]:
+    """Average features per subject for datasets with repeated measures.
+
+    Args:
+        features: Feature array [N_scans, D].
+        subject_ids: Subject ID for each scan.
+
+    Returns:
+        Tuple of (averaged_features [N_subjects, D], unique_subject_ids).
+    """
+    unique_ids = sorted(set(subject_ids))
+    id_to_rows: dict[str, list[int]] = {uid: [] for uid in unique_ids}
+    for i, sid in enumerate(subject_ids):
+        id_to_rows[sid].append(i)
+
+    averaged = np.zeros((len(unique_ids), features.shape[1]), dtype=features.dtype)
+    for k, uid in enumerate(unique_ids):
+        averaged[k] = features[id_to_rows[uid]].mean(axis=0)
+
+    logger.info(f"  Averaged {features.shape[0]} scans -> {averaged.shape[0]} subjects")
+    return averaged, unique_ids
+
+
+# ============================================================================
 # Per-Dimension KS Test
 # ============================================================================
 
 
 def compute_per_dim_ks(
-    gli_feat: np.ndarray,
-    men_feat: np.ndarray,
+    feat_a: np.ndarray,
+    feat_b: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute Kolmogorov-Smirnov test per feature dimension.
 
     Args:
-        gli_feat: GLI features [N1, D].
-        men_feat: MEN features [N2, D].
+        feat_a: Features from domain A [N1, D].
+        feat_b: Features from domain B [N2, D].
 
     Returns:
         Tuple of (ks_statistics [D], ks_pvalues [D]).
     """
-    n_dims = gli_feat.shape[1]
+    n_dims = feat_a.shape[1]
     ks_statistics = np.zeros(n_dims)
     ks_pvalues = np.zeros(n_dims)
 
     for d in range(n_dims):
-        stat, pval = stats.ks_2samp(gli_feat[:, d], men_feat[:, d])
+        stat, pval = stats.ks_2samp(feat_a[:, d], feat_b[:, d])
         ks_statistics[d] = stat
         ks_pvalues[d] = pval
 
@@ -286,47 +459,49 @@ def compute_per_dim_ks(
 
 
 # ============================================================================
-# Domain Shift Metrics
+# Domain Shift Metrics (pairwise)
 # ============================================================================
 
 
-def compute_domain_metrics(
-    gli_feat: np.ndarray,
-    men_feat: np.ndarray,
+def compute_pairwise_metrics(
+    feat_a: np.ndarray,
+    feat_b: np.ndarray,
     n_perm: int = 1000,
     cv_folds: int = 5,
+    groups_a: np.ndarray | None = None,
+    groups_b: np.ndarray | None = None,
 ) -> dict:
-    """Compute comprehensive domain shift metrics.
+    """Compute domain shift metrics for one pair of domains.
 
     Args:
-        gli_feat: GLI features [N1, D].
-        men_feat: MEN features [N2, D].
+        feat_a: Features from domain A [N1, D].
+        feat_b: Features from domain B [N2, D].
         n_perm: Number of permutations for MMD test.
         cv_folds: Cross-validation folds for classifier accuracy.
+        groups_a: Group labels for domain A (for GroupKFold). Optional.
+        groups_b: Group labels for domain B (for GroupKFold). Optional.
 
     Returns:
-        Dict with all domain shift metrics.
+        Dict with pairwise domain shift metrics.
     """
-    logger.info("Computing MMD² with permutation test...")
-    mmd_sq, mmd_pvalue = mmd_permutation_test(gli_feat, men_feat, n_perm=n_perm)
-    logger.info(f"  MMD² = {mmd_sq:.4f}, p = {mmd_pvalue:.4f}")
+    logger.info("  Computing MMD²...")
+    mmd_sq, mmd_pvalue = mmd_permutation_test(feat_a, feat_b, n_perm=n_perm)
+    logger.info(f"    MMD² = {mmd_sq:.4f}, p = {mmd_pvalue:.4f}")
 
-    logger.info("Computing CKA...")
-    cka = compute_cka(gli_feat, men_feat)
-    logger.info(f"  CKA = {cka:.4f}")
+    logger.info("  Computing CKA...")
+    cka = compute_cka(feat_a, feat_b)
+    logger.info(f"    CKA = {cka:.4f}")
 
-    logger.info("Computing Proxy A-distance...")
-    pad = compute_proxy_a_distance(gli_feat, men_feat)
-    logger.info(f"  PAD = {pad:.4f}")
+    logger.info("  Computing PAD...")
+    pad = compute_proxy_a_distance(feat_a, feat_b)
+    logger.info(f"    PAD = {pad:.4f}")
 
-    logger.info("Computing domain classifier accuracy...")
-    clf_acc = compute_domain_classifier_accuracy(gli_feat, men_feat, n_splits=cv_folds)
-    logger.info(f"  Classifier Acc = {clf_acc:.4f}")
-
-    logger.info("Computing effective rank...")
-    eff_rank_gli = compute_effective_rank(gli_feat)
-    eff_rank_men = compute_effective_rank(men_feat)
-    logger.info(f"  Effective rank: GLI={eff_rank_gli:.1f}, MEN={eff_rank_men:.1f}")
+    logger.info("  Computing classifier accuracy...")
+    if groups_a is not None or groups_b is not None:
+        clf_acc = _domain_classifier_with_groups(feat_a, feat_b, cv_folds, groups_a, groups_b)
+    else:
+        clf_acc = compute_domain_classifier_accuracy(feat_a, feat_b, n_splits=cv_folds)
+    logger.info(f"    Clf Acc = {clf_acc:.4f}")
 
     return {
         "mmd_sq": float(mmd_sq),
@@ -334,9 +509,110 @@ def compute_domain_metrics(
         "cka": float(cka),
         "proxy_a_distance": float(pad),
         "classifier_accuracy": float(clf_acc),
-        "effective_rank_gli": float(eff_rank_gli),
-        "effective_rank_men": float(eff_rank_men),
     }
+
+
+def _domain_classifier_with_groups(
+    feat_a: np.ndarray,
+    feat_b: np.ndarray,
+    n_splits: int,
+    groups_a: np.ndarray | None,
+    groups_b: np.ndarray | None,
+) -> float:
+    """Domain classifier using GroupKFold when groups are available.
+
+    Prevents same-subject scans from leaking across folds.
+
+    Args:
+        feat_a: Features from domain A.
+        feat_b: Features from domain B.
+        n_splits: Number of CV folds.
+        groups_a: Group IDs for domain A (or None).
+        groups_b: Group IDs for domain B (or None).
+
+    Returns:
+        Mean cross-validated accuracy.
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import GroupKFold, cross_val_score
+    from sklearn.preprocessing import StandardScaler
+
+    X = np.vstack([feat_a, feat_b])
+    y = np.array([0] * len(feat_a) + [1] * len(feat_b))
+
+    # Build groups: use provided group IDs, or assign unique IDs per sample
+    ga = groups_a if groups_a is not None else np.arange(len(feat_a))
+    gb = groups_b if groups_b is not None else np.arange(len(feat_a), len(feat_a) + len(feat_b))
+    groups = np.concatenate([ga, gb])
+
+    # Ensure enough groups for the number of splits
+    n_unique = len(np.unique(groups))
+    actual_splits = min(n_splits, n_unique)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+
+    clf = LogisticRegression(max_iter=1000, random_state=42)
+    cv = GroupKFold(n_splits=actual_splits)
+    scores = cross_val_score(clf, X, y, cv=cv, groups=groups)
+    return float(scores.mean())
+
+
+def compute_all_pairwise_metrics(
+    feat_dict: dict[str, np.ndarray],
+    groups_dict: dict[str, np.ndarray | None],
+    n_perm: int = 1000,
+    cv_folds: int = 5,
+) -> dict[str, dict]:
+    """Compute metrics for all C(k,2) domain pairs.
+
+    Args:
+        feat_dict: Mapping of domain name -> feature array.
+        groups_dict: Mapping of domain name -> group IDs (or None).
+        n_perm: MMD permutations.
+        cv_folds: Classifier CV folds.
+
+    Returns:
+        Dict keyed by ``"{a}_{b}"`` with pairwise metrics.
+    """
+    domains = sorted(feat_dict.keys())
+    results = {}
+
+    for a, b in itertools.combinations(domains, 2):
+        pair_key = f"{a}_{b}"
+        logger.info(f"Computing pairwise metrics: {a} <-> {b}")
+        results[pair_key] = compute_pairwise_metrics(
+            feat_dict[a],
+            feat_dict[b],
+            n_perm=n_perm,
+            cv_folds=cv_folds,
+            groups_a=groups_dict.get(a),
+            groups_b=groups_dict.get(b),
+        )
+
+    return results
+
+
+def compute_all_pairwise_ks(
+    feat_dict: dict[str, np.ndarray],
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Compute per-dimension KS test for all domain pairs.
+
+    Args:
+        feat_dict: Mapping of domain name -> feature array.
+
+    Returns:
+        Dict keyed by ``"{a}_{b}"`` -> (ks_statistics, ks_pvalues).
+    """
+    domains = sorted(feat_dict.keys())
+    results = {}
+
+    for a, b in itertools.combinations(domains, 2):
+        pair_key = f"{a}_{b}"
+        logger.info(f"Computing KS stats: {a} <-> {b}")
+        results[pair_key] = compute_per_dim_ks(feat_dict[a], feat_dict[b])
+
+    return results
 
 
 # ============================================================================
@@ -366,29 +642,23 @@ def _dice_summary(results: list[dict]) -> dict:
 
 def save_results(
     output_dir: Path,
-    gli_features: np.ndarray,
-    men_features: np.ndarray,
-    gli_ids: list[str],
-    men_ids: list[str],
-    gli_dice: list[dict],
-    men_dice: list[dict],
-    domain_metrics: dict,
-    ks_statistics: np.ndarray,
-    ks_pvalues: np.ndarray,
+    features_dict: dict[str, np.ndarray],
+    ids_dict: dict[str, list[str]],
+    dice_dict: dict[str, list[dict]],
+    pairwise_metrics: dict[str, dict],
+    ks_dict: dict[str, tuple[np.ndarray, np.ndarray]],
 ) -> None:
     """Save all results to structured output directory.
 
+    Supports both 2-domain and 3-domain modes transparently.
+
     Args:
         output_dir: Root output directory.
-        gli_features: GLI feature array [N, 768].
-        men_features: MEN feature array [N, 768].
-        gli_ids: GLI subject IDs.
-        men_ids: MEN subject IDs.
-        gli_dice: Per-subject GLI Dice results.
-        men_dice: Per-subject MEN Dice results.
-        domain_metrics: Domain shift metrics dict.
-        ks_statistics: Per-dimension KS statistics [D].
-        ks_pvalues: Per-dimension KS p-values [D].
+        features_dict: Mapping domain -> feature array [N, D].
+        ids_dict: Mapping domain -> subject/scan ID list.
+        dice_dict: Mapping domain -> per-scan Dice results.
+        pairwise_metrics: Mapping ``"{a}_{b}"`` -> metric dict.
+        ks_dict: Mapping ``"{a}_{b}"`` -> (stats, pvals).
     """
     feat_dir = output_dir / "features"
     dice_dir = output_dir / "dice"
@@ -398,40 +668,68 @@ def save_results(
         d.mkdir(parents=True, exist_ok=True)
 
     # Features
-    np.savez(
-        feat_dir / "gli_features.npz",
-        features=gli_features,
-        subject_ids=np.array(gli_ids, dtype=object),
-    )
-    np.savez(
-        feat_dir / "men_features.npz",
-        features=men_features,
-        subject_ids=np.array(men_ids, dtype=object),
-    )
-    logger.info(f"Saved features: GLI {gli_features.shape}, MEN {men_features.shape}")
+    for domain, features in features_dict.items():
+        np.savez(
+            feat_dir / f"{domain}_features.npz",
+            features=features,
+            subject_ids=np.array(ids_dict[domain], dtype=object),
+        )
+        logger.info(f"Saved {domain} features: {features.shape}")
 
     # Dice
-    gli_dice_out = {"per_subject": gli_dice, "summary": _dice_summary(gli_dice)}
-    men_dice_out = {"per_subject": men_dice, "summary": _dice_summary(men_dice)}
+    for domain, dice_results in dice_dict.items():
+        dice_out = {"per_subject": dice_results, "summary": _dice_summary(dice_results)}
+        with open(dice_dir / f"{domain}_dice.json", "w") as f:
+            json.dump(dice_out, f, indent=2)
+        logger.info(f"Saved {domain} Dice: {len(dice_results)} entries")
 
-    with open(dice_dir / "gli_dice.json", "w") as f:
-        json.dump(gli_dice_out, f, indent=2)
-    with open(dice_dir / "men_dice.json", "w") as f:
-        json.dump(men_dice_out, f, indent=2)
-    logger.info(f"Saved Dice: GLI {len(gli_dice)} subjects, MEN {len(men_dice)} subjects")
+    # Pairwise metrics
+    with open(metrics_dir / "pairwise_metrics.json", "w") as f:
+        json.dump(pairwise_metrics, f, indent=2)
+    logger.info(f"Saved pairwise metrics: {list(pairwise_metrics.keys())}")
 
-    # Domain metrics
-    with open(metrics_dir / "domain_metrics.json", "w") as f:
-        json.dump(domain_metrics, f, indent=2)
-    logger.info(f"Saved domain metrics: {list(domain_metrics.keys())}")
+    # Per-dataset metrics (effective rank)
+    per_dataset = {}
+    for domain, features in features_dict.items():
+        per_dataset[domain] = {
+            "effective_rank": float(compute_effective_rank(features)),
+        }
+    with open(metrics_dir / "per_dataset_metrics.json", "w") as f:
+        json.dump(per_dataset, f, indent=2)
+    logger.info(f"Saved per-dataset metrics: {list(per_dataset.keys())}")
+
+    # Backward-compat: also write domain_metrics.json for 2-domain case
+    if set(features_dict.keys()) == {"gli", "men"}:
+        pair = pairwise_metrics["gli_men"]
+        compat = {
+            "mmd_sq": pair["mmd_sq"],
+            "mmd_pvalue": pair["mmd_pvalue"],
+            "cka": pair["cka"],
+            "proxy_a_distance": pair["proxy_a_distance"],
+            "classifier_accuracy": pair["classifier_accuracy"],
+            "effective_rank_gli": per_dataset["gli"]["effective_rank"],
+            "effective_rank_men": per_dataset["men"]["effective_rank"],
+        }
+        with open(metrics_dir / "domain_metrics.json", "w") as f:
+            json.dump(compat, f, indent=2)
 
     # KS statistics
-    np.savez(
-        metrics_dir / "ks_stats.npz",
-        ks_statistics=ks_statistics,
-        ks_pvalues=ks_pvalues,
-    )
-    logger.info(f"Saved KS stats: {ks_statistics.shape}")
+    for pair_key, (ks_stats, ks_pvals) in ks_dict.items():
+        np.savez(
+            metrics_dir / f"ks_stats_{pair_key}.npz",
+            ks_statistics=ks_stats,
+            ks_pvalues=ks_pvals,
+        )
+        logger.info(f"Saved KS stats ({pair_key}): {ks_stats.shape}")
+
+    # Backward-compat: also write ks_stats.npz for 2-domain case
+    if "gli_men" in ks_dict:
+        ks_s, ks_p = ks_dict["gli_men"]
+        np.savez(
+            metrics_dir / "ks_stats.npz",
+            ks_statistics=ks_s,
+            ks_pvalues=ks_p,
+        )
 
 
 # ============================================================================
@@ -465,9 +763,13 @@ def main() -> None:
     ckpt_path = cfg.paths.checkpoint
     h5_file = cfg.paths.h5_file
     glioma_root = cfg.paths.glioma_root
+    mengrowth_root = OmegaConf.select(cfg, "paths.mengrowth_root", default=None)
     n_men = cfg.data.n_men_subjects
+    mengrowth_first_only = OmegaConf.select(cfg, "data.mengrowth_first_only", default=False)
     roi_size = tuple(cfg.data.feature_roi_size)
     level = cfg.feature_extraction.level
+
+    has_mengrowth = mengrowth_root is not None
 
     # ------------------------------------------------------------------
     # 1. Load models
@@ -490,7 +792,7 @@ def main() -> None:
     )
     logger.info(f"  GLI subjects: {len(gli_dataset)}")
 
-    logger.info("Creating MEN dataset (sampling {n_men} subjects)...")
+    logger.info(f"Creating MEN dataset (sampling {n_men} subjects)...")
     men_full = BraTSMENDatasetH5(
         h5_path=h5_file,
         split=None,
@@ -520,6 +822,16 @@ def main() -> None:
     men_dataset = Subset(men_full, sampled_indices.tolist())
     logger.info(f"  MEN subjects: {len(men_dataset)} (sampled from {len(available_indices)})")
 
+    mg_dataset = None
+    if has_mengrowth:
+        logger.info("Creating MenGrowth dataset...")
+        mg_dataset = MenGrowthDataset(
+            data_root=mengrowth_root,
+            first_timepoint_only=mengrowth_first_only,
+            transform=get_val_transforms(roi_size=roi_size),
+        )
+        logger.info(f"  MenGrowth scans: {len(mg_dataset)}")
+
     # ------------------------------------------------------------------
     # 3. Extract features
     # ------------------------------------------------------------------
@@ -543,11 +855,29 @@ def main() -> None:
         device=device,
     )
 
+    mg_features = None
+    mg_ids = None
+    mg_subject_ids = None
+    if mg_dataset is not None:
+        logger.info("Extracting MenGrowth features...")
+        mg_features, mg_ids = extract_features(
+            encoder,
+            mg_dataset,
+            level=level,
+            batch_size=cfg.feature_extraction.batch_size,
+            num_workers=cfg.feature_extraction.num_workers,
+            device=device,
+        )
+        # Record subject IDs for averaging
+        mg_subject_ids = [mg_dataset.scans[i][0] for i in range(len(mg_dataset))]
+
     # Validate
-    assert not np.isnan(gli_features).any(), "GLI features contain NaN"
-    assert not np.isnan(men_features).any(), "MEN features contain NaN"
-    assert not np.isinf(gli_features).any(), "GLI features contain Inf"
-    assert not np.isinf(men_features).any(), "MEN features contain Inf"
+    for name, feat in [("GLI", gli_features), ("MEN", men_features)]:
+        assert not np.isnan(feat).any(), f"{name} features contain NaN"
+        assert not np.isinf(feat).any(), f"{name} features contain Inf"
+    if mg_features is not None:
+        assert not np.isnan(mg_features).any(), "MenGrowth features contain NaN"
+        assert not np.isinf(mg_features).any(), "MenGrowth features contain Inf"
 
     # ------------------------------------------------------------------
     # 4. Compute Dice scores
@@ -570,35 +900,76 @@ def main() -> None:
         device=device,
     )
 
+    mg_dice = None
+    if mg_dataset is not None:
+        logger.info("Computing MenGrowth Dice scores...")
+        mg_dice = compute_dice_scores(
+            full_model,
+            mg_dataset,
+            batch_size=cfg.dice_evaluation.batch_size,
+            num_workers=cfg.dice_evaluation.num_workers,
+            device=device,
+        )
+
     # ------------------------------------------------------------------
     # 5. Compute domain metrics
     # ------------------------------------------------------------------
-    logger.info("Computing domain shift metrics...")
-    domain_metrics = compute_domain_metrics(
-        gli_features,
-        men_features,
+    # Build feature dict using subject-averaged MenGrowth features for metrics
+    feat_dict: dict[str, np.ndarray] = {
+        "gli": gli_features,
+        "men": men_features,
+    }
+    groups_dict: dict[str, np.ndarray | None] = {
+        "gli": None,
+        "men": None,
+    }
+
+    if mg_features is not None:
+        mg_avg_features, mg_avg_ids = average_features_by_subject(mg_features, mg_subject_ids)
+        feat_dict["mengrowth"] = mg_avg_features
+        groups_dict["mengrowth"] = None  # Already averaged, no groups needed
+
+    logger.info("Computing pairwise domain shift metrics...")
+    pairwise_metrics = compute_all_pairwise_metrics(
+        feat_dict,
+        groups_dict,
         n_perm=cfg.metrics.mmd_permutations,
         cv_folds=cfg.metrics.classifier_cv_folds,
     )
 
-    logger.info("Computing per-dimension KS statistics...")
-    ks_statistics, ks_pvalues = compute_per_dim_ks(gli_features, men_features)
+    logger.info("Computing per-pair KS statistics...")
+    ks_dict = compute_all_pairwise_ks(feat_dict)
 
     # ------------------------------------------------------------------
     # 6. Save everything
     # ------------------------------------------------------------------
+    # Build save dicts (use all scans for MenGrowth features/dice on disk)
+    save_features: dict[str, np.ndarray] = {
+        "gli": gli_features,
+        "men": men_features,
+    }
+    save_ids: dict[str, list[str]] = {
+        "gli": gli_ids,
+        "men": men_ids,
+    }
+    save_dice: dict[str, list[dict]] = {
+        "gli": gli_dice,
+        "men": men_dice,
+    }
+
+    if mg_features is not None:
+        save_features["mengrowth"] = mg_features  # All scans
+        save_ids["mengrowth"] = mg_ids  # Scan IDs
+        save_dice["mengrowth"] = mg_dice
+
     logger.info(f"Saving results to {output_dir}")
     save_results(
         output_dir,
-        gli_features,
-        men_features,
-        gli_ids,
-        men_ids,
-        gli_dice,
-        men_dice,
-        domain_metrics,
-        ks_statistics,
-        ks_pvalues,
+        save_features,
+        save_ids,
+        save_dice,
+        pairwise_metrics,
+        ks_dict,
     )
 
     logger.info("Domain gap analysis complete.")

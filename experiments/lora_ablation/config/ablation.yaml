@@ -98,7 +98,8 @@ loss:
 # Probe evaluation
 probe:
   # For both decoder types
-  alpha_linear: 1.0           # Ridge regularization
+  # GP probe hyperparameters (alpha_linear is deprecated; GP-Linear
+  # recovers Ridge automatically via noise variance optimization)
 
   # Additional options when decoder_type: "original"
   n_restarts: 3               # Random restarts for GP-RBF optimization

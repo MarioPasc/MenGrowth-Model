@@ -7,10 +7,12 @@ paths:
   checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men/BraTS_MEN.h5
   glioma_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/gliomas/BraTS-GLI-100
+  mengrowth_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/dataset/preprocecessed/MenGrowth-2025  # Set to path to enable 3-domain mode
 
 data:
   n_men_subjects: 100          # Match GLI count for balanced comparison
   feature_roi_size: [192, 192, 192]
+  mengrowth_first_only: false  # true = 1 scan/subject (N=33), false = all scans (N=100)
 
 feature_extraction:
   level: encoder10

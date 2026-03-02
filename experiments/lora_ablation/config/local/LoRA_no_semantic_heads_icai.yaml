@@ -103,9 +103,8 @@ loss:
   lambda_location: 1.0
   lambda_shape: 0.5
 
-# Probe evaluation (simplified MLP)
+# Probe evaluation (GP with linear + RBF kernels)
 probe:
-  alpha_linear: 1.0           # Ridge regularization
   n_restarts: 3               # Random restarts for GP-RBF optimization
   r2_ci_samples: 500          # Posterior samples for R² credible intervals
   normalize_features: true
@@ -150,7 +149,7 @@ model_card:
 #    Compare linear probe R² between experiments.
 #
 # 3. NONLINEARITY GAP
-#    Does auxiliary supervision reduce the gap between linear and MLP probes?
+#    Does auxiliary supervision reduce the gap between GP-Linear and GP-RBF probes?
 #    A smaller gap suggests more linearly organized representations.
 #
 # The key question: Does "teaching to the test" (auxiliary semantic loss)

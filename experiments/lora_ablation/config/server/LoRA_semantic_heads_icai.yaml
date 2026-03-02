@@ -104,9 +104,8 @@ loss:
   lambda_location: 1.0       # Location prediction weight
   lambda_shape: 0.5          # Shape prediction weight (reduced for harder task)
 
-# Probe evaluation (simplified MLP)
+# Probe evaluation (GP with linear + RBF kernels)
 probe:
-  alpha_linear: 1.0           # Ridge regularization
   n_restarts: 3               # Random restarts for GP-RBF optimization
   r2_ci_samples: 500          # Posterior samples for R² credible intervals
   normalize_features: true

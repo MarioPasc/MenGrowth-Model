@@ -17,7 +17,7 @@ experiments/lora_ablation/
 │   ├── train_condition.py       #   Train one ablation condition
 │   ├── extract_features.py      #   Extract encoder10 features
 │   ├── evaluate_dice.py         #   Sliding-window Dice on test set
-│   ├── evaluate_probes.py       #   Linear + MLP probe R² evaluation
+│   ├── evaluate_probes.py       #   GP probe R² evaluation (linear + RBF kernels)
 │   ├── evaluate_feature_quality.py # PCA rank, DCI, variance spectrum
 │   ├── model_factory.py         #   Build SwinUNETR + LoRA for a condition
 │   ├── data_splits.py           #   Deterministic train/val/test splits
@@ -89,7 +89,7 @@ python -m experiments.lora_ablation.run_ablation --config <yaml> <command>
 1. splits        ->  Deterministic train/val/test assignment
 2. train-all     ->  LoRA fine-tuning per condition (Dice + aux semantic loss)
 3. extract-all   ->  encoder10 features [N, 768, 4, 4, 4] -> [N, 768]
-4. probes-all    ->  Linear + MLP probe R² for volume, location, shape
+4. probes-all    ->  GP probe R² (linear + RBF) for volume, location, shape
 5. test-dice-all ->  Sliding-window Dice on held-out MEN test set
 6. visualize     ->  UMAP, variance spectrum, R² bars
 7. tables        ->  CSV + LaTeX with all metrics
@@ -107,7 +107,7 @@ Configs use OmegaConf YAML. Key sections:
 - `conditions[]`: name, lora_rank, lora_alpha, target_stages, ...
 - `training`: max_epochs, lr, decoder_type, num_workers, ...
 - `loss`: lambda_dice, lambda_ce, lambda_volume, lambda_location, lambda_shape
-- `probe`: use_mlp_probes, alpha_linear, mlp_hidden_dim, mlp_epochs
+- `probe`: n_restarts, r2_ci_samples, normalize_features, normalize_targets
 
 ## Architecture
 
@@ -157,7 +157,7 @@ All figure colors, labels, markers, and plot settings live in
 ├── conditions/<name>/
 │   ├── checkpoints/             # Model checkpoints
 │   ├── features.pt              # Extracted features
-│   ├── probe_results.json       # Linear + MLP R² scores
+│   ├── probe_results.json       # GP probe R² scores (linear + RBF)
 │   └── test_dice_men.json       # MEN Dice per class
 ├── figures/                     # Publication-quality figures (PDF + PNG)
 ├── figure_cache/                # Precomputed data for fast regeneration

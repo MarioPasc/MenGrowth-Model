@@ -6,7 +6,7 @@ This script runs the complete ablation pipeline:
 1. Generate data splits (if not exist)
 2. Train all conditions
 3. Extract multi-scale features
-4. Evaluate with linear + MLP probes
+4. Evaluate with GP probes (linear + RBF kernels)
 5. Generate enhanced visualizations
 6. Statistical analysis and recommendations
 
@@ -486,7 +486,7 @@ def run_all(
     if decoder_type == "original":
         logger.info("  - Original SwinUNETR decoder (pretrained)")
         logger.info("  - Auxiliary semantic prediction losses")
-        logger.info("  - MLP probes for nonlinear analysis")
+        logger.info("  - GP probes (linear + RBF) for nonlinear analysis")
         logger.info("  - Multi-scale feature extraction")
     else:
         logger.info("  - Lightweight SegmentationHead decoder")

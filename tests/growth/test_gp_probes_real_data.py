@@ -166,7 +166,6 @@ def smoke_config(h5_path: Path, ckpt_path: Path, tmp_path_factory: pytest.TempPa
             "lambda_shape": 1.0,
         },
         "probe": {
-            "alpha_linear": 1.0,
             "n_restarts": 1,
             "r2_ci_samples": 100,
             "normalize_features": True,

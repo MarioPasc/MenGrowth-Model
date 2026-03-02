@@ -219,16 +219,19 @@ DICE_LABELS = {
 DOMAIN_COLORS = {
     "glioma": "#EE6677",  # Red/Rose - BraTS Glioma (source)
     "meningioma": "#4477AA",  # Blue - BraTS-MEN (target)
+    "mengrowth": "#228833",  # Green - MenGrowth (final target)
 }
 
 DOMAIN_MARKERS = {
     "glioma": "o",  # Circle
     "meningioma": "^",  # Triangle
+    "mengrowth": "s",  # Square
 }
 
 DOMAIN_LABELS = {
     "glioma": "BraTS Glioma (Source)",
     "meningioma": "BraTS-MEN (Target)",
+    "mengrowth": "MenGrowth",
 }
 
 # =============================================================================
@@ -538,25 +541,49 @@ V3_FEATURE_LABELS: dict[str, str] = {
 # =============================================================================
 
 CONDITION_ORDER_V2: list[str] = [
-    "baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32",
+    "baseline",
+    "lora_r2",
+    "lora_r4",
+    "lora_r8",
+    "lora_r16",
+    "lora_r32",
 ]
 
 CONDITION_ORDER_V3: list[str] = list(V3_CONDITIONS)
 
 CONDITION_ORDER_LORA: list[str] = [
-    "baseline_frozen", "baseline",
-    "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32",
+    "baseline_frozen",
+    "baseline",
+    "lora_r2",
+    "lora_r4",
+    "lora_r8",
+    "lora_r16",
+    "lora_r32",
 ]
 
 CONDITION_ORDER_DORA: list[str] = [
-    "baseline_frozen", "baseline",
-    "dora_r2", "dora_r4", "dora_r8", "dora_r16", "dora_r32",
+    "baseline_frozen",
+    "baseline",
+    "dora_r2",
+    "dora_r4",
+    "dora_r8",
+    "dora_r16",
+    "dora_r32",
 ]
 
 CONDITION_ORDER_ALL: list[str] = [
-    "baseline_frozen", "baseline",
-    "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32",
-    "dora_r2", "dora_r4", "dora_r8", "dora_r16", "dora_r32",
+    "baseline_frozen",
+    "baseline",
+    "lora_r2",
+    "lora_r4",
+    "lora_r8",
+    "lora_r16",
+    "lora_r32",
+    "dora_r2",
+    "dora_r4",
+    "dora_r8",
+    "dora_r16",
+    "dora_r32",
 ]
 
 RANKS: list[int] = [2, 4, 8, 16, 32]
