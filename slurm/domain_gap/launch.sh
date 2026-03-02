@@ -123,7 +123,7 @@ echo ""
 echo "Submitting plots job (dependent on GPU job ${GPU_JOB_ID})..."
 
 PLOTS_JOB_ID=$(sbatch --parsable \
-    --dependency="afterok:${GPU_JOB_ID}" \
+    --dependency="afterany:${GPU_JOB_ID}" \
     --job-name="domain_gap_plots" \
     --output="${SLURM_LOG_DIR}/plots_%j.out" \
     --error="${SLURM_LOG_DIR}/plots_%j.err" \

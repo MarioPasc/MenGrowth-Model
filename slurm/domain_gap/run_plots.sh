@@ -55,6 +55,17 @@ cd "${REPO_SRC}"
 echo ""
 
 # ========================================================================
+# CHECK PREREQUISITE DATA EXISTS
+# ========================================================================
+if [ ! -f "${OUTPUT_DIR}/metrics/domain_metrics.json" ]; then
+    echo "[FAIL] GPU pipeline data not found — GPU job likely failed."
+    echo "  Expected: ${OUTPUT_DIR}/metrics/domain_metrics.json"
+    exit 1
+fi
+echo "[OK] GPU pipeline data found"
+echo ""
+
+# ========================================================================
 # GENERATE FIGURES
 # ========================================================================
 echo "[1/2] Generating figures..."

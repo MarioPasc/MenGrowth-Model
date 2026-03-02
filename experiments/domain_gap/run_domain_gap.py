@@ -320,7 +320,7 @@ def compute_domain_metrics(
     logger.info(f"  PAD = {pad:.4f}")
 
     logger.info("Computing domain classifier accuracy...")
-    clf_acc = compute_domain_classifier_accuracy(gli_feat, men_feat, cv_folds=cv_folds)
+    clf_acc = compute_domain_classifier_accuracy(gli_feat, men_feat, n_splits=cv_folds)
     logger.info(f"  Classifier Acc = {clf_acc:.4f}")
 
     logger.info("Computing effective rank...")
