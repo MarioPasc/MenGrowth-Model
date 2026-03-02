@@ -489,7 +489,17 @@ def compute_pairwise_metrics(
     logger.info(f"    MMD² = {mmd_sq:.4f}, p = {mmd_pvalue:.4f}")
 
     logger.info("  Computing CKA...")
-    cka = compute_cka(feat_a, feat_b)
+    # CKA requires equal sample sizes — subsample the larger set
+    n_a, n_b = feat_a.shape[0], feat_b.shape[0]
+    if n_a == n_b:
+        cka = compute_cka(feat_a, feat_b)
+    else:
+        rng = np.random.RandomState(42)
+        n_min = min(n_a, n_b)
+        fa = feat_a[rng.choice(n_a, n_min, replace=False)] if n_a > n_min else feat_a
+        fb = feat_b[rng.choice(n_b, n_min, replace=False)] if n_b > n_min else feat_b
+        cka = compute_cka(fa, fb)
+        logger.info(f"    (subsampled to N={n_min} for CKA)")
     logger.info(f"    CKA = {cka:.4f}")
 
     logger.info("  Computing PAD...")
