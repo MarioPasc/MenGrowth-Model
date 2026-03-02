@@ -24,7 +24,7 @@ H5 file schema (see scripts/convert_nifti_to_h5.py):
     segs         [N, 1, 192, 192, 192] int8
     subject_ids  [N] string
     semantic/    {volume, location, shape} arrays
-    splits/      {lora_train, lora_val, sdp_train, test} index arrays
+    splits/      {lora_train, lora_val, test} index arrays
 """
 
 import json

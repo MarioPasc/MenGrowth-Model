@@ -12,11 +12,6 @@ Usage:
     # Full analysis with all outputs
     python -m experiments.lora_ablation.analyze_results \
         --config experiments/lora_ablation/config/ablation.yaml
-
-    # With optional glioma features for domain shift visualization
-    python -m experiments.lora_ablation.analyze_results \
-        --config experiments/lora_ablation/config/ablation.yaml \
-        --glioma-features /path/to/glioma_features.pt
 """
 
 import argparse
@@ -301,7 +296,6 @@ def generate_markdown_report(
         "### Data Splits",
         f"- LoRA Training: {config['data_splits']['lora_train']} subjects",
         f"- LoRA Validation: {config['data_splits']['lora_val']} subjects",
-        f"- SDP/Probe Training: {config['data_splits'].get('sdp_train', config['data_splits'].get('probe_train', 'N/A'))} subjects",
         f"- Test Set: {config['data_splits']['test']} subjects",
         "",
         "### Experimental Conditions",
@@ -518,8 +512,8 @@ def generate_markdown_report(
                 "2. Increased parameter count",
                 "3. Risk of overfitting to meningioma-specific features",
                 "",
-                "The baseline encoder (trained on gliomas) already provides strong features ",
-                "for meningioma semantic prediction, demonstrating good cross-tumor generalization.",
+                "The baseline encoder already provides strong features for meningioma semantic ",
+                "prediction, demonstrating good cross-tumor generalization.",
             ]
         )
     elif improvement < 0.05:
@@ -568,7 +562,6 @@ def generate_markdown_report(
 
 def analyze_results(
     config_path: str,
-    glioma_features_path: str | None = None,
     skip_figures: bool = False,
 ) -> None:
     """Run complete analysis pipeline."""
@@ -690,19 +683,13 @@ def main():
         help="Path to ablation configuration file",
     )
     parser.add_argument(
-        "--glioma-features",
-        type=str,
-        default=None,
-        help="Optional path to glioma features for domain shift visualization",
-    )
-    parser.add_argument(
         "--skip-figures",
         action="store_true",
         help="Skip figure generation (faster for quick analysis)",
     )
 
     args = parser.parse_args()
-    analyze_results(args.config, args.glioma_features, args.skip_figures)
+    analyze_results(args.config, args.skip_figures)
 
 
 if __name__ == "__main__":

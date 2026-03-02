@@ -497,18 +497,21 @@ def main() -> None:
         transform=get_h5_val_transforms(roi_size=roi_size),
     )
 
-    # Sample from sdp_train + test splits for balanced representation
+    # Sample from lora_train + test splits for balanced representation
     splits = BraTSMENDatasetH5.load_splits_from_h5(h5_file)
     available_indices = np.concatenate(
         [
-            splits.get("sdp_train", np.array([], dtype=int)),
+            splits.get("lora_train", np.array([], dtype=int)),
+            splits.get("sdp_train", np.array([], dtype=int)),  # legacy compat
             splits.get("test", np.array([], dtype=int)),
         ]
     ).astype(int)
+    # Deduplicate in case of overlap between legacy and new splits
+    available_indices = np.unique(available_indices)
 
     if len(available_indices) == 0:
         # Fallback: use all subjects
-        logger.warning("No sdp_train/test splits found, using all subjects")
+        logger.warning("No train/test splits found, using all subjects")
         available_indices = np.arange(len(men_full))
 
     rng = np.random.RandomState(seed)

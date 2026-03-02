@@ -8,8 +8,7 @@ Usage:
         --results-dir /path/to/LoRA_Adaptation \
         --output-dir ./report_output \
         --mode both \
-        --compare-semantic \
-        --skip-umap
+        --compare-semantic
 """
 
 import argparse
@@ -56,8 +55,6 @@ def _export_summary_json(
         for cond_name, cond in exp.conditions.items():
             exp_data["conditions"][cond_name] = {
                 "dice_men": cond.dice_men,
-                "dice_gli": cond.dice_gli,
-                "domain_metrics": cond.domain_metrics,
                 "r2_mean_linear": cond.metrics_enhanced.get("r2_mean_linear"),
                 "r2_mean_rbf": cond.metrics_enhanced.get("r2_mean_rbf"),
                 "best_val_dice": cond.training_summary.get("best_val_dice"),
@@ -103,10 +100,8 @@ def _export_tables(
             row = {
                 "Condition": cond_name,
                 "Dice MEN": cond.dice_men.get("dice_mean"),
-                "Dice GLI": cond.dice_gli.get("dice_mean"),
                 "R² Linear": cond.metrics_enhanced.get("r2_mean_linear"),
                 "R² GP-RBF": cond.metrics_enhanced.get("r2_mean_rbf"),
-                "MMD²": cond.domain_metrics.get("mmd"),
                 "Best Epoch": cond.training_summary.get("best_epoch"),
             }
             rows.append(row)
@@ -155,11 +150,6 @@ def parse_args() -> argparse.Namespace:
         help="Include semantic vs no-semantic head analysis",
     )
     parser.add_argument(
-        "--skip-umap",
-        action="store_true",
-        help="Skip slow UMAP computation",
-    )
-    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -185,7 +175,6 @@ def main() -> None:
     logger.info("Output dir:  %s", args.output_dir)
     logger.info("Mode:        %s", args.mode)
     logger.info("Semantic:    %s", args.compare_semantic)
-    logger.info("Skip UMAP:   %s", args.skip_umap)
 
     # 1. Load experiments
     logger.info("\n--- Loading experiments ---")
@@ -207,7 +196,6 @@ def main() -> None:
         experiments=experiments,
         results_dir=args.results_dir,
         output_dir=args.output_dir,
-        skip_umap=args.skip_umap,
         compare_semantic=args.compare_semantic,
     )
     logger.info("Generated %d figures", len(figures))

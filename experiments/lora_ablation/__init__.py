@@ -35,20 +35,20 @@ _MOVED: dict[str, str] = {}
 
 for _name in (
     "data_splits", "evaluate_dice", "evaluate_feature_quality",
-    "evaluate_probes", "extract_domain_features", "extract_features",
+    "evaluate_probes", "extract_features",
     "model_factory", "output_paths", "train_condition",
 ):
     _MOVED[f"{_PKG}.{_name}"] = f"{_PKG}.pipeline.{_name}"
 
 for _name in (
-    "analyze_results", "compute_domain_metrics", "domain_visualizations",
+    "analyze_results",
     "enhanced_diagnostics", "generate_tables", "regenerate_analysis",
     "statistical_analysis", "v3_cache", "v3_figures", "visualizations",
 ):
     _MOVED[f"{_PKG}.{_name}"] = f"{_PKG}.analysis.{_name}"
 
 for _name in (
-    "diagnose_frozen_gli", "merge_lora_checkpoint", "post_hoc_analysis",
+    "merge_lora_checkpoint", "post_hoc_analysis",
 ):
     _MOVED[f"{_PKG}.{_name}"] = f"{_PKG}.scripts.{_name}"
 

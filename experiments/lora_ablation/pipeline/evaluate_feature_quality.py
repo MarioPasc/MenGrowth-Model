@@ -23,7 +23,6 @@ import csv
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -33,11 +32,8 @@ from growth.evaluation.latent_quality import (
     compute_dci,
     compute_effective_rank,
     compute_variance_per_dim,
-    LinearProbe,
 )
 from growth.utils.seed import set_seed
-
-from .data_splits import load_splits
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,8 +58,8 @@ def compute_pca_explained_variance(
     features_centered = features - features.mean(axis=0)
     _, s, _ = np.linalg.svd(features_centered, full_matrices=False)
 
-    total_var = (s ** 2).sum()
-    cumvar = np.cumsum(s ** 2) / total_var
+    total_var = (s**2).sum()
+    cumvar = np.cumsum(s**2) / total_var
 
     results = {}
     for d in dims:
@@ -193,7 +189,7 @@ def evaluate_feature_quality_single(
     metrics.update(corr_metrics)
     logger.info(f"  Mean |r|: {corr_metrics['mean_abs_corr']:.3f}")
 
-    # 4. Per-target linear probe R²
+    # 4. Per-target GP-linear probe R²
     for target_name in ["volume", "location", "shape"]:
         y_train = targets[target_name]
         y_test = test_targets[target_name]
@@ -201,11 +197,7 @@ def evaluate_feature_quality_single(
             y_train = y_train.reshape(-1, 1)
             y_test = y_test.reshape(-1, 1)
 
-        probe = LinearProbe(
-            input_dim=features.shape[1],
-            output_dim=y_train.shape[1],
-            alpha=1.0,
-        )
+        probe = GPProbe(kernel_type="linear", r2_ci_samples=0)
         probe.fit(features, y_train)
         result = probe.evaluate(test_features, y_test)
         metrics[f"r2_{target_name}"] = result.r2
@@ -220,8 +212,10 @@ def evaluate_feature_quality_single(
 
     # 6. DCI disentanglement
     all_targets = np.concatenate(
-        [targets[k] if targets[k].ndim == 2 else targets[k].reshape(-1, 1)
-         for k in ["volume", "location", "shape"]],
+        [
+            targets[k] if targets[k].ndim == 2 else targets[k].reshape(-1, 1)
+            for k in ["volume", "location", "shape"]
+        ],
         axis=1,
     )
     dci = compute_dci(features, all_targets, alpha=0.01)
@@ -229,8 +223,7 @@ def evaluate_feature_quality_single(
     metrics["dci_completeness"] = dci.completeness
     metrics["dci_informativeness"] = dci.informativeness
     logger.info(
-        f"  DCI: D={dci.disentanglement:.3f}, "
-        f"C={dci.completeness:.3f}, I={dci.informativeness:.3f}"
+        f"  DCI: D={dci.disentanglement:.3f}, C={dci.completeness:.3f}, I={dci.informativeness:.3f}"
     )
 
     # 7. Variance analysis
@@ -295,11 +288,20 @@ def generate_comparison_table(
     # CSV table
     csv_path = output_dir / "feature_quality_comparison.csv"
     columns = [
-        "condition", "effective_rank", "mean_abs_corr",
-        "r2_volume", "r2_location", "r2_shape",
-        "n_informative_volume", "n_informative_location", "n_informative_shape",
-        "dci_disentanglement", "dci_completeness", "dci_informativeness",
-        "pca_var_at_10", "pca_var_at_50",
+        "condition",
+        "effective_rank",
+        "mean_abs_corr",
+        "r2_volume",
+        "r2_location",
+        "r2_shape",
+        "n_informative_volume",
+        "n_informative_location",
+        "n_informative_shape",
+        "dci_disentanglement",
+        "dci_completeness",
+        "dci_informativeness",
+        "pca_var_at_10",
+        "pca_var_at_50",
         "num_collapsed_dims",
     ]
 

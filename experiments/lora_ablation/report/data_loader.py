@@ -35,10 +35,7 @@ class ConditionData:
     training_summary: Dict = field(default_factory=dict)
     training_log: Optional[pd.DataFrame] = None
     dice_men: Dict = field(default_factory=dict)
-    dice_gli: Dict = field(default_factory=dict)
     metrics_enhanced: Dict = field(default_factory=dict)
-    domain_metrics: Dict = field(default_factory=dict)
-    has_features: bool = False
 
 
 @dataclass
@@ -141,27 +138,12 @@ def load_condition(condition_dir: Path) -> ConditionData:
     else:
         logger.warning("No test_dice_men.json in %s", name)
 
-    dice_gli = _load_json(condition_dir / "test_dice_gli.json")
-    if dice_gli is not None:
-        cond.dice_gli = dice_gli
-
     # Enhanced metrics (probes)
     enhanced = _load_json(condition_dir / "metrics_enhanced.json")
     if enhanced is None:
         enhanced = _load_json(condition_dir / "metrics.json")
     if enhanced is not None:
         cond.metrics_enhanced = enhanced
-
-    # Domain metrics
-    domain = _load_json(condition_dir / "domain_metrics.json")
-    if domain is not None:
-        cond.domain_metrics = domain
-
-    # Check feature files for UMAP
-    cond.has_features = (
-        (condition_dir / "features_glioma.pt").exists()
-        and (condition_dir / "features_meningioma_subset.pt").exists()
-    )
 
     return cond
 
@@ -225,10 +207,9 @@ def load_experiment(exp_dir: Path) -> ExperimentData:
         cond = load_condition(cond_dir)
         conditions[cond.name] = cond
         logger.info(
-            "Loaded condition: %s (dice_men=%s, domain_metrics=%s)",
+            "Loaded condition: %s (dice_men=%s)",
             cond.name,
             bool(cond.dice_men),
-            bool(cond.domain_metrics),
         )
 
     exp.conditions = _sort_conditions(conditions)
@@ -309,39 +290,3 @@ def load_all_experiments(
         exp = load_experiment(path)
         experiments.append(exp)
     return experiments
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Feature loading (for UMAP)
-# ─────────────────────────────────────────────────────────────────────
-
-
-def load_features(condition_dir: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """Load pre-extracted GLI and MEN feature tensors.
-
-    Args:
-        condition_dir: Path to condition directory.
-
-    Returns:
-        (gli_features, men_features) as numpy arrays, or None if missing.
-    """
-    import torch
-
-    gli_path = condition_dir / "features_glioma.pt"
-    men_path = condition_dir / "features_meningioma_subset.pt"
-
-    if not gli_path.exists() or not men_path.exists():
-        return None
-
-    gli_data = torch.load(gli_path, map_location="cpu", weights_only=False)
-    men_data = torch.load(men_path, map_location="cpu", weights_only=False)
-
-    gli_feat = gli_data["features"]
-    men_feat = men_data["features"]
-
-    if hasattr(gli_feat, "numpy"):
-        gli_feat = gli_feat.numpy()
-    if hasattr(men_feat, "numpy"):
-        men_feat = men_feat.numpy()
-
-    return gli_feat, men_feat

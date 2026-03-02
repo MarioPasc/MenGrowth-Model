@@ -2,11 +2,13 @@
 # experiments/lora_ablation/data_splits.py
 """Generate and save fixed train/val/test splits for LoRA ablation.
 
-Creates four non-overlapping splits:
-- lora_train: For training LoRA/baseline segmentation
+Creates three non-overlapping splits:
+- lora_train: For training LoRA/baseline segmentation AND probe/SDP training
 - lora_val: For early stopping during LoRA training
-- sdp_train: For training SDP projection and linear probes (separate from LoRA training)
 - test: For final evaluation (never touched during training)
+
+Legacy configs with a separate ``sdp_train`` split are still supported:
+the subjects are merged into ``lora_train`` at generation time.
 
 Usage:
     python -m experiments.lora_ablation.data_splits --config experiments/lora_ablation/config/ablation.yaml
@@ -36,31 +38,35 @@ def split_subjects_four_way(
     test_size: int,
     seed: int = 42,
 ) -> dict[str, list[str]]:
-    """Split subjects into four non-overlapping sets.
+    """Split subjects into non-overlapping sets.
 
-    This is a convenience wrapper around split_subjects_multi() for the
-    four-way split pattern used in LoRA ablation experiments.
+    If ``sdp_train_size > 0``, those subjects are merged into ``lora_train``
+    (backward-compatible with legacy 4-way configs). The returned dict always
+    contains ``lora_train``, ``lora_val``, and ``test``.
 
     Args:
         subject_ids: List of all subject IDs.
         lora_train_size: Number of subjects for LoRA training.
         lora_val_size: Number of subjects for LoRA validation.
-        sdp_train_size: Number of subjects for SDP/probe training.
+        sdp_train_size: Number of subjects formerly reserved for SDP/probes
+            (merged into lora_train).
         test_size: Number of subjects for testing.
         seed: Random seed for reproducibility.
 
     Returns:
-        Dict with keys 'lora_train', 'lora_val', 'sdp_train', 'test'.
+        Dict with keys 'lora_train', 'lora_val', 'test'.
 
     Raises:
         ValueError: If total size exceeds available subjects.
     """
+    # Merge sdp_train into lora_train
+    merged_train_size = lora_train_size + sdp_train_size
+
     return split_subjects_multi(
         subject_ids=subject_ids,
         split_sizes={
-            "lora_train": lora_train_size,
+            "lora_train": merged_train_size,
             "lora_val": lora_val_size,
-            "sdp_train": sdp_train_size,
             "test": test_size,
         },
         seed=seed,
@@ -118,7 +124,7 @@ def main(config_path: str, force: bool = False) -> dict[str, list[str]]:
         subject_ids=all_subjects,
         lora_train_size=split_config["lora_train"],
         lora_val_size=split_config["lora_val"],
-        sdp_train_size=split_config["sdp_train"],
+        sdp_train_size=split_config.get("sdp_train", 0),
         test_size=split_config["test"],
         seed=seed,
     )

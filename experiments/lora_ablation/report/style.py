@@ -13,7 +13,6 @@ from experiments.utils.settings import (  # noqa: F401
     CONDITION_ORDER_ALL,
     CONDITION_ORDER_DORA,
     CONDITION_ORDER_LORA,
-    DOMAIN_COLORS,
     EXPERIMENT_LABELS,
     PROBE_COLORS,
     RANKS,

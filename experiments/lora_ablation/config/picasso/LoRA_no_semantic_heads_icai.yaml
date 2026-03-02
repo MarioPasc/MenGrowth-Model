@@ -13,7 +13,6 @@ paths:
   checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   data_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men
   h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/brats_men_train.h5
-  glioma_root: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/meningiomas/glioma/high_resolution
 
 # Spatial configuration
 data:
@@ -22,9 +21,8 @@ data:
   spacing: [1.0, 1.0, 1.0]
 
 data_splits:
-  lora_train: 525
+  lora_train: 750      # 525 + 225 (sdp_train merged)
   lora_val: 100
-  sdp_train: 225
   test: 150
 
 # Experimental conditions
@@ -116,10 +114,6 @@ feature_extraction:
   level: encoder10
   batch_size: 4
 
-# Domain analysis
-domain_analysis:
-  enabled: true
-  num_samples: 200
 
 # Visualization
 visualization:
@@ -136,4 +130,3 @@ logging:
 
 # Model card generation
 model_card:
-  enabled: true

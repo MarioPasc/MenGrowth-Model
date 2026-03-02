@@ -18,7 +18,6 @@ experiment:
 paths:
   checkpoint: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   data_root: /media/hddb/mario/data/BraTS-MEN
-  glioma_root: /media/hddb/mario/data/BraTS-GLI-100
 
 # Spatial configuration
 data:
@@ -28,9 +27,8 @@ data:
 
 # Production-aligned splits (matches picasso/v3_rank_sweep.yaml)
 data_splits:
-  lora_train: 525
+  lora_train: 750      # 525 + 225 (sdp_train merged)
   lora_val: 100
-  sdp_train: 225
   test: 150
 
 # =============================================================================
@@ -185,13 +183,6 @@ feature_extraction:
   pooling_mode: both
 
 # =============================================================================
-# Domain Analysis
-# =============================================================================
-domain_analysis:
-  enabled: true
-  num_samples: 200
-
-# =============================================================================
 # Visualization
 # =============================================================================
 visualization:
@@ -208,4 +199,3 @@ logging:
 
 # Model card generation
 model_card:
-  enabled: true

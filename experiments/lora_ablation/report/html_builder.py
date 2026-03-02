@@ -265,8 +265,8 @@ def build_report(
     template = env.get_template("report.html.j2")
 
     html = template.render(
-        title="LoRA Ablation: Domain Adaptation Analysis",
-        subtitle="Does LoRA correctly apply a domain shift from glioma to meningioma without forgetting basic MRI anatomy?",
+        title="LoRA Ablation: Encoder Adaptation Analysis",
+        subtitle="Systematic comparison of LoRA/DoRA rank for meningioma segmentation and semantic feature quality",
         generated_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         mode=mode,
         num_experiments=num_experiments,

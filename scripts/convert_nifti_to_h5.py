@@ -21,9 +21,8 @@ H5 Schema:
     │   ├── location    [N, 3] float32
     │   └── shape       [N, 3] float32
     └── splits/
-        ├── lora_train  [525] int32
+        ├── lora_train  [750] int32
         ├── lora_val    [100] int32
-        ├── sdp_train   [225] int32
         └── test        [150] int32
 
 Usage:
@@ -70,7 +69,9 @@ from growth.data.bratsmendata import (
     BraTSMENDataset,
     split_subjects_multi,
 )
-from growth.data.semantic_features import extract_semantic_features, extract_semantic_features_from_file
+from growth.data.semantic_features import (
+    extract_semantic_features,
+)
 from growth.data.transforms import (
     DEFAULT_SPACING,
     FEATURE_ROI_SIZE,
@@ -86,11 +87,10 @@ logger = logging.getLogger(__name__)
 # H5 file version
 H5_VERSION = "1.0"
 
-# Default split sizes (matching the pipeline's 4-way split)
+# Default split sizes (3-way: train/val/test)
 DEFAULT_SPLIT_SIZES = {
-    "lora_train": 525,
+    "lora_train": 750,
     "lora_val": 100,
-    "sdp_train": 225,
     "test": 150,
 }
 

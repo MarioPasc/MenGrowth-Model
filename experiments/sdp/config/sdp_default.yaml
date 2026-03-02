@@ -20,7 +20,7 @@ paths:
 # Data Splits
 # =============================================================================
 data:
-  train_splits: [lora_train, sdp_train]  # Combined for SDP training
+  train_splits: [lora_train]             # All training data (sdp_train merged)
   val_split: lora_val                     # Validation
   test_split: test                        # Held-out evaluation
   splits_config: experiments/lora_ablation/config/local/LoRA_semantic_heads_icai.yaml

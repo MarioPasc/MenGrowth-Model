@@ -520,9 +520,17 @@ def extract_features(
         else:
             logger.warning("TAP requested but no full model available, using GAP only")
 
-    # Extract for sdp_train split (used for SDP projection and probe training)
-    sdp_split_key = "sdp_train" if "sdp_train" in splits else "probe_train"
-    logger.info(f"\nExtracting sdp_train features ({len(splits[sdp_split_key])} subjects)")
+    # Extract for probe/SDP training split
+    # Prefer lora_train (merged), fall back to sdp_train or probe_train for legacy splits
+    if "sdp_train" in splits and len(splits["sdp_train"]) > 0:
+        sdp_split_key = "sdp_train"
+    elif "probe_train" in splits:
+        sdp_split_key = "probe_train"
+    else:
+        sdp_split_key = "lora_train"
+    logger.info(
+        f"\nExtracting probe features from '{sdp_split_key}' ({len(splits[sdp_split_key])} subjects)"
+    )
     probe_features, probe_targets, probe_ids = extract_features_for_split(
         encoder=encoder,
         subject_ids=splits[sdp_split_key],

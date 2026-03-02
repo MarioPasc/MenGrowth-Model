@@ -19,7 +19,6 @@ import numpy as np
 
 from experiments.utils.settings import (
     DCI_COLORS,
-    DOMAIN_COLORS,
     PLOT_SETTINGS,
     PROBE_COLORS,
     SEMANTIC_COLORS,
@@ -177,7 +176,7 @@ def fig1_training_dynamics(
 def _get_men_dice(dice_data: dict, condition: str) -> dict:
     """Extract MEN dice dict from either new or legacy format.
 
-    New format: ``{cond: {"men": {...}, "gli": {...}}}``
+    New format: ``{cond: {"men": {...}}}``
     Legacy format: ``{cond: {"dice_mean": ..., ...}}``
     """
     entry = dice_data.get(condition, {})
@@ -185,14 +184,6 @@ def _get_men_dice(dice_data: dict, condition: str) -> dict:
         return entry["men"]
     # Legacy flat format
     return entry
-
-
-def _get_gli_dice(dice_data: dict, condition: str) -> dict | None:
-    """Extract GLI dice dict (new format only)."""
-    entry = dice_data.get(condition, {})
-    if "gli" in entry:
-        return entry["gli"]
-    return None
 
 
 def fig2_dice_comparison(
@@ -658,106 +649,6 @@ def fig8_dci_scores(
 
 
 # ============================================================================
-# Fig 9: Domain UMAP Grid
-# ============================================================================
-
-
-def fig9_domain_umap_grid(
-    cache_dir: Path,
-    figures_dir: Path,
-) -> None:
-    """Domain UMAP Grid (1xN) - GLI vs MEN scatter in shared UMAP space.
-
-    One panel per condition, with silhouette score annotation.
-    """
-    npz_path = cache_dir / "domain_umap_grid.npz"
-    if not npz_path.exists():
-        logger.warning("No domain UMAP grid cache; skipping fig9.")
-        return
-
-    data = np.load(npz_path, allow_pickle=True)
-    embedding = data["embedding"]
-    domains = data["domains"]
-    conditions = data["conditions"]
-
-    unique_conds = [c for c in V3_CONDITIONS if c in set(conditions)]
-    if not unique_conds:
-        return
-
-    n_panels = len(unique_conds)
-    fig, axes = plt.subplots(1, n_panels, figsize=(2.5 * n_panels, 3.5))
-    if n_panels == 1:
-        axes = [axes]
-
-    panel_labels = "abcdefghijklmnop"
-
-    for i, cond in enumerate(unique_conds):
-        ax = axes[i]
-        mask = conditions == cond
-
-        cond_emb = embedding[mask]
-        cond_domains = domains[mask]
-
-        # GLI points
-        gli_mask = cond_domains == "glioma"
-        ax.scatter(
-            cond_emb[gli_mask, 0],
-            cond_emb[gli_mask, 1],
-            c=DOMAIN_COLORS["glioma"],
-            marker="o",
-            s=12,
-            alpha=0.5,
-            linewidths=0.3,
-            edgecolors="none",
-            label="GLI",
-        )
-        # MEN points
-        men_mask = cond_domains == "meningioma"
-        ax.scatter(
-            cond_emb[men_mask, 0],
-            cond_emb[men_mask, 1],
-            c=DOMAIN_COLORS["meningioma"],
-            marker="^",
-            s=12,
-            alpha=0.5,
-            linewidths=0.3,
-            edgecolors="none",
-            label="MEN",
-        )
-
-        # Silhouette annotation
-        sil_key = f"silhouette_{cond}"
-        if sil_key in data:
-            sil = float(data[sil_key])
-            ax.text(
-                0.95,
-                0.05,
-                f"S = {sil:.2f}",
-                transform=ax.transAxes,
-                ha="right",
-                va="bottom",
-                fontsize=PLOT_SETTINGS["annotation_fontsize"],
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="0.7", alpha=0.8),
-            )
-
-        # Panel label
-        label_char = panel_labels[i] if i < len(panel_labels) else str(i)
-        ax.set_title(f"({label_char}) {get_label(cond)}", fontsize=PLOT_SETTINGS["axes_titlesize"])
-
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-        if i == 0:
-            ax.set_ylabel("UMAP 2")
-        if i == n_panels - 1:
-            ax.legend(fontsize=7, markerscale=1.5, loc="upper right")
-
-    fig.text(0.5, 0.01, "UMAP 1", ha="center", fontsize=PLOT_SETTINGS["axes_labelsize"])
-    plt.tight_layout(rect=[0, 0.03, 1, 1])
-    _save_fig(fig, figures_dir, "fig9_domain_umap_grid")
-
-
-# ============================================================================
 # Fig 10: Semantic Probe R² Summary
 # ============================================================================
 
@@ -869,118 +760,6 @@ def fig10_semantic_summary(
 
 
 # ============================================================================
-# Fig 11: Dice + Generalization
-# ============================================================================
-
-
-def fig11_dice_generalization(
-    cache_dir: Path,
-    figures_dir: Path,
-) -> None:
-    """Dice + Generalization (7x5.5) - two stacked panels.
-
-    Top: MEN vs GLI Dice grouped bars.
-    Bottom: Retention ratio (GLI/MEN) with dashed line at 1.0.
-    """
-    dice_data = _load_json(cache_dir / "dice_data.json")
-    if not dice_data:
-        logger.warning("No dice data; skipping fig11.")
-        return
-
-    # Need at least one condition with both MEN and GLI dice
-    conditions = _ordered_conditions(dice_data)
-    has_gli = [c for c in conditions if _get_gli_dice(dice_data, c) is not None]
-    if not has_gli:
-        logger.warning("No GLI dice data available; skipping fig11.")
-        return
-
-    conditions_to_plot = [c for c in conditions if c in has_gli or _get_men_dice(dice_data, c)]
-
-    fig, (ax_top, ax_bot) = plt.subplots(
-        2,
-        1,
-        figsize=(7.0, 5.5),
-        sharex=True,
-        gridspec_kw={"height_ratios": [2, 1]},
-    )
-
-    x = np.arange(len(conditions_to_plot))
-    width = 0.35
-
-    men_means = []
-    men_stds = []
-    gli_means = []
-    gli_stds = []
-    retention = []
-
-    for cond in conditions_to_plot:
-        men = _get_men_dice(dice_data, cond)
-        gli = _get_gli_dice(dice_data, cond)
-
-        m_mean = men.get("dice_mean", 0) if men else 0
-        m_std = men.get("dice_std", 0) if men else 0
-        g_mean = gli.get("dice_mean", 0) if gli else 0
-        g_std = gli.get("dice_std", 0) if gli else 0
-
-        men_means.append(m_mean)
-        men_stds.append(m_std)
-        gli_means.append(g_mean)
-        gli_stds.append(g_std)
-        retention.append(g_mean / m_mean if m_mean > 0 else 0)
-
-    # Top panel: grouped bars
-    ax_top.bar(
-        x - width / 2,
-        men_means,
-        width,
-        yerr=men_stds,
-        label="BraTS-MEN",
-        color=DOMAIN_COLORS["meningioma"],
-        alpha=0.85,
-        capsize=PLOT_SETTINGS["errorbar_capsize"],
-    )
-    ax_top.bar(
-        x + width / 2,
-        gli_means,
-        width,
-        yerr=gli_stds,
-        label="BraTS-GLI",
-        color=DOMAIN_COLORS["glioma"],
-        alpha=0.85,
-        capsize=PLOT_SETTINGS["errorbar_capsize"],
-    )
-    ax_top.set_ylabel("Mean Dice")
-    ax_top.set_title("(a) In-Domain vs Out-of-Domain Dice")
-    ax_top.set_ylim(0.5, 1.0)
-    ax_top.legend(fontsize=8)
-
-    # Bottom panel: retention ratio
-    bar_colors = [get_color(c) for c in conditions_to_plot]
-    ax_bot.bar(x, retention, width * 2, color=bar_colors, alpha=0.85)
-    ax_bot.axhline(y=1.0, color="black", linestyle="--", alpha=0.6, linewidth=0.8)
-    ax_bot.set_ylabel("Retention (GLI / MEN)")
-    ax_bot.set_title("(b) Generalization Ratio")
-
-    # Value annotations
-    for i, (r, cond) in enumerate(zip(retention, conditions_to_plot)):
-        if r > 0:
-            ax_bot.text(
-                x[i],
-                r + 0.01,
-                f"{r:.2f}",
-                ha="center",
-                va="bottom",
-                fontsize=PLOT_SETTINGS["annotation_fontsize"],
-            )
-
-    ax_bot.set_xticks(x)
-    ax_bot.set_xticklabels([get_label(c) for c in conditions_to_plot], rotation=30, ha="right")
-
-    plt.tight_layout()
-    _save_fig(fig, figures_dir, "fig11_dice_generalization")
-
-
-# ============================================================================
 # Master function
 # ============================================================================
 
@@ -990,7 +769,7 @@ def generate_all_v3_figures(
     figures_dir: Path,
     config: dict | None = None,
 ) -> None:
-    """Generate all 11 thesis-quality figures from cached data.
+    """Generate all 9 thesis-quality figures from cached data.
 
     Args:
         cache_dir: Path to ``results/figure_cache/`` with precomputed data.
@@ -1005,7 +784,7 @@ def generate_all_v3_figures(
     cache_dir = Path(cache_dir)
     figures_dir = Path(figures_dir)
 
-    logger.info("Generating 11 v3 figures...")
+    logger.info("Generating 9 v3 figures...")
 
     fig1_training_dynamics(cache_dir, figures_dir)
     fig2_dice_comparison(cache_dir, figures_dir)
@@ -1015,8 +794,6 @@ def generate_all_v3_figures(
     fig6_umap_latent(cache_dir, figures_dir)
     fig7_prediction_scatter(cache_dir, figures_dir)
     fig8_dci_scores(cache_dir, figures_dir)
-    fig9_domain_umap_grid(cache_dir, figures_dir)
     fig10_semantic_summary(cache_dir, figures_dir)
-    fig11_dice_generalization(cache_dir, figures_dir)
 
-    logger.info(f"All 11 figures saved to {figures_dir}")
+    logger.info(f"All 9 figures saved to {figures_dir}")

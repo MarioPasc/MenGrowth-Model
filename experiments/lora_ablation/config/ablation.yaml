@@ -13,8 +13,6 @@ experiment:
 paths:
   checkpoint: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   data_root: /media/hddb/mario/data/BraTS-MEN
-  # Optional: glioma data for domain shift analysis (required for --domain-features)
-  glioma_root: /media/hddb/mario/data/BraTS-GLI-100
 
 # Spatial configuration
 data:
@@ -24,9 +22,8 @@ data:
 
 # Conservative splits for robust evaluation
 data_splits:
-  lora_train: 200      # Train LoRA adaptation
+  lora_train: 400      # 200 + 200 (sdp_train merged)
   lora_val: 100        # Early stopping
-  sdp_train: 200       # Train SDP projection and probes (separate from LoRA)
   test: 500            # Final evaluation
 
 # Experimental conditions
@@ -116,10 +113,6 @@ feature_extraction:
   level: encoder10
   batch_size: 2              # 192³ feature ROI uses ~3.4x more memory than 128³
 
-# Domain analysis (glioma vs meningioma)
-domain_analysis:
-  enabled: true
-  num_samples: 200           # Samples per domain for UMAP
 
 # Visualization
 visualization:
@@ -136,7 +129,6 @@ logging:
 
 # Model card generation
 model_card:
-  enabled: true
 
 # =============================================================================
 # BACKWARD COMPATIBILITY NOTES

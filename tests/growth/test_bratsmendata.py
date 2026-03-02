@@ -382,9 +382,8 @@ def _create_test_h5(path: Path, n_subjects: int = 10, roi: int = 16) -> Path:
         # Splits
         indices = np.arange(n_subjects, dtype=np.int32)
         splits_grp = f.create_group("splits")
-        splits_grp.create_dataset("lora_train", data=indices[:5])
-        splits_grp.create_dataset("lora_val", data=indices[5:7])
-        splits_grp.create_dataset("sdp_train", data=indices[7:9])
+        splits_grp.create_dataset("lora_train", data=indices[:7])
+        splits_grp.create_dataset("lora_val", data=indices[7:9])
         splits_grp.create_dataset("test", data=indices[9:])
 
     return h5_path
@@ -418,7 +417,7 @@ class TestBraTSMENDatasetH5:
             split="lora_train",
             compute_semantic=False,
         )
-        assert len(dataset) == 5
+        assert len(dataset) == 7
 
     def test_init_invalid_split(self, h5_fixture: Path):
         """Test error on invalid split name."""
@@ -505,7 +504,7 @@ class TestBraTSMENDatasetH5:
         )
 
         ids = dataset.subject_ids
-        assert len(ids) == 5
+        assert len(ids) == 7
         assert all(isinstance(s, str) for s in ids)
         assert all(s.startswith("BraTS-MEN-") for s in ids)
 
@@ -517,9 +516,8 @@ class TestBraTSMENDatasetH5:
 
         assert "lora_train" in splits
         assert "lora_val" in splits
-        assert "sdp_train" in splits
         assert "test" in splits
-        assert len(splits["lora_train"]) == 5
+        assert len(splits["lora_train"]) == 7
         assert len(splits["lora_val"]) == 2
 
     def test_load_subject_ids_from_h5(self, h5_fixture: Path):

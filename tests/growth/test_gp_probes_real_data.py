@@ -114,7 +114,6 @@ def smoke_config(h5_path: Path, ckpt_path: Path, tmp_path_factory: pytest.TempPa
         "data_splits": {
             "lora_train": 50,
             "lora_val": 20,
-            "sdp_train": 30,
             "test": 20,
         },
         "conditions": [

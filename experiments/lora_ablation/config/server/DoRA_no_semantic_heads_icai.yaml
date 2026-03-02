@@ -13,7 +13,6 @@ experiment:
 paths:
   checkpoint: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   data_root: /media/hddb/mario/data/BraTS-MEN
-  glioma_root: /media/hddb/mario/data/BraTS-GLI-100
 
 # Spatial configuration
 data:
@@ -23,9 +22,8 @@ data:
 
 # Updated splits (300/50/150/500)
 data_splits:
-  lora_train: 525
+  lora_train: 750      # 525 + 225 (sdp_train merged)
   lora_val: 100
-  sdp_train: 225
   test: 150
 
 # Experimental conditions - DoRA only
@@ -122,10 +120,6 @@ feature_extraction:
   level: encoder10
   batch_size: 2              # 192³ feature ROI uses ~3.4x more memory than 128³
 
-# Domain analysis
-domain_analysis:
-  enabled: true
-  num_samples: 200
 
 # Visualization
 visualization:
@@ -142,7 +136,6 @@ logging:
 
 # Model card generation
 model_card:
-  enabled: true
 
 # =============================================================================
 # EXPERIMENT NOTES

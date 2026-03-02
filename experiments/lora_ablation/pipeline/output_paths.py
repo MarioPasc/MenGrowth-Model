@@ -18,14 +18,11 @@ Provides a structured output directory layout:
     │       └── curves/
     ├── features/                  # Extracted representations
     │   └── <condition>/
-    │       ├── probe/
-    │       ├── test/
-    │       └── domain/
+    │       └── probe/
     ├── evaluation/                # Evaluation results
     │   └── <condition>/
     │       ├── probes/
-    │       ├── dice/
-    │       └── domain_shift/
+    │       └── dice/
     ├── figures/                   # Visualizations
     │   ├── main/
     │   └── supplementary/

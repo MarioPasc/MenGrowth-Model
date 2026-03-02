@@ -1,6 +1,6 @@
 """Figure generation for the LoRA ablation report.
 
-Contains 12 figure-generation functions that produce publication-quality
+Contains 8 figure-generation functions that produce publication-quality
 PNG + PDF figures plus base64-encoded PNGs for HTML embedding.
 """
 
@@ -15,12 +15,10 @@ import numpy as np
 from experiments.lora_ablation.report.data_loader import (
     ConditionData,
     ExperimentData,
-    load_features,
 )
 from experiments.lora_ablation.report.style import (
     ADAPTER_COLORS,
     CONDITION_LABELS,
-    DOMAIN_COLORS,
     PROBE_COLORS,
     RANKS,
     SEMANTIC_COLORS,
@@ -203,370 +201,7 @@ def fig_dice_men_by_rank(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Figure 2: Dual-domain Dice comparison
-# ─────────────────────────────────────────────────────────────────────
-
-
-def fig_dice_dual_domain(
-    exp: ExperimentData,
-    output_dir: Path,
-) -> FigureResult | None:
-    """Side-by-side MEN vs GLI Dice across conditions.
-
-    Args:
-        exp: Loaded experiment data.
-        output_dir: Output directory.
-
-    Returns:
-        FigureResult or None if no data.
-    """
-    if not HAS_MPL:
-        return None
-
-    conditions = _get_condition_list(exp)
-    classes = [("Mean", "dice_mean"), ("TC", "dice_TC"), ("WT", "dice_WT"), ("ET", "dice_ET")]
-
-    fig, axes = plt.subplots(1, 4, figsize=(16, 5))
-
-    for ax, (cls_name, key) in zip(axes, classes):
-        men_vals = [exp.conditions[c].dice_men.get(key, 0) for c in conditions]
-        gli_vals = [exp.conditions[c].dice_gli.get(key, 0) for c in conditions]
-
-        x = np.arange(len(conditions))
-        width = 0.35
-
-        ax.bar(
-            x - width / 2,
-            men_vals,
-            width,
-            label="Meningioma",
-            color=DOMAIN_COLORS["meningioma"],
-            alpha=0.8,
-        )
-        ax.bar(
-            x + width / 2,
-            gli_vals,
-            width,
-            label="Glioma",
-            color=DOMAIN_COLORS["glioma"],
-            alpha=0.8,
-        )
-
-        ax.set_ylabel("Dice Score")
-        ax.set_title(cls_name, fontweight="bold")
-        ax.set_xticks(x)
-        ax.set_xticklabels([short_label(c) for c in conditions], rotation=45, ha="right")
-        ax.set_ylim(0, 1)
-        if ax == axes[0]:
-            ax.legend(fontsize=8)
-
-    fig.suptitle(
-        "Segmentation: Meningioma (In-Domain) vs Glioma (Out-of-Domain)",
-        fontsize=12,
-        fontweight="bold",
-        y=1.02,
-    )
-    fig.tight_layout()
-
-    return _save_and_encode(
-        fig,
-        "dice_dual_domain",
-        output_dir,
-        "Side-by-side Dice comparison between BraTS-MEN and BraTS-GLI across conditions.",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Figure 3: Domain gap metrics
-# ─────────────────────────────────────────────────────────────────────
-
-
-def fig_domain_metrics(
-    exp: ExperimentData,
-    output_dir: Path,
-) -> FigureResult | None:
-    """4-panel bar chart of MMD, classifier acc, proxy-A, CKA.
-
-    Args:
-        exp: Loaded experiment data.
-        output_dir: Output directory.
-
-    Returns:
-        FigureResult or None.
-    """
-    if not HAS_MPL:
-        return None
-
-    conditions = _get_condition_list(exp)
-    # Filter to conditions that have domain metrics
-    conditions = [c for c in conditions if exp.conditions[c].domain_metrics]
-    if not conditions:
-        logger.warning("No domain metrics available for %s", exp.name)
-        return None
-
-    panels = [
-        ("MMD²", "mmd", None, "lower = more similar"),
-        ("CKA (GLI ↔ MEN)", "cka", 1.0, "higher = more similar"),
-        ("Domain Clf Acc.", "domain_classifier_accuracy", 0.5, "0.5 = chance"),
-        ("Proxy A-Distance", "proxy_a_distance", 0.0, "0 = indistinguishable"),
-    ]
-
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4.5))
-
-    for ax, (title, key, ref_val, ref_label) in zip(axes, panels):
-        x = np.arange(len(conditions))
-        values = [exp.conditions[c].domain_metrics.get(key, 0) for c in conditions]
-        colors = [get_color(c) for c in conditions]
-
-        bars = ax.bar(x, values, color=colors, alpha=0.85, edgecolor="white", linewidth=0.5)
-
-        if ref_val is not None:
-            ax.axhline(y=ref_val, color="black", linestyle="--", alpha=0.4, linewidth=0.8)
-            ax.text(
-                len(x) - 0.5,
-                ref_val,
-                ref_label,
-                ha="right",
-                va="bottom",
-                fontsize=7,
-                alpha=0.6,
-            )
-
-        for bar, val in zip(bars, values):
-            ax.annotate(
-                f"{val:.3f}",
-                xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-                xytext=(0, 2),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-            )
-
-        ax.set_title(title, fontsize=10, fontweight="bold")
-        ax.set_xticks(x)
-        ax.set_xticklabels([short_label(c) for c in conditions], rotation=45, ha="right")
-
-    fig.suptitle("Domain Gap Metrics Across Conditions", fontsize=12, fontweight="bold", y=1.02)
-    fig.tight_layout()
-
-    return _save_and_encode(
-        fig,
-        "domain_metrics",
-        output_dir,
-        "Domain gap metrics: MMD² (distributional distance), CKA (representation similarity), "
-        "domain classifier accuracy (linear separability), and Proxy A-Distance.",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Figure 4: Domain UMAP
-# ─────────────────────────────────────────────────────────────────────
-
-
-def fig_domain_umap(
-    exp: ExperimentData,
-    results_dir: Path,
-    output_dir: Path,
-) -> FigureResult | None:
-    """Side-by-side UMAP: frozen vs best rank.
-
-    Args:
-        exp: Loaded experiment data.
-        results_dir: Root results directory (to locate feature files).
-        output_dir: Output directory.
-
-    Returns:
-        FigureResult or None.
-    """
-    if not HAS_MPL:
-        return None
-
-    try:
-        from umap import UMAP
-    except ImportError:
-        logger.warning("UMAP not available, skipping domain UMAP figure")
-        return None
-
-    exp_dir = results_dir / exp.name
-
-    # Select frozen + best adapted condition
-    targets = []
-    if "baseline_frozen" in exp.conditions:
-        targets.append("baseline_frozen")
-
-    rank_conds = _get_rank_conditions(exp)
-    if rank_conds:
-        # Pick the one with highest r2_mean_linear
-        best = max(
-            rank_conds,
-            key=lambda c: exp.conditions[c].metrics_enhanced.get("r2_mean_linear", 0),
-        )
-        targets.append(best)
-    elif "baseline" in exp.conditions:
-        targets.append("baseline")
-
-    if len(targets) < 2:
-        logger.warning("Not enough conditions with features for UMAP")
-        return None
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    for ax, cond in zip(axes, targets):
-        cond_dir = exp_dir / "conditions" / cond
-        loaded = load_features(cond_dir)
-        if loaded is None:
-            ax.text(0.5, 0.5, f"No features for {cond}", ha="center", va="center")
-            continue
-
-        gli_feat, men_feat = loaded
-
-        # Subsample
-        max_samples = 300
-        if len(gli_feat) > max_samples:
-            idx = np.random.RandomState(42).choice(len(gli_feat), max_samples, replace=False)
-            gli_feat = gli_feat[idx]
-        if len(men_feat) > max_samples:
-            idx = np.random.RandomState(42).choice(len(men_feat), max_samples, replace=False)
-            men_feat = men_feat[idx]
-
-        combined = np.vstack([men_feat, gli_feat])
-        umap = UMAP(n_neighbors=15, min_dist=0.1, random_state=42)
-        embedding = umap.fit_transform(combined)
-
-        men_emb = embedding[: len(men_feat)]
-        gli_emb = embedding[len(men_feat) :]
-
-        ax.scatter(
-            men_emb[:, 0],
-            men_emb[:, 1],
-            c=DOMAIN_COLORS["meningioma"],
-            label="Meningioma",
-            s=10,
-            alpha=0.6,
-        )
-        ax.scatter(
-            gli_emb[:, 0],
-            gli_emb[:, 1],
-            c=DOMAIN_COLORS["glioma"],
-            label="Glioma",
-            s=10,
-            alpha=0.6,
-        )
-        ax.set_xlabel("UMAP 1")
-        ax.set_ylabel("UMAP 2")
-        label = CONDITION_LABELS.get(cond, cond)
-        ax.set_title(label, fontweight="bold")
-        ax.legend(fontsize=8, markerscale=2)
-
-    fig.suptitle(
-        "Domain Overlap in Feature Space",
-        fontsize=12,
-        fontweight="bold",
-        y=1.02,
-    )
-    fig.tight_layout()
-
-    return _save_and_encode(
-        fig,
-        "domain_umap",
-        output_dir,
-        f"UMAP visualization: {targets[0]} (left) vs {targets[1]} (right). "
-        "Blue = meningioma, red = glioma.",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Figure 5: Retention ratio
-# ─────────────────────────────────────────────────────────────────────
-
-
-def fig_retention_ratio(
-    exp: ExperimentData,
-    output_dir: Path,
-) -> FigureResult | None:
-    """GLI/MEN Dice retention + absolute Dice drop.
-
-    Args:
-        exp: Loaded experiment data.
-        output_dir: Output directory.
-
-    Returns:
-        FigureResult or None.
-    """
-    if not HAS_MPL:
-        return None
-
-    conditions = _get_condition_list(exp)
-    conditions = [
-        c for c in conditions if exp.conditions[c].dice_men and exp.conditions[c].dice_gli
-    ]
-    if not conditions:
-        return None
-
-    retention = []
-    delta_dice = []
-    for c in conditions:
-        men = exp.conditions[c].dice_men.get("dice_mean", 0)
-        gli = exp.conditions[c].dice_gli.get("dice_mean", 0)
-        retention.append(gli / men if men > 0 else 0)
-        delta_dice.append(men - gli)
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    x = np.arange(len(conditions))
-    colors = [get_color(c) for c in conditions]
-
-    # Retention ratio
-    bars1 = ax1.bar(x, retention, color=colors, alpha=0.85, edgecolor="white", linewidth=0.5)
-    ax1.axhline(y=1.0, color="black", linestyle="--", alpha=0.3, label="Perfect retention")
-    ax1.set_ylabel("Retention Ratio (GLI / MEN)")
-    ax1.set_title("Domain Retention", fontweight="bold")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels([short_label(c) for c in conditions], rotation=45, ha="right")
-
-    for bar, val in zip(bars1, retention):
-        ax1.annotate(
-            f"{val:.2f}",
-            xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-            xytext=(0, 3),
-            textcoords="offset points",
-            ha="center",
-            va="bottom",
-            fontsize=7,
-        )
-
-    # Dice drop
-    bars2 = ax2.bar(x, delta_dice, color=colors, alpha=0.85, edgecolor="white", linewidth=0.5)
-    ax2.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
-    ax2.set_ylabel("Dice Drop (MEN − GLI)")
-    ax2.set_title("Performance Degradation", fontweight="bold")
-    ax2.set_xticks(x)
-    ax2.set_xticklabels([short_label(c) for c in conditions], rotation=45, ha="right")
-
-    for bar, val in zip(bars2, delta_dice):
-        ax2.annotate(
-            f"{val:.3f}",
-            xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-            xytext=(0, 3),
-            textcoords="offset points",
-            ha="center",
-            va="bottom",
-            fontsize=7,
-        )
-
-    fig.tight_layout()
-
-    return _save_and_encode(
-        fig,
-        "retention_ratio",
-        output_dir,
-        "Domain retention analysis. Left: GLI/MEN Dice ratio (1.0 = perfect). "
-        "Right: absolute Dice drop from MEN to GLI.",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Figure 6: Probe R²
+# Figure 2: Probe R²
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -813,7 +448,6 @@ def fig_statistical_heatmap(
         "location_neg_mse",
         "shape_neg_mse",
         "dice_men_mean",
-        "dice_gli_mean",
     ]
     metric_keys = [m for m in priority_metrics if m in metric_keys]
     if not metric_keys:
@@ -830,7 +464,7 @@ def fig_statistical_heatmap(
 
     # Clean labels
     metric_labels = [
-        m.replace("_neg_mse", " R²").replace("dice_men_", "MEN ").replace("dice_gli_", "GLI ")
+        m.replace("_neg_mse", " R²").replace("dice_men_", "MEN ")
         for m in metric_keys
     ]
     cond_labels = [CONDITION_LABELS.get(c, c) for c in cond_names]
@@ -865,7 +499,7 @@ def fig_statistical_heatmap(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Figure 10: Rank summary (3-panel)
+# Figure 5: Rank summary (2-panel)
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -873,7 +507,7 @@ def fig_rank_summary(
     exp: ExperimentData,
     output_dir: Path,
 ) -> FigureResult | None:
-    """3-panel line plot: Dice/R²/MMD vs rank.
+    """2-panel line plot: Dice/R² vs rank.
 
     Args:
         exp: Loaded experiment data.
@@ -891,25 +525,21 @@ def fig_rank_summary(
 
     ranks = [_rank_from_condition(c) for c in rank_conds]
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(14, 4.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
 
-    # Panel 1: Dice
+    # Panel 1: Dice (MEN only)
     men_dice = [exp.conditions[c].dice_men.get("dice_mean", 0) for c in rank_conds]
-    gli_dice = [exp.conditions[c].dice_gli.get("dice_mean", 0) for c in rank_conds]
-    ax1.plot(ranks, men_dice, "o-", color=DOMAIN_COLORS["meningioma"], label="MEN", linewidth=2)
-    ax1.plot(ranks, gli_dice, "s--", color=DOMAIN_COLORS["glioma"], label="GLI", linewidth=2)
+    ax1.plot(ranks, men_dice, "o-", color="#1f77b4", label="BraTS-MEN", linewidth=2)
 
     # Add frozen baseline reference
     if "baseline_frozen" in exp.conditions:
         frozen_men = exp.conditions["baseline_frozen"].dice_men.get("dice_mean", 0)
-        frozen_gli = exp.conditions["baseline_frozen"].dice_gli.get("dice_mean", 0)
-        ax1.axhline(y=frozen_men, color=DOMAIN_COLORS["meningioma"], linestyle=":", alpha=0.4)
-        ax1.axhline(y=frozen_gli, color=DOMAIN_COLORS["glioma"], linestyle=":", alpha=0.4)
+        ax1.axhline(y=frozen_men, color="gray", linestyle=":", alpha=0.4, label="Frozen")
+        ax1.legend(fontsize=8)
 
     ax1.set_xlabel("LoRA Rank")
     ax1.set_ylabel("Dice Score")
     ax1.set_title("Segmentation vs Rank", fontweight="bold")
-    ax1.legend(fontsize=8)
     ax1.set_xscale("log", base=2)
     ax1.set_xticks(ranks)
     ax1.set_xticklabels(ranks)
@@ -932,22 +562,6 @@ def fig_rank_summary(
     ax2.set_xticks(ranks)
     ax2.set_xticklabels(ranks)
 
-    # Panel 3: MMD
-    mmds = [exp.conditions[c].domain_metrics.get("mmd", 0) for c in rank_conds]
-    ax3.plot(ranks, mmds, "o-", color="#e31a1c", linewidth=2)
-
-    if "baseline_frozen" in exp.conditions:
-        frozen_mmd = exp.conditions["baseline_frozen"].domain_metrics.get("mmd", 0)
-        ax3.axhline(y=frozen_mmd, color="gray", linestyle=":", alpha=0.4, label="Frozen")
-        ax3.legend(fontsize=8)
-
-    ax3.set_xlabel("LoRA Rank")
-    ax3.set_ylabel("MMD²")
-    ax3.set_title("Domain Gap vs Rank", fontweight="bold")
-    ax3.set_xscale("log", base=2)
-    ax3.set_xticks(ranks)
-    ax3.set_xticklabels(ranks)
-
     fig.suptitle("Rank Selection Summary", fontsize=12, fontweight="bold", y=1.02)
     fig.tight_layout()
 
@@ -960,7 +574,7 @@ def fig_rank_summary(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Figure 11: LoRA vs DoRA comparison
+# Figure 6: LoRA vs DoRA comparison
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -968,7 +582,7 @@ def fig_lora_vs_dora(
     experiments: list[ExperimentData],
     output_dir: Path,
 ) -> FigureResult | None:
-    """3-panel comparison: paired bars LoRA vs DoRA per rank.
+    """2-panel comparison: paired bars LoRA vs DoRA per rank.
 
     Args:
         experiments: List of experiments (should contain both LoRA and DoRA).
@@ -993,7 +607,7 @@ def fig_lora_vs_dora(
         logger.info("Need both LoRA and DoRA experiments for comparison figure")
         return None
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(14, 4.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
     width = 0.35
 
     for rank in RANKS:
@@ -1048,25 +662,6 @@ def fig_lora_vs_dora(
     ax2.set_xlabel("Rank")
     ax2.legend(fontsize=8)
 
-    # Panel 3: MMD
-    lora_mmd = [
-        lora_exp.conditions.get(f"lora_r{r}", ConditionData(name="")).domain_metrics.get("mmd", 0)
-        for r in RANKS
-    ]
-    dora_mmd = [
-        dora_exp.conditions.get(f"dora_r{r}", ConditionData(name="")).domain_metrics.get("mmd", 0)
-        for r in RANKS
-    ]
-
-    ax3.bar(x - width / 2, lora_mmd, width, label="LoRA", color=ADAPTER_COLORS["lora"], alpha=0.8)
-    ax3.bar(x + width / 2, dora_mmd, width, label="DoRA", color=ADAPTER_COLORS["dora"], alpha=0.8)
-    ax3.set_ylabel("MMD²")
-    ax3.set_title("Domain Gap", fontweight="bold")
-    ax3.set_xticks(x)
-    ax3.set_xticklabels(rank_labels)
-    ax3.set_xlabel("Rank")
-    ax3.legend(fontsize=8)
-
     fig.suptitle("LoRA vs DoRA Across Ranks", fontsize=12, fontweight="bold", y=1.02)
     fig.tight_layout()
 
@@ -1074,7 +669,7 @@ def fig_lora_vs_dora(
         fig,
         "lora_vs_dora",
         output_dir,
-        "Direct comparison of LoRA vs DoRA at each rank for Dice, R², and MMD.",
+        "Direct comparison of LoRA vs DoRA at each rank for Dice and R².",
     )
 
 
@@ -1218,7 +813,6 @@ def generate_all_figures(
     experiments: list[ExperimentData],
     results_dir: Path,
     output_dir: Path,
-    skip_umap: bool = False,
     compare_semantic: bool = False,
 ) -> list[FigureResult]:
     """Generate all report figures.
@@ -1227,7 +821,6 @@ def generate_all_figures(
         experiments: Loaded experiment data list.
         results_dir: Root results directory (for locating feature files).
         output_dir: Report output directory.
-        skip_umap: Skip slow UMAP computation.
         compare_semantic: Generate semantic comparison figures.
 
     Returns:
@@ -1246,20 +839,12 @@ def generate_all_figures(
     # Single-experiment figures
     generators = [
         ("MEN Dice by rank", lambda: fig_dice_men_by_rank(primary, output_dir)),
-        ("Dual-domain Dice", lambda: fig_dice_dual_domain(primary, output_dir)),
-        ("Domain metrics", lambda: fig_domain_metrics(primary, output_dir)),
-        ("Retention ratio", lambda: fig_retention_ratio(primary, output_dir)),
         ("Probe R²", lambda: fig_probe_r2(primary, output_dir)),
         ("Nonlinearity Evidence", lambda: fig_nonlinearity_evidence(primary, output_dir)),
         ("Training curves", lambda: fig_training_curves(primary, output_dir)),
         ("Statistical heatmap", lambda: fig_statistical_heatmap(primary, output_dir)),
         ("Rank summary", lambda: fig_rank_summary(primary, output_dir)),
     ]
-
-    if not skip_umap:
-        generators.append(
-            ("Domain UMAP", lambda: fig_domain_umap(primary, results_dir, output_dir)),
-        )
 
     for desc, gen_fn in generators:
         logger.info("Generating: %s", desc)

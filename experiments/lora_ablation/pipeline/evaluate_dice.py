@@ -2,17 +2,16 @@
 # experiments/lora_ablation/evaluate_dice.py
 """Test Dice evaluation for LoRA ablation conditions.
 
-This module evaluates segmentation Dice scores on test sets for all trained
-conditions, including domain shift evaluation on BraTS-GLI (glioma).
+This module evaluates segmentation Dice scores on the BraTS-MEN test set
+for all trained conditions.
 
 Usage:
     # Evaluate single condition on BraTS-MEN test set
-    python -m experiments.lora_ablation.evaluate_dice \
-        --config experiments/lora_ablation/config/ablation.yaml \
-        --condition lora_r8 \
-        --dataset men
+    python -m experiments.lora_ablation.evaluate_dice \\
+        --config experiments/lora_ablation/config/ablation.yaml \\
+        --condition lora_r8
 
-    # Evaluate all conditions on both datasets
+    # Evaluate all conditions
     python -m experiments.lora_ablation.run_ablation \
         --config experiments/lora_ablation/config/ablation.yaml \
         test-dice-all
@@ -34,7 +33,6 @@ from growth.data.bratsmendata import BraTSMENDataset
 from growth.data.transforms import FEATURE_ROI_SIZE, get_val_transforms
 from growth.losses.segmentation import DiceMetric3Ch
 
-from .extract_domain_features import BraTSGLIDataset
 from .model_factory import create_ablation_model, get_condition_config
 
 logging.basicConfig(
@@ -44,11 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 class TestDiceEvaluator:
-    """Evaluate segmentation Dice on test sets.
-
-    Supports evaluation on:
-    - BraTS-MEN (meningioma): In-domain test set
-    - BraTS-GLI (glioma): Out-of-domain for domain shift analysis
+    """Evaluate segmentation Dice on BraTS-MEN test set.
 
     Args:
         checkpoint_path: Path to BrainSegFounder checkpoint.
@@ -194,15 +188,13 @@ class TestDiceEvaluator:
         self,
         condition_name: str,
         config: dict,
-        dataset_name: str = "men",
         subject_ids: list[str] | None = None,
     ) -> dict[str, float]:
-        """Evaluate Dice for a single condition on specified dataset.
+        """Evaluate Dice for a single condition on BraTS-MEN test set.
 
         Args:
             condition_name: Name of condition (e.g., "lora_r8").
             config: Full experiment configuration.
-            dataset_name: "men" for BraTS-MEN, "gli" for BraTS-GLI.
             subject_ids: Optional list of subject IDs (uses test split if None).
 
         Returns:
@@ -215,67 +207,35 @@ class TestDiceEvaluator:
         condition_dir = output_dir / "conditions" / condition_name
 
         # Determine data root and subjects
-        if dataset_name == "men":
-            data_root = config["paths"]["data_root"]
-            if subject_ids is None:
-                # Load splits from output directory
-                output_dir = Path(config["experiment"]["output_dir"])
-                splits_path = output_dir / "data_splits.json"
-                if not splits_path.exists():
-                    raise FileNotFoundError(
-                        f"Splits not found at {splits_path}. Run splits generation first."
-                    )
-                import json
-
-                with open(splits_path) as f:
-                    splits = json.load(f)
-                subject_ids = splits["test"]
-        elif dataset_name == "gli":
-            data_root = config["paths"].get("glioma_root")
-            if data_root is None:
-                raise ValueError("glioma_root not specified in config paths")
-            if subject_ids is None:
-                # Use all available glioma subjects for test
-                # Filter out hidden directories (like .semantic_cache)
-                glioma_path = Path(data_root)
-                subject_ids = sorted(
-                    [
-                        d.name
-                        for d in glioma_path.iterdir()
-                        if d.is_dir() and not d.name.startswith(".")
-                    ]
+        data_root = config["paths"]["data_root"]
+        if subject_ids is None:
+            # Load splits from output directory
+            output_dir = Path(config["experiment"]["output_dir"])
+            splits_path = output_dir / "data_splits.json"
+            if not splits_path.exists():
+                raise FileNotFoundError(
+                    f"Splits not found at {splits_path}. Run splits generation first."
                 )
-        else:
-            raise ValueError(f"Unknown dataset: {dataset_name}. Use 'men' or 'gli'.")
+            import json
 
-        logger.info(f"Evaluating {condition_name} on BraTS-{dataset_name.upper()}")
+            with open(splits_path) as f:
+                splits = json.load(f)
+            subject_ids = splits["test"]
+
+        logger.info(f"Evaluating {condition_name} on BraTS-MEN")
         logger.info(f"  - Data root: {data_root}")
         logger.info(f"  - Subjects: {len(subject_ids)}")
 
         # Load model
         model = self._load_model(condition_config, training_config, condition_dir)
 
-        # Create dataloader (use appropriate dataset class, 192³ for full tumor coverage)
-        if dataset_name == "gli":
-            dataset = BraTSGLIDataset(
-                data_root=data_root,
-                subject_ids=subject_ids,
-                transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
-            )
-            dataloader = DataLoader(
-                dataset,
-                batch_size=self.batch_size,
-                shuffle=False,
-                num_workers=self.num_workers,
-                pin_memory=True,
-            )
-        else:
-            h5_path = config.get("paths", {}).get("h5_file")
-            dataloader = self._create_dataloader(data_root, subject_ids, h5_path=h5_path)
+        # Create dataloader
+        h5_path = config.get("paths", {}).get("h5_file")
+        dataloader = self._create_dataloader(data_root, subject_ids, h5_path=h5_path)
 
         # Evaluate
         results = self._evaluate_dataset(
-            model, dataloader, desc=f"{condition_name} ({dataset_name})"
+            model, dataloader, desc=f"{condition_name}"
         )
 
         logger.info(
@@ -289,67 +249,30 @@ class TestDiceEvaluator:
     def evaluate_all_conditions(
         self,
         config: dict,
-        include_glioma: bool = True,
-        glioma_test_size: int | None = None,
-    ) -> tuple[dict[str, dict], dict[str, dict]]:
-        """Evaluate all conditions on BraTS-MEN and optionally BraTS-GLI.
+    ) -> dict[str, dict]:
+        """Evaluate all conditions on BraTS-MEN.
 
         Args:
             config: Full experiment configuration.
-            include_glioma: Whether to evaluate on BraTS-GLI.
-            glioma_test_size: Number of glioma subjects to use (None = all).
 
         Returns:
-            Tuple of (men_results, gli_results) dicts mapping condition -> metrics.
+            Dict mapping condition name -> Dice metrics.
         """
         men_results = {}
-        gli_results = {}
-
-        # Get glioma subjects if needed
-        gli_subjects = None
-        if include_glioma:
-            glioma_root = config["paths"].get("glioma_root")
-            if glioma_root and Path(glioma_root).exists():
-                glioma_path = Path(glioma_root)
-                # Filter out hidden directories (like .semantic_cache)
-                gli_subjects = sorted(
-                    [
-                        d.name
-                        for d in glioma_path.iterdir()
-                        if d.is_dir() and not d.name.startswith(".")
-                    ]
-                )
-                if glioma_test_size is not None:
-                    gli_subjects = gli_subjects[:glioma_test_size]
-                logger.info(f"Glioma test set: {len(gli_subjects)} subjects")
-            else:
-                logger.warning("glioma_root not found, skipping BraTS-GLI evaluation")
-                include_glioma = False
 
         # Evaluate each condition
         for cond in config["conditions"]:
             condition_name = cond["name"]
 
-            # BraTS-MEN (in-domain)
             try:
                 men_results[condition_name] = self.evaluate_condition(
-                    condition_name, config, dataset_name="men"
+                    condition_name, config
                 )
             except Exception as e:
-                logger.warning(f"Failed to evaluate {condition_name} on MEN: {e}")
+                logger.warning(f"Failed to evaluate {condition_name}: {e}")
                 men_results[condition_name] = {"error": str(e)}
 
-            # BraTS-GLI (domain shift)
-            if include_glioma and gli_subjects:
-                try:
-                    gli_results[condition_name] = self.evaluate_condition(
-                        condition_name, config, dataset_name="gli", subject_ids=gli_subjects
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to evaluate {condition_name} on GLI: {e}")
-                    gli_results[condition_name] = {"error": str(e)}
-
-        return men_results, gli_results
+        return men_results
 
 
 def save_dice_results(
@@ -365,7 +288,6 @@ def save_dice_results(
 def generate_dice_summary(
     config: dict,
     men_results: dict[str, dict],
-    gli_results: dict[str, dict] | None = None,
 ) -> str:
     """Generate summary CSV of Dice results.
 
@@ -382,20 +304,11 @@ def generate_dice_summary(
         # MEN results
         if name in men_results and "error" not in men_results[name]:
             m = men_results[name]
-            row["men_dice_mean"] = m.get("dice_mean")
-            row["men_dice_TC"] = m.get("dice_TC")
-            row["men_dice_WT"] = m.get("dice_WT")
-            row["men_dice_ET"] = m.get("dice_ET")
-            row["men_dice_std"] = m.get("dice_std")
-
-        # GLI results
-        if gli_results and name in gli_results and "error" not in gli_results[name]:
-            g = gli_results[name]
-            row["gli_dice_mean"] = g.get("dice_mean")
-            row["gli_dice_TC"] = g.get("dice_TC")
-            row["gli_dice_WT"] = g.get("dice_WT")
-            row["gli_dice_ET"] = g.get("dice_ET")
-            row["gli_dice_std"] = g.get("dice_std")
+            row["dice_mean"] = m.get("dice_mean")
+            row["dice_TC"] = m.get("dice_TC")
+            row["dice_WT"] = m.get("dice_WT")
+            row["dice_ET"] = m.get("dice_ET")
+            row["dice_std"] = m.get("dice_std")
 
         rows.append(row)
 
@@ -406,8 +319,6 @@ def generate_dice_summary(
 def main(
     config_path: str,
     condition: str | None = None,
-    dataset: str = "men",
-    glioma_test_size: int | None = None,
     device: str = "cuda",
 ) -> None:
     """Main entry point for Dice evaluation.
@@ -415,8 +326,6 @@ def main(
     Args:
         config_path: Path to ablation configuration.
         condition: Specific condition to evaluate (None = all).
-        dataset: "men", "gli", or "all" for both.
-        glioma_test_size: Number of glioma subjects (None = all available).
         device: Device to run on.
     """
     # Load configuration
@@ -440,11 +349,11 @@ def main(
 
     if condition is not None:
         # Evaluate single condition
-        results = evaluator.evaluate_condition(condition, config, dataset_name=dataset)
+        results = evaluator.evaluate_condition(condition, config)
 
         # Save results
         cond_dir = output_dir / "conditions" / condition
-        save_dice_results(results, cond_dir / f"test_dice_{dataset}.json")
+        save_dice_results(results, cond_dir / "test_dice_men.json")
 
     else:
         # Evaluate all conditions
@@ -452,12 +361,7 @@ def main(
         logger.info("Test Dice Evaluation (All Conditions)")
         logger.info("=" * 60)
 
-        include_glioma = dataset in ("gli", "all")
-        men_results, gli_results = evaluator.evaluate_all_conditions(
-            config,
-            include_glioma=include_glioma,
-            glioma_test_size=glioma_test_size,
-        )
+        men_results = evaluator.evaluate_all_conditions(config)
 
         # Save per-condition results
         for cond in config["conditions"]:
@@ -468,11 +372,8 @@ def main(
             if name in men_results and "error" not in men_results[name]:
                 save_dice_results(men_results[name], cond_dir / "test_dice_men.json")
 
-            if name in gli_results and "error" not in gli_results[name]:
-                save_dice_results(gli_results[name], cond_dir / "test_dice_gli.json")
-
         # Generate summary CSV
-        summary_csv = generate_dice_summary(config, men_results, gli_results)
+        summary_csv = generate_dice_summary(config, men_results)
         summary_path = output_dir / "test_dice_summary.csv"
         with open(summary_path, "w") as f:
             f.write(summary_csv)
@@ -482,18 +383,12 @@ def main(
         print("\n" + "=" * 60)
         print("TEST DICE SUMMARY")
         print("=" * 60)
-        print(f"\n{'Condition':<15} {'MEN Dice':>10} {'GLI Dice':>10} {'Δ (GLI-MEN)':>12}")
-        print("-" * 50)
+        print(f"\n{'Condition':<15} {'Dice':>10}")
+        print("-" * 30)
         for cond in config["conditions"]:
             name = cond["name"]
-            men_dice = men_results.get(name, {}).get("dice_mean", float("nan"))
-            gli_dice = gli_results.get(name, {}).get("dice_mean", float("nan"))
-            delta = (
-                gli_dice - men_dice
-                if not (np.isnan(men_dice) or np.isnan(gli_dice))
-                else float("nan")
-            )
-            print(f"{name:<15} {men_dice:>10.4f} {gli_dice:>10.4f} {delta:>+12.4f}")
+            dice = men_results.get(name, {}).get("dice_mean", float("nan"))
+            print(f"{name:<15} {dice:>10.4f}")
 
 
 if __name__ == "__main__":
@@ -511,19 +406,6 @@ if __name__ == "__main__":
         help="Specific condition to evaluate (default: all)",
     )
     parser.add_argument(
-        "--dataset",
-        type=str,
-        default="all",
-        choices=["men", "gli", "all"],
-        help="Dataset to evaluate on",
-    )
-    parser.add_argument(
-        "--glioma-test-size",
-        type=int,
-        default=None,
-        help="Number of glioma subjects for test (default: all available)",
-    )
-    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -531,4 +413,4 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    main(args.config, args.condition, args.dataset, args.glioma_test_size, args.device)
+    main(args.config, args.condition, args.device)

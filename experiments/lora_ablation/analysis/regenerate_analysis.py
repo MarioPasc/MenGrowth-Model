@@ -34,7 +34,6 @@ import yaml
 from .generate_tables import (
     generate_comprehensive_csv,
     generate_comprehensive_latex,
-    generate_domain_shift_csv,
     generate_simplified_latex,
     load_all_metrics,
 )
@@ -83,7 +82,6 @@ def _generate_tables(config: dict, output_dir: Path) -> None:
 
     # CSVs go to results/
     generate_comprehensive_csv(metrics, config, results_dir / "comprehensive.csv")
-    generate_domain_shift_csv(metrics, config, results_dir / "domain_shift.csv")
 
     # Also generate feature quality and dice CSVs if data exists
     _generate_feature_quality_csv(config, output_dir, results_dir)

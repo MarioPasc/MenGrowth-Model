@@ -1,8 +1,8 @@
 # LoRA Ablation Experiment
 
 Systematic ablation of **LoRA/DoRA rank** on BrainSegFounder (SwinUNETR) for
-meningioma encoder adaptation. Measures downstream semantic linear probe R²,
-segmentation Dice, and domain gap (GLI vs MEN) across ranks 2-64.
+meningioma encoder adaptation. Measures downstream semantic linear probe R²
+and segmentation Dice across ranks 2-64.
 
 ## Directory Structure
 
@@ -16,7 +16,6 @@ experiments/lora_ablation/
 ├── pipeline/                    # Core training / extraction / evaluation
 │   ├── train_condition.py       #   Train one ablation condition
 │   ├── extract_features.py      #   Extract encoder10 features
-│   ├── extract_domain_features.py # Extract GLI + MEN features for domain gap
 │   ├── evaluate_dice.py         #   Sliding-window Dice on test set
 │   ├── evaluate_probes.py       #   Linear + MLP probe R² evaluation
 │   ├── evaluate_feature_quality.py # PCA rank, DCI, variance spectrum
@@ -29,15 +28,12 @@ experiments/lora_ablation/
 │   ├── statistical_analysis.py  #   Friedman, Wilcoxon, effect sizes
 │   ├── enhanced_diagnostics.py  #   Gradient norms, feature quality diagnostics
 │   ├── visualizations.py        #   UMAP, variance, R² bar charts
-│   ├── domain_visualizations.py #   Domain shift figures (KDE, UMAP, retention)
-│   ├── compute_domain_metrics.py#   MMD, CKA, proxy A-distance
 │   ├── generate_tables.py       #   CSV + LaTeX summary tables
 │   ├── regenerate_analysis.py   #   Regenerate all outputs from cached data
 │   ├── v3_cache.py              #   Precompute figure data for v3 conditions
 │   └── v3_figures.py            #   Eight thesis-quality v3 figures
 │
 ├── scripts/                     # Standalone diagnostics (not imported by pipeline)
-│   ├── diagnose_frozen_gli.py   #   Frozen encoder Dice on GLI vs MEN
 │   ├── post_hoc_analysis.py     #   Post-hoc gradient / checkpoint analysis
 │   └── merge_lora_checkpoint.py #   Merge LoRA weights into base checkpoint
 │
@@ -75,12 +71,11 @@ python -m experiments.lora_ablation.run_ablation --config <yaml> <command>
 | `train-all`          | Train all conditions sequentially                |
 | `extract --condition X` | Extract features for one condition            |
 | `extract-all`        | Extract features for all conditions              |
-| `domain --condition X`  | Extract GLI + MEN features for domain gap     |
-| `domain-all`         | Domain features for all conditions               |
+
 | `probes --condition X`  | Evaluate probes for one condition              |
 | `probes-all`         | Evaluate probes for all conditions               |
 | `test-dice --condition X` | Dice evaluation for one condition           |
-| `test-dice-all`      | Dice for all conditions (MEN + GLI)              |
+| `test-dice-all`      | Dice for all conditions                          |
 | `feature-quality`    | PCA rank, DCI, variance spectrum                 |
 | `visualize`          | Generate all figures                             |
 | `generate-tables`    | CSV + LaTeX summary tables                       |
@@ -94,12 +89,11 @@ python -m experiments.lora_ablation.run_ablation --config <yaml> <command>
 1. splits        ->  Deterministic train/val/test assignment
 2. train-all     ->  LoRA fine-tuning per condition (Dice + aux semantic loss)
 3. extract-all   ->  encoder10 features [N, 768, 4, 4, 4] -> [N, 768]
-4. domain-all    ->  Same extraction for GLI subjects (optional)
-5. probes-all    ->  Linear + MLP probe R² for volume, location, shape
-6. test-dice-all ->  Sliding-window Dice on held-out MEN + GLI
-7. visualize     ->  UMAP, variance spectrum, R² bars, domain shift
-8. tables        ->  CSV + LaTeX with all metrics
-9. analyze       ->  Friedman test, Wilcoxon pairs, effect sizes, report
+4. probes-all    ->  Linear + MLP probe R² for volume, location, shape
+5. test-dice-all ->  Sliding-window Dice on held-out MEN test set
+6. visualize     ->  UMAP, variance spectrum, R² bars
+7. tables        ->  CSV + LaTeX with all metrics
+8. analyze       ->  Friedman test, Wilcoxon pairs, effect sizes, report
 ```
 
 ## Configuration
@@ -107,7 +101,7 @@ python -m experiments.lora_ablation.run_ablation --config <yaml> <command>
 Configs use OmegaConf YAML. Key sections:
 
 - `experiment`: name, seed, output_dir
-- `paths`: checkpoint, data_root, glioma_root
+- `paths`: checkpoint, data_root
 - `data`: roi_size, feature_roi_size, spacing
 - `data_splits`: lora_train, lora_val, sdp_train, test counts
 - `conditions[]`: name, lora_rank, lora_alpha, target_stages, ...
@@ -163,10 +157,8 @@ All figure colors, labels, markers, and plot settings live in
 ├── conditions/<name>/
 │   ├── checkpoints/             # Model checkpoints
 │   ├── features.pt              # Extracted features
-│   ├── features_glioma.pt       # GLI features (if --domain-features)
 │   ├── probe_results.json       # Linear + MLP R² scores
-│   ├── test_dice_men.json       # MEN Dice per class
-│   └── test_dice_gli.json       # GLI Dice per class
+│   └── test_dice_men.json       # MEN Dice per class
 ├── figures/                     # Publication-quality figures (PDF + PNG)
 ├── figure_cache/                # Precomputed data for fast regeneration
 ├── comprehensive_results.csv

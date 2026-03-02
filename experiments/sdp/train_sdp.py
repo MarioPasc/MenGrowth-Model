@@ -26,7 +26,7 @@ Usage:
     # Override splits:
     python -m experiments.sdp.train_sdp \
         --config experiments/sdp/config/sdp_default.yaml \
-        --train-splits lora_train sdp_train --val-split lora_val
+        --train-splits lora_train --val-split lora_val
 """
 
 import argparse
@@ -92,9 +92,7 @@ def save_latent_vectors_h5(
             continue
 
         # Load features and targets from source H5
-        h, raw_targets = load_precomputed_features(
-            str(h5_in), shape_indices=shape_indices
-        )
+        h, raw_targets = load_precomputed_features(str(h5_in), shape_indices=shape_indices)
 
         # Load subject IDs
         with h5py.File(h5_in, "r") as f:
