@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from growth.data.bratsmendata import BraTSMENDataset, save_splits, split_subjects_multi
+from growth.data.bratsmendata import BraTSDatasetH5, save_splits, split_subjects_multi
 from growth.utils.seed import set_seed
 
 logging.basicConfig(
@@ -105,17 +105,13 @@ def main(config_path: str, force: bool = False) -> dict[str, list[str]]:
         _print_split_statistics(splits)
         return splits
 
-    # Discover all subject IDs (prefer H5 over NIfTI directory scan)
-    h5_path = config.get("paths", {}).get("h5_file")
-    if h5_path and Path(h5_path).exists():
-        from growth.data.bratsmendata import BraTSMENDatasetH5
+    # Discover all subject IDs from H5 file
+    h5_path = config["paths"]["h5_file"]
+    if not Path(h5_path).exists():
+        raise FileNotFoundError(f"H5 file not found: {h5_path}")
 
-        logger.info(f"Discovering subjects from H5: {h5_path}")
-        all_subjects = BraTSMENDatasetH5.load_subject_ids_from_h5(h5_path)
-    else:
-        data_root = Path(config["paths"]["data_root"])
-        logger.info(f"Discovering subjects in {data_root}")
-        all_subjects = BraTSMENDataset.get_all_subject_ids(data_root)
+    logger.info(f"Discovering subjects from H5: {h5_path}")
+    all_subjects = BraTSDatasetH5.load_subject_ids_from_h5(h5_path)
     logger.info(f"Found {len(all_subjects)} subjects")
 
     # Generate splits
@@ -208,10 +204,10 @@ def load_splits_h5(h5_path: str) -> dict[str, list[str]]:
     Returns:
         Dict mapping split names to subject ID lists.
     """
-    from growth.data.bratsmendata import BraTSMENDatasetH5
+    from growth.data.bratsmendata import BraTSDatasetH5
 
-    all_ids = BraTSMENDatasetH5.load_subject_ids_from_h5(h5_path)
-    index_splits = BraTSMENDatasetH5.load_splits_from_h5(h5_path)
+    all_ids = BraTSDatasetH5.load_subject_ids_from_h5(h5_path)
+    index_splits = BraTSDatasetH5.load_splits_from_h5(h5_path)
 
     return {name: [all_ids[int(i)] for i in indices] for name, indices in index_splits.items()}
 

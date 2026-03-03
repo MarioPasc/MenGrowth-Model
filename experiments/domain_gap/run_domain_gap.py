@@ -4,9 +4,10 @@ Extracts encoder10 features and computes segmentation Dice for
 BraTS-GLI (glioma), BraTS-MEN (meningioma), and optionally MenGrowth
 using the frozen BrainSegFounder model, then computes domain shift metrics.
 
-If ``paths.mengrowth_root`` is null in config, the pipeline behaves
-identically to the two-domain version.  When present it computes all
-three datasets and all C(3,2)=3 pairwise comparisons.
+All three datasets use the unified ``BraTSDatasetH5`` loader.
+If ``paths.mengrowth_h5_file`` is null in config, the pipeline uses
+two-domain mode.  When present it computes all three datasets and
+all C(3,2)=3 pairwise comparisons.
 
 Usage:
     python -m experiments.domain_gap.run_domain_gap --config <path>
@@ -18,7 +19,6 @@ import argparse
 import itertools
 import json
 import logging
-import re
 from pathlib import Path
 
 import numpy as np
@@ -27,11 +27,8 @@ from omegaconf import OmegaConf
 from scipy import stats
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from src.growth.data.bratsmendata import BraTSMENDatasetH5
-from src.growth.data.transforms import (
-    get_h5_val_transforms,
-    get_val_transforms,
-)
+from src.growth.data.bratsmendata import BraTSDatasetH5
+from src.growth.data.transforms import get_h5_val_transforms
 from src.growth.evaluation.latent_quality import (
     compute_cka,
     compute_domain_classifier_accuracy,
@@ -45,223 +42,6 @@ from src.growth.models.encoder.swin_loader import load_full_swinunetr, load_swin
 from src.growth.utils.seed import set_seed
 
 logger = logging.getLogger(__name__)
-
-# ============================================================================
-# BraTS-GLI Dataset (standalone, no cross-experiment import)
-# ============================================================================
-
-GLIOMA_MODALITY_SUFFIXES = {
-    "t1c": "-t1c.nii.gz",
-    "t1n": "-t1n.nii.gz",
-    "t2f": "-t2f.nii.gz",
-    "t2w": "-t2w.nii.gz",
-}
-GLIOMA_SEG_SUFFIX = "-seg.nii.gz"
-
-
-class BraTSGLIDataset(Dataset):
-    """BraTS-GLI (Glioma) dataset for feature extraction and Dice evaluation.
-
-    Loads NIfTI volumes from the standard BraTS-GLI directory structure.
-    Always includes segmentation when available.
-
-    Args:
-        data_root: Path to BraTS-GLI data root directory.
-        subject_ids: Optional list of subject IDs. If None, discovers all.
-        transform: MONAI transform pipeline.
-    """
-
-    def __init__(
-        self,
-        data_root: str | Path,
-        subject_ids: list[str] | None = None,
-        transform=None,
-    ) -> None:
-        self.data_root = Path(data_root)
-        self.transform = transform or get_val_transforms()
-
-        if subject_ids is None:
-            self.subject_ids = self._discover_subjects()
-        else:
-            self.subject_ids = subject_ids
-
-        logger.info(f"BraTSGLIDataset initialized with {len(self.subject_ids)} subjects")
-
-    def _discover_subjects(self) -> list[str]:
-        """Discover all subject IDs in the glioma dataset."""
-        subject_ids = []
-        for item in self.data_root.iterdir():
-            if item.is_dir() and item.name.startswith("BraTS-GLI-"):
-                subject_ids.append(item.name)
-        return sorted(subject_ids)
-
-    def __len__(self) -> int:
-        return len(self.subject_ids)
-
-    def __getitem__(self, idx: int) -> dict:
-        subject_id = self.subject_ids[idx]
-        subject_dir = self.data_root / subject_id
-
-        data = {}
-        for modality, suffix in GLIOMA_MODALITY_SUFFIXES.items():
-            path = subject_dir / f"{subject_id}{suffix}"
-            if path.exists():
-                data[modality] = str(path)
-            else:
-                raise FileNotFoundError(f"Missing {modality}: {path}")
-
-        seg_path = subject_dir / f"{subject_id}{GLIOMA_SEG_SUFFIX}"
-        if seg_path.exists():
-            data["seg"] = str(seg_path)
-
-        transformed = self.transform(data)
-
-        result = {
-            "image": transformed["image"],
-            "subject_id": subject_id,
-            "domain": "glioma",
-        }
-
-        if "seg" in transformed:
-            result["seg"] = transformed["seg"]
-
-        return result
-
-
-# ============================================================================
-# MenGrowth Dataset
-# ============================================================================
-
-MENGROWTH_MODALITY_KEYS = ["t2f", "t1c", "t1n", "t2w"]
-
-
-def _find_nifti(scan_dir: Path, name: str) -> Path:
-    """Find a NIfTI file in *scan_dir* by modality/seg name.
-
-    Supports two naming conventions:
-      1. Bare names:     ``{name}.nii.gz``  (e.g. ``t2f.nii.gz``)
-      2. Prefixed names: ``{scan_id}-{name}.nii.gz``
-         (e.g. ``MenGrowth-0001-000-t2f.nii.gz``)
-
-    The scan_id prefix is taken from the directory name.
-
-    Args:
-        scan_dir: Directory containing NIfTI files for one scan.
-        name: Modality key (``t2f``, ``t1c``, …) or ``seg``.
-
-    Returns:
-        Path to the matching NIfTI file.
-
-    Raises:
-        FileNotFoundError: If no matching file is found.
-    """
-    # Try bare name first (current convention)
-    bare = scan_dir / f"{name}.nii.gz"
-    if bare.exists():
-        return bare
-
-    # Try prefixed name: {scan_dir.name}-{name}.nii.gz
-    prefixed = scan_dir / f"{scan_dir.name}-{name}.nii.gz"
-    if prefixed.exists():
-        return prefixed
-
-    raise FileNotFoundError(f"Missing {name} in {scan_dir}: tried {bare.name} and {prefixed.name}")
-
-
-class MenGrowthDataset(Dataset):
-    """MenGrowth dataset for feature extraction and Dice evaluation.
-
-    Directory layout::
-
-        data_root/
-            MenGrowth-XXXX/
-                MenGrowth-XXXX-YYY/
-                    {t2f,t1c,t1n,t2w,seg}.nii.gz   (bare)
-                    OR
-                    MenGrowth-XXXX-YYY-{t2f,...}.nii.gz  (prefixed)
-
-    Args:
-        data_root: Path to MenGrowth data root directory.
-        first_timepoint_only: If True, keep only the first scan per subject
-            (``-000`` suffix). Gives N=33 independent samples.
-        transform: MONAI transform pipeline.
-    """
-
-    def __init__(
-        self,
-        data_root: str | Path,
-        first_timepoint_only: bool = False,
-        transform=None,
-    ) -> None:
-        self.data_root = Path(data_root)
-        self.transform = transform or get_val_transforms()
-        self.scans = self._discover_scans(first_timepoint_only)
-        logger.info(
-            f"MenGrowthDataset initialized: {len(self.scans)} scans, "
-            f"{len(set(s[0] for s in self.scans))} subjects"
-        )
-
-    def _discover_scans(self, first_timepoint_only: bool) -> list[tuple[str, str, Path]]:
-        """Discover (subject_id, scan_id, scan_dir) tuples.
-
-        Returns:
-            Sorted list of (subject_id, scan_id, scan_dir).
-        """
-        scans: list[tuple[str, str, Path]] = []
-        subject_pattern = re.compile(r"^MenGrowth-\d+$")
-
-        for subject_dir in sorted(self.data_root.iterdir()):
-            if not subject_dir.is_dir():
-                continue
-            if not subject_pattern.match(subject_dir.name):
-                continue
-
-            subject_id = subject_dir.name
-
-            for scan_dir in sorted(subject_dir.iterdir()):
-                if not scan_dir.is_dir():
-                    continue
-                if not scan_dir.name.startswith(subject_id):
-                    continue
-
-                scan_id = scan_dir.name
-
-                if first_timepoint_only:
-                    # Keep only -000 scans
-                    suffix = scan_id[len(subject_id) :]  # e.g. "-000"
-                    if suffix != "-000":
-                        continue
-
-                scans.append((subject_id, scan_id, scan_dir))
-
-        return scans
-
-    def __len__(self) -> int:
-        return len(self.scans)
-
-    def __getitem__(self, idx: int) -> dict:
-        subject_id, scan_id, scan_dir = self.scans[idx]
-
-        data = {}
-        for modality in MENGROWTH_MODALITY_KEYS:
-            data[modality] = str(_find_nifti(scan_dir, modality))
-
-        seg_path = _find_nifti(scan_dir, "seg")
-        data["seg"] = str(seg_path)
-
-        transformed = self.transform(data)
-
-        result = {
-            "image": transformed["image"],
-            "subject_id": subject_id,
-            "scan_id": scan_id,
-            "domain": "mengrowth",
-        }
-
-        if "seg" in transformed:
-            result["seg"] = transformed["seg"]
-
-        return result
 
 
 # ============================================================================
@@ -393,7 +173,7 @@ def compute_dice_scores(
 
 
 # ============================================================================
-# Subject-Level Averaging (for MenGrowth longitudinal data)
+# Subject-Level Averaging (for longitudinal datasets)
 # ============================================================================
 
 
@@ -660,8 +440,6 @@ def save_results(
 ) -> None:
     """Save all results to structured output directory.
 
-    Supports both 2-domain and 3-domain modes transparently.
-
     Args:
         output_dir: Root output directory.
         features_dict: Mapping domain -> feature array [N, D].
@@ -708,21 +486,6 @@ def save_results(
         json.dump(per_dataset, f, indent=2)
     logger.info(f"Saved per-dataset metrics: {list(per_dataset.keys())}")
 
-    # Backward-compat: also write domain_metrics.json for 2-domain case
-    if set(features_dict.keys()) == {"gli", "men"}:
-        pair = pairwise_metrics["gli_men"]
-        compat = {
-            "mmd_sq": pair["mmd_sq"],
-            "mmd_pvalue": pair["mmd_pvalue"],
-            "cka": pair["cka"],
-            "proxy_a_distance": pair["proxy_a_distance"],
-            "classifier_accuracy": pair["classifier_accuracy"],
-            "effective_rank_gli": per_dataset["gli"]["effective_rank"],
-            "effective_rank_men": per_dataset["men"]["effective_rank"],
-        }
-        with open(metrics_dir / "domain_metrics.json", "w") as f:
-            json.dump(compat, f, indent=2)
-
     # KS statistics
     for pair_key, (ks_stats, ks_pvals) in ks_dict.items():
         np.savez(
@@ -731,15 +494,6 @@ def save_results(
             ks_pvalues=ks_pvals,
         )
         logger.info(f"Saved KS stats ({pair_key}): {ks_stats.shape}")
-
-    # Backward-compat: also write ks_stats.npz for 2-domain case
-    if "gli_men" in ks_dict:
-        ks_s, ks_p = ks_dict["gli_men"]
-        np.savez(
-            metrics_dir / "ks_stats.npz",
-            ks_statistics=ks_s,
-            ks_pvalues=ks_p,
-        )
 
 
 # ============================================================================
@@ -892,14 +646,13 @@ def main() -> None:
 
     ckpt_path = cfg.paths.checkpoint
     h5_file = cfg.paths.h5_file
-    glioma_root = cfg.paths.glioma_root
-    mengrowth_root = OmegaConf.select(cfg, "paths.mengrowth_root", default=None)
+    gli_h5_file = cfg.paths.gli_h5_file
+    mengrowth_h5_file = OmegaConf.select(cfg, "paths.mengrowth_h5_file", default=None)
     n_men = cfg.data.n_men_subjects
-    mengrowth_first_only = OmegaConf.select(cfg, "data.mengrowth_first_only", default=False)
     roi_size = tuple(cfg.data.feature_roi_size)
     level = cfg.feature_extraction.level
 
-    has_mengrowth = mengrowth_root is not None
+    has_mengrowth = mengrowth_h5_file is not None
 
     # ------------------------------------------------------------------
     # 1. Load models
@@ -913,36 +666,35 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 2. Create datasets
+    # 2. Create datasets (all H5-based)
     # ------------------------------------------------------------------
-    logger.info("Creating GLI dataset...")
-    gli_dataset = BraTSGLIDataset(
-        data_root=glioma_root,
-        transform=get_val_transforms(roi_size=roi_size),
+    logger.info(f"Creating GLI dataset from H5: {gli_h5_file}")
+    gli_dataset = BraTSDatasetH5(
+        h5_path=gli_h5_file,
+        split=None,
+        transform=get_h5_val_transforms(roi_size=roi_size),
+        compute_semantic=False,
     )
-    logger.info(f"  GLI subjects: {len(gli_dataset)}")
+    logger.info(f"  GLI scans: {len(gli_dataset)}")
 
     logger.info(f"Creating MEN dataset (sampling {n_men} subjects)...")
-    men_full = BraTSMENDatasetH5(
+    men_full = BraTSDatasetH5(
         h5_path=h5_file,
         split=None,
         transform=get_h5_val_transforms(roi_size=roi_size),
     )
 
     # Sample from lora_train + test splits for balanced representation
-    splits = BraTSMENDatasetH5.load_splits_from_h5(h5_file)
+    splits = BraTSDatasetH5.load_splits_from_h5(h5_file)
     available_indices = np.concatenate(
         [
             splits.get("lora_train", np.array([], dtype=int)),
-            splits.get("sdp_train", np.array([], dtype=int)),  # legacy compat
             splits.get("test", np.array([], dtype=int)),
         ]
     ).astype(int)
-    # Deduplicate in case of overlap between legacy and new splits
     available_indices = np.unique(available_indices)
 
     if len(available_indices) == 0:
-        # Fallback: use all subjects
         logger.warning("No train/test splits found, using all subjects")
         available_indices = np.arange(len(men_full))
 
@@ -954,11 +706,12 @@ def main() -> None:
 
     mg_dataset = None
     if has_mengrowth:
-        logger.info("Creating MenGrowth dataset...")
-        mg_dataset = MenGrowthDataset(
-            data_root=mengrowth_root,
-            first_timepoint_only=mengrowth_first_only,
-            transform=get_val_transforms(roi_size=roi_size),
+        logger.info(f"Creating MenGrowth dataset from H5: {mengrowth_h5_file}")
+        mg_dataset = BraTSDatasetH5(
+            h5_path=mengrowth_h5_file,
+            split=None,
+            transform=get_h5_val_transforms(roi_size=roi_size),
+            compute_semantic=False,
         )
         logger.info(f"  MenGrowth scans: {len(mg_dataset)}")
 
@@ -987,7 +740,7 @@ def main() -> None:
 
     mg_features = None
     mg_ids = None
-    mg_subject_ids = None
+    mg_patient_ids = None
     if mg_dataset is not None:
         logger.info("Extracting MenGrowth features...")
         mg_features, mg_ids = extract_features(
@@ -998,8 +751,8 @@ def main() -> None:
             num_workers=cfg.feature_extraction.num_workers,
             device=device,
         )
-        # Record subject IDs for averaging
-        mg_subject_ids = [mg_dataset.scans[i][0] for i in range(len(mg_dataset))]
+        # Collect patient IDs from the H5 dataset for subject-level averaging
+        mg_patient_ids = [mg_dataset._patient_ids[int(idx)] for idx in mg_dataset._indices]
 
     # Validate
     for name, feat in [("GLI", gli_features), ("MEN", men_features)]:
@@ -1055,7 +808,9 @@ def main() -> None:
     }
 
     if mg_features is not None:
-        mg_avg_features, mg_avg_ids = average_features_by_subject(mg_features, mg_subject_ids)
+        mg_avg_features, mg_avg_ids = average_features_by_subject(
+            mg_features, mg_patient_ids
+        )
         feat_dict["mengrowth"] = mg_avg_features
         groups_dict["mengrowth"] = None  # Already averaged, no groups needed
 
@@ -1073,7 +828,6 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 6. Save everything
     # ------------------------------------------------------------------
-    # Build save dicts (use all scans for MenGrowth features/dice on disk)
     save_features: dict[str, np.ndarray] = {
         "gli": gli_features,
         "men": men_features,
@@ -1088,8 +842,8 @@ def main() -> None:
     }
 
     if mg_features is not None:
-        save_features["mengrowth"] = mg_features  # All scans
-        save_ids["mengrowth"] = mg_ids  # Scan IDs
+        save_features["mengrowth"] = mg_features
+        save_ids["mengrowth"] = mg_ids
         save_dice["mengrowth"] = mg_dice
 
     logger.info(f"Saving results to {output_dir}")

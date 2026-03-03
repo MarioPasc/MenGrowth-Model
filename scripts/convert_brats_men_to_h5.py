@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# scripts/convert_nifti_to_h5.py
+# scripts/convert_brats_men_to_h5.py
 """Convert BraTS-MEN NIfTI files to a single HDF5 file.
 
 Pre-applies spatial preprocessing (Orient→Resample→CropForeground→SpatialPad→
@@ -27,13 +27,13 @@ H5 Schema:
 
 Usage:
     # Dry-run with 5 subjects
-    python scripts/convert_nifti_to_h5.py \
+    python scripts/convert_brats_men_to_h5.py \
         --data-root /path/to/BraTS_Men_Train \
         --output brats_men_train.h5 \
         --max-subjects 5
 
     # Full conversion (all 1000 subjects)
-    python scripts/convert_nifti_to_h5.py \
+    python scripts/convert_brats_men_to_h5.py \
         --data-root /path/to/BraTS_Men_Train \
         --output brats_men_train.h5
 
@@ -65,18 +65,22 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from growth.data.bratsmendata import (
-    BraTSMENDataset,
-    split_subjects_multi,
-)
-from growth.data.semantic_features import (
-    extract_semantic_features,
-)
+from growth.data.bratsmendata import split_subjects_multi
+from growth.data.semantic_features import extract_semantic_features
 from growth.data.transforms import (
     DEFAULT_SPACING,
     FEATURE_ROI_SIZE,
     MODALITY_KEYS,
 )
+
+# Modality file suffixes (self-contained; previously from BraTSMENDataset)
+_MODALITY_SUFFIXES = {
+    "t1c": "-t1c.nii.gz",
+    "t1n": "-t1n.nii.gz",
+    "t2f": "-t2f.nii.gz",
+    "t2w": "-t2w.nii.gz",
+}
+_SEG_SUFFIX = "-seg.nii.gz"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,6 +97,52 @@ DEFAULT_SPLIT_SIZES = {
     "lora_val": 100,
     "test": 150,
 }
+
+
+def discover_men_subjects(data_root: Path) -> list[str]:
+    """Discover all BraTS-MEN subject IDs in a directory.
+
+    Args:
+        data_root: Path to BraTS-MEN data root.
+
+    Returns:
+        Sorted list of subject directory names starting with 'BraTS-MEN-'.
+    """
+    subject_ids = []
+    for item in data_root.iterdir():
+        if item.is_dir() and item.name.startswith("BraTS-MEN-"):
+            subject_ids.append(item.name)
+    return sorted(subject_ids)
+
+
+def load_subject_paths(data_root: Path, subject_id: str) -> dict[str, Path]:
+    """Get paths to all modalities and segmentation for a subject.
+
+    Args:
+        data_root: Path to BraTS-MEN data root.
+        subject_id: Subject directory name.
+
+    Returns:
+        Dict with keys: 't1c', 't1n', 't2f', 't2w', 'seg'.
+
+    Raises:
+        FileNotFoundError: If any required file is missing.
+    """
+    subject_dir = data_root / subject_id
+    paths: dict[str, Path] = {}
+
+    for modality, suffix in _MODALITY_SUFFIXES.items():
+        path = subject_dir / f"{subject_id}{suffix}"
+        if not path.exists():
+            raise FileNotFoundError(f"Missing {modality} file: {path}")
+        paths[modality] = path
+
+    seg_path = subject_dir / f"{subject_id}{_SEG_SUFFIX}"
+    if not seg_path.exists():
+        raise FileNotFoundError(f"Missing segmentation file: {seg_path}")
+    paths["seg"] = seg_path
+
+    return paths
 
 
 def build_preprocessing_transforms() -> Compose:
@@ -252,7 +302,7 @@ def convert(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Discover subjects
-    all_subjects = BraTSMENDataset.get_all_subject_ids(data_root)
+    all_subjects = discover_men_subjects(data_root)
     logger.info(f"Found {len(all_subjects)} subjects in {data_root}")
 
     if max_subjects is not None:
@@ -342,7 +392,7 @@ def convert(
         for i, subject_id in enumerate(tqdm(all_subjects, desc="Converting")):
             try:
                 # Get file paths
-                paths = BraTSMENDataset.load_subject_paths(data_root, subject_id)
+                paths = load_subject_paths(data_root, subject_id)
 
                 # Apply spatial preprocessing (no normalization)
                 data = {

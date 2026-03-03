@@ -12,6 +12,7 @@ Label convention (BraTS):
     1: NCR (Necrotic Core)
     2: ED (Peritumoral Edema)
     3: ET (Enhancing Tumor)
+    4: RC (Resection Cavity) — GLI-specific, merged into NCR for semantic features
 """
 
 from typing import Dict, Optional, Tuple, Union
@@ -28,6 +29,7 @@ LABEL_BACKGROUND = 0
 LABEL_NCR = 1
 LABEL_ED = 2
 LABEL_ET = 3
+LABEL_RC = 4  # Resection Cavity (GLI-specific)
 
 
 def compute_volumes(
@@ -417,9 +419,28 @@ def compute_shape_array(
     )
 
 
+def _merge_rc_labels(mask: np.ndarray) -> np.ndarray:
+    """Remap Resection Cavity (label 4) to NCR (label 1).
+
+    GLI segmentations may contain label 4 (Resection Cavity) which is not
+    present in MEN. For consistent 10-feature vectors across domains, merge
+    label 4 into label 1 before semantic feature computation.
+
+    Args:
+        mask: Segmentation mask [D, H, W] with labels {0, 1, 2, 3, 4}.
+
+    Returns:
+        Copy of mask with label 4 remapped to label 1.
+    """
+    merged = mask.copy()
+    merged[merged == LABEL_RC] = LABEL_NCR
+    return merged
+
+
 def extract_semantic_features(
     mask: np.ndarray,
     spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    merge_rc_into_ncr: bool = False,
 ) -> Dict[str, np.ndarray]:
     """Extract all semantic features from segmentation mask.
 
@@ -429,6 +450,9 @@ def extract_semantic_features(
     Args:
         mask: Segmentation mask [D, H, W] with BraTS labels
         spacing: Voxel spacing in mm
+        merge_rc_into_ncr: If True, remap label 4 (Resection Cavity) to
+            label 1 (NCR) before computing features. Use for GLI data
+            to produce consistent 10-feature vectors across domains.
 
     Returns:
         Dictionary with:
@@ -447,6 +471,9 @@ def extract_semantic_features(
         >>> features['all'].shape
         (10,)
     """
+    if merge_rc_into_ncr:
+        mask = _merge_rc_labels(mask)
+
     volume = compute_log_volumes(mask, spacing)
     location = compute_centroid(mask, spacing, normalize=True)
     shape = compute_shape_array(mask, spacing)

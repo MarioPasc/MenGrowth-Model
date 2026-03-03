@@ -1,33 +1,30 @@
 # src/growth/data/bratsmendata.py
-"""BraTS-MEN dataset for Phases 1 and 2.
+"""BraTS dataset backed by HDF5 files.
 
-Supports two backends:
-  - **NIfTI** (original): loads from per-subject directories with 5 NIfTI files each.
-  - **HDF5** (fast): loads from a single pre-preprocessed H5 file (192³ volumes).
+Supports two H5 schemas:
+  - **Cross-sectional** (BraTS-MEN): ``subject_ids`` dataset, one scan per subject.
+  - **Longitudinal** (BraTS-GLI): ``scan_ids`` + ``patient_ids`` + CSR
+    ``longitudinal/`` group.  Patient-level splits are expanded to scan indices
+    via CSR offsets so no patient leaks across splits.
 
-The H5 backend eliminates NIfTI decompression, resampling, and multi-file seek
-overhead, reducing I/O from ~5000 file opens per epoch (1000 subjects) to a
-single memory-mapped file with chunked reads.
-
-NIfTI directory structure expected:
-    BraTS_Men_Train/
-    ├── BraTS-MEN-00004-000/
-    │   ├── BraTS-MEN-00004-000-t1c.nii.gz
-    │   ├── BraTS-MEN-00004-000-t1n.nii.gz
-    │   ├── BraTS-MEN-00004-000-t2f.nii.gz
-    │   ├── BraTS-MEN-00004-000-t2w.nii.gz
-    │   └── BraTS-MEN-00004-000-seg.nii.gz
-    └── ...
-
-H5 file schema (see scripts/convert_nifti_to_h5.py):
+H5 file schema (cross-sectional, created by ``scripts/convert_brats_men_to_h5.py``):
     images       [N, 4, 192, 192, 192] float32
     segs         [N, 1, 192, 192, 192] int8
     subject_ids  [N] string
     semantic/    {volume, location, shape} arrays
     splits/      {lora_train, lora_val, test} index arrays
+
+H5 file schema (longitudinal, created by ``scripts/convert_brats_gli_to_h5.py``):
+    images           [N_scans, 4, 192, 192, 192] float32
+    segs             [N_scans, 1, 192, 192, 192] int8
+    scan_ids         [N_scans] string
+    patient_ids      [N_scans] string
+    timepoint_idx    [N_scans] int32
+    semantic/        {volume, location, shape}
+    longitudinal/    {patient_offsets [N_patients+1], patient_list [N_patients]}
+    splits/          {lora_train, lora_val, test}  (patient-level indices)
 """
 
-import json
 import logging
 import threading
 from collections.abc import Callable
@@ -38,306 +35,33 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from .semantic_features import extract_semantic_features
 from .transforms import (
     get_h5_train_transforms,
     get_h5_val_transforms,
-    get_train_transforms,
-    get_val_transforms,
 )
 
 logger = logging.getLogger(__name__)
 
-# Modality file suffixes
-MODALITY_SUFFIXES = {
-    "t1c": "-t1c.nii.gz",
-    "t1n": "-t1n.nii.gz",
-    "t2f": "-t2f.nii.gz",
-    "t2w": "-t2w.nii.gz",
-}
-SEG_SUFFIX = "-seg.nii.gz"
 
+class BraTSDatasetH5(Dataset):
+    """BraTS dataset backed by a single HDF5 file.
 
-class BraTSMENDataset(Dataset):
-    """BraTS-MEN dataset for encoder training and evaluation.
+    Reads pre-preprocessed 192^3 volumes from an H5 file. Volumes are already
+    Orient -> Resample -> CropForeground -> SpatialPad -> CenterCrop but NOT
+    z-score normalized (applied at runtime by H5 transforms).
 
-    Loads 4-channel MRI volumes (T1c, T1n, T2-FLAIR, T2w) and segmentation masks
-    from the BraTS Meningioma dataset. Optionally computes semantic features
-    (volume, location, shape) from segmentation masks.
+    Supports both cross-sectional (MEN) and longitudinal (GLI) schemas.
+    Schema is auto-detected by the presence of ``scan_ids`` (longitudinal)
+    vs ``subject_ids`` (cross-sectional).
 
-    Args:
-        data_root: Path to BraTS-MEN directory.
-        subject_ids: List of subject IDs to include. If None, discover all.
-        transform: MONAI transform pipeline. If None, uses default val transforms.
-        compute_semantic: If True, compute semantic features from segmentation.
-        cache_semantic: If True, cache semantic features to disk for faster loading.
-        cache_dir: Directory for caching. Defaults to data_root/.semantic_cache.
-
-    Returns per sample:
-        dict with:
-        - 'image': [4, D, H, W] MRI tensor
-        - 'seg': [1, D, H, W] segmentation mask
-        - 'subject_id': str
-        - 'semantic_features': dict (if compute_semantic=True)
-            - 'volume': [4] tensor
-            - 'location': [3] tensor
-            - 'shape': [3] tensor (sphericity, surface_area_log, solidity)
-            - 'all': [10] tensor
-
-    Example:
-        >>> dataset = BraTSMENDataset(
-        ...     data_root="/path/to/BraTS_Men_Train",
-        ...     compute_semantic=True,
-        ... )
-        >>> sample = dataset[0]
-        >>> sample['image'].shape
-        torch.Size([4, 128, 128, 128])
-        >>> sample['semantic_features']['volume'].shape
-        torch.Size([4])
-    """
-
-    def __init__(
-        self,
-        data_root: str | Path,
-        subject_ids: list[str] | None = None,
-        transform: Callable | None = None,
-        compute_semantic: bool = True,
-        cache_semantic: bool = True,
-        cache_dir: str | Path | None = None,
-    ):
-        self.data_root = Path(data_root)
-        self.compute_semantic = compute_semantic
-        self.cache_semantic = cache_semantic
-
-        # Set up semantic cache directory
-        if cache_dir is None:
-            self.cache_dir = self.data_root / ".semantic_cache"
-        else:
-            self.cache_dir = Path(cache_dir)
-
-        if self.cache_semantic:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Discover or validate subject IDs
-        if subject_ids is None:
-            self.subject_ids = self.get_all_subject_ids(self.data_root)
-        else:
-            self.subject_ids = subject_ids
-
-        # Validate subjects exist
-        self._validate_subjects()
-
-        # Set up transforms
-        if transform is None:
-            self.transform = get_val_transforms()
-        else:
-            self.transform = transform
-
-        logger.info(f"BraTSMENDataset initialized with {len(self.subject_ids)} subjects")
-
-    def _validate_subjects(self) -> None:
-        """Validate that all subject directories exist."""
-        missing = []
-        for subject_id in self.subject_ids:
-            subject_dir = self.data_root / subject_id
-            if not subject_dir.is_dir():
-                missing.append(subject_id)
-
-        if missing:
-            raise ValueError(f"Missing {len(missing)} subject directories. First 5: {missing[:5]}")
-
-    def __len__(self) -> int:
-        return len(self.subject_ids)
-
-    def __getitem__(self, idx: int) -> dict[str, Any]:
-        subject_id = self.subject_ids[idx]
-
-        # Get file paths
-        paths = self.load_subject_paths(self.data_root, subject_id)
-
-        # Build data dict for transforms
-        data = {
-            "t1c": str(paths["t1c"]),
-            "t1n": str(paths["t1n"]),
-            "t2f": str(paths["t2f"]),
-            "t2w": str(paths["t2w"]),
-            "seg": str(paths["seg"]),
-        }
-
-        # Apply transforms
-        transformed = self.transform(data)
-
-        # Build output dict
-        output = {
-            "image": transformed["image"],
-            "seg": transformed["seg"],
-            "subject_id": subject_id,
-        }
-
-        # Compute semantic features if requested
-        if self.compute_semantic:
-            semantic = self._get_semantic_features(subject_id, paths["seg"])
-            output["semantic_features"] = {
-                "volume": torch.from_numpy(semantic["volume"]),
-                "location": torch.from_numpy(semantic["location"]),
-                "shape": torch.from_numpy(semantic["shape"]),
-                "all": torch.from_numpy(semantic["all"]),
-            }
-
-        return output
-
-    def _get_semantic_features(self, subject_id: str, seg_path: Path) -> dict[str, np.ndarray]:
-        """Get semantic features, using cache if available.
-
-        Validates cached features match expected dimensions. If cache is stale
-        (e.g., from older code version with different feature count), it will
-        be recomputed and updated.
-        """
-        if self.cache_semantic:
-            cache_path = self._get_cache_path(subject_id)
-
-            if cache_path.exists():
-                # Load from cache (returns None if format is stale)
-                cached = self._load_cached_features(cache_path)
-                if cached is not None:
-                    return cached
-                # Stale cache - fall through to recompute
-
-        # Compute features from original segmentation (not transformed)
-        # This ensures features are computed on native resolution
-        import nibabel as nib
-
-        seg_img = nib.load(seg_path)
-        seg_data = np.asarray(seg_img.dataobj).astype(np.int32)
-        spacing = tuple(seg_img.header.get_zooms()[:3])
-
-        features = extract_semantic_features(seg_data, spacing)
-
-        # Cache if enabled (overwrites stale cache)
-        if self.cache_semantic:
-            self._save_cached_features(cache_path, features)
-
-        return features
-
-    def _get_cache_path(self, subject_id: str) -> Path:
-        """Get cache file path for a subject."""
-        return self.cache_dir / f"{subject_id}_semantic.npz"
-
-    def _load_cached_features(self, cache_path: Path) -> dict[str, np.ndarray] | None:
-        """Load features from cache file.
-
-        Returns:
-            Feature dict if cache is valid, None if cache format is stale.
-        """
-        data = np.load(cache_path)
-
-        # Validate expected dimensions (catches stale cache from older code versions)
-        # Expected: volume=[4], location=[3], shape=[3], all=[10]
-        volume = data["volume"]
-        location = data["location"]
-        shape = data["shape"]
-        all_feats = data["all"]
-
-        if (
-            volume.shape != (4,)
-            or location.shape != (3,)
-            or shape.shape != (3,)
-            or all_feats.shape != (10,)
-        ):
-            logger.warning(
-                f"Stale cache detected at {cache_path}: "
-                f"shape={shape.shape} (expected (3,)), all={all_feats.shape} (expected (10,)). "
-                f"Recomputing features."
-            )
-            return None
-
-        return {
-            "volume": volume,
-            "location": location,
-            "shape": shape,
-            "all": all_feats,
-        }
-
-    def _save_cached_features(self, cache_path: Path, features: dict[str, np.ndarray]) -> None:
-        """Save features to cache file."""
-        np.savez(
-            cache_path,
-            volume=features["volume"],
-            location=features["location"],
-            shape=features["shape"],
-            all=features["all"],
-        )
-
-    @staticmethod
-    def get_all_subject_ids(data_root: str | Path) -> list[str]:
-        """Discover all subject IDs in directory.
-
-        Args:
-            data_root: Path to BraTS-MEN directory.
-
-        Returns:
-            Sorted list of subject IDs (directory names starting with 'BraTS-MEN-').
-        """
-        data_root = Path(data_root)
-        subject_ids = []
-
-        for item in data_root.iterdir():
-            if item.is_dir() and item.name.startswith("BraTS-MEN-"):
-                subject_ids.append(item.name)
-
-        return sorted(subject_ids)
-
-    @staticmethod
-    def load_subject_paths(data_root: str | Path, subject_id: str) -> dict[str, Path]:
-        """Get paths to all modalities and segmentation for a subject.
-
-        Args:
-            data_root: Path to BraTS-MEN directory.
-            subject_id: Subject directory name.
-
-        Returns:
-            Dict with keys: 't1c', 't1n', 't2f', 't2w', 'seg'
-
-        Raises:
-            FileNotFoundError: If any required file is missing.
-        """
-        data_root = Path(data_root)
-        subject_dir = data_root / subject_id
-
-        paths = {}
-
-        # Load modalities
-        for modality, suffix in MODALITY_SUFFIXES.items():
-            path = subject_dir / f"{subject_id}{suffix}"
-            if not path.exists():
-                raise FileNotFoundError(f"Missing {modality} file: {path}")
-            paths[modality] = path
-
-        # Load segmentation
-        seg_path = subject_dir / f"{subject_id}{SEG_SUFFIX}"
-        if not seg_path.exists():
-            raise FileNotFoundError(f"Missing segmentation file: {seg_path}")
-        paths["seg"] = seg_path
-
-        return paths
-
-
-class BraTSMENDatasetH5(Dataset):
-    """BraTS-MEN dataset backed by a single HDF5 file.
-
-    Reads pre-preprocessed 192³ volumes from an H5 file created by
-    ``scripts/convert_nifti_to_h5.py``. Volumes are already Orient→Resample→
-    CropForeground→SpatialPad→CenterCrop but NOT z-score normalized (applied
-    at runtime by H5 transforms).
-
-    Uses lazy per-worker file handles for multi-worker DataLoader safety:
-    each worker opens its own HDF5 file handle on first access.
+    For longitudinal H5 files, split indices reference the *patient list*
+    and are expanded to scan-level indices via CSR offsets.
 
     Args:
         h5_path: Path to the HDF5 file.
         split: Split name to load indices from (e.g., ``"lora_train"``).
-            If None, uses all subjects.
-        indices: Explicit index array (overrides ``split``).
+            If None, uses all scans.
+        indices: Explicit scan-level index array (overrides ``split``).
         transform: MONAI transform pipeline. If None, uses
             :func:`get_h5_val_transforms`.
         compute_semantic: If True, load semantic features from H5.
@@ -346,7 +70,9 @@ class BraTSMENDatasetH5(Dataset):
         dict with:
         - ``'image'``: ``[4, D, H, W]`` MRI tensor
         - ``'seg'``: ``[1, D, H, W]`` segmentation mask
-        - ``'subject_id'``: str
+        - ``'subject_id'``: str (scan_id for longitudinal, subject_id for cross-sectional)
+        - ``'domain'``: str (H5 attr ``domain``, default ``"MEN"``)
+        - ``'patient_id'``: str (longitudinal only)
         - ``'semantic_features'``: dict (if ``compute_semantic=True``)
     """
 
@@ -365,10 +91,37 @@ class BraTSMENDatasetH5(Dataset):
 
         # Read metadata from file (open once, then close)
         with h5py.File(self.h5_path, "r") as f:
-            n_total = f.attrs["n_subjects"]
-            self._subject_ids = [
-                s.decode() if isinstance(s, bytes) else s for s in f["subject_ids"][:]
-            ]
+            # Detect schema: longitudinal vs cross-sectional
+            self._is_longitudinal = "scan_ids" in f
+
+            if self._is_longitudinal:
+                n_total = f.attrs["n_scans"]
+                self._scan_ids = [
+                    s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]
+                ]
+                self._patient_ids = [
+                    s.decode() if isinstance(s, bytes) else s for s in f["patient_ids"][:]
+                ]
+                self._patient_offsets = f["longitudinal/patient_offsets"][:].astype(np.int64)
+                self._patient_list = [
+                    s.decode() if isinstance(s, bytes) else s
+                    for s in f["longitudinal/patient_list"][:]
+                ]
+                # subject_ids alias for compatibility
+                self._subject_ids = self._scan_ids
+            else:
+                n_total = f.attrs["n_subjects"]
+                self._subject_ids = [
+                    s.decode() if isinstance(s, bytes) else s for s in f["subject_ids"][:]
+                ]
+                self._scan_ids = None
+                self._patient_ids = None
+                self._patient_offsets = None
+                self._patient_list = None
+
+            self._domain = f.attrs.get("domain", "MEN")
+            if isinstance(self._domain, bytes):
+                self._domain = self._domain.decode()
 
             # Determine indices
             if indices is not None:
@@ -377,7 +130,13 @@ class BraTSMENDatasetH5(Dataset):
                 if f"splits/{split}" not in f:
                     available = list(f["splits"].keys()) if "splits" in f else []
                     raise KeyError(f"Split '{split}' not found in H5 file. Available: {available}")
-                self._indices = f[f"splits/{split}"][:].astype(np.int64)
+                split_indices = f[f"splits/{split}"][:].astype(np.int64)
+
+                if self._is_longitudinal:
+                    # Split indices are patient-level; expand to scan indices via CSR
+                    self._indices = self._expand_patient_indices(split_indices)
+                else:
+                    self._indices = split_indices
             else:
                 self._indices = np.arange(n_total, dtype=np.int64)
 
@@ -390,15 +149,43 @@ class BraTSMENDatasetH5(Dataset):
         else:
             self.transform = transform
 
+        schema_type = "longitudinal" if self._is_longitudinal else "cross-sectional"
         logger.info(
-            f"BraTSMENDatasetH5 initialized: {len(self._indices)} subjects "
-            f"from {Path(self.h5_path).name}" + (f" (split={split})" if split else "")
+            f"BraTSDatasetH5 initialized: {len(self._indices)} scans ({schema_type}, "
+            f"domain={self._domain}) from {Path(self.h5_path).name}"
+            + (f" (split={split})" if split else "")
         )
+
+    def _expand_patient_indices(self, patient_indices: np.ndarray) -> np.ndarray:
+        """Expand patient-level split indices to scan-level indices via CSR offsets.
+
+        Args:
+            patient_indices: Indices into ``patient_list``.
+
+        Returns:
+            Array of scan-level indices.
+        """
+        scan_indices = []
+        for pi in patient_indices:
+            start = self._patient_offsets[pi]
+            end = self._patient_offsets[pi + 1]
+            scan_indices.extend(range(start, end))
+        return np.array(scan_indices, dtype=np.int64)
 
     @property
     def subject_ids(self) -> list[str]:
-        """Subject IDs for the active split/indices."""
+        """Subject/scan IDs for the active split/indices."""
         return [self._subject_ids[int(i)] for i in self._indices]
+
+    @property
+    def domain(self) -> str:
+        """Domain identifier (e.g. 'MEN', 'GLI')."""
+        return self._domain
+
+    @property
+    def is_longitudinal(self) -> bool:
+        """Whether this H5 uses the longitudinal schema."""
+        return self._is_longitudinal
 
     def _get_h5(self):
         """Get or create a per-worker HDF5 file handle."""
@@ -415,7 +202,7 @@ class BraTSMENDatasetH5(Dataset):
         h5_idx = int(self._indices[idx])
         f = self._get_h5()
 
-        # Read image and seg from H5 (already preprocessed to 192³)
+        # Read image and seg from H5 (already preprocessed to 192^3)
         image = f["images"][h5_idx]  # [4, 192, 192, 192] float32
         seg = f["segs"][h5_idx]  # [1, 192, 192, 192] int8
 
@@ -435,7 +222,12 @@ class BraTSMENDatasetH5(Dataset):
             "image": data["image"],
             "seg": data["seg"],
             "subject_id": subject_id,
+            "domain": self._domain,
         }
+
+        # Add longitudinal fields
+        if self._is_longitudinal and self._patient_ids is not None:
+            output["patient_id"] = self._patient_ids[h5_idx]
 
         # Load semantic features from H5
         if self.compute_semantic:
@@ -483,108 +275,79 @@ class BraTSMENDatasetH5(Dataset):
 
     @staticmethod
     def load_subject_ids_from_h5(h5_path: str | Path) -> list[str]:
-        """Load subject ID list from an H5 file.
+        """Load subject/scan ID list from an H5 file.
+
+        For cross-sectional H5: returns ``subject_ids``.
+        For longitudinal H5: returns ``scan_ids``.
 
         Args:
             h5_path: Path to the HDF5 file.
 
         Returns:
-            List of subject ID strings.
+            List of ID strings.
         """
         import h5py
 
         with h5py.File(str(h5_path), "r") as f:
-            return [s.decode() if isinstance(s, bytes) else s for s in f["subject_ids"][:]]
+            key = "scan_ids" if "scan_ids" in f else "subject_ids"
+            return [s.decode() if isinstance(s, bytes) else s for s in f[key][:]]
+
+
+# Backward-compatibility alias
+BraTSMENDatasetH5 = BraTSDatasetH5
 
 
 def create_dataloaders(
-    data_root: str | Path | None = None,
-    train_ids: list[str] | None = None,
-    val_ids: list[str] | None = None,
+    h5_path: str | Path,
     batch_size: int = 4,
     num_workers: int = 4,
     pin_memory: bool = True,
     compute_semantic: bool = True,
-    cache_semantic: bool = True,
     augment_train: bool = True,
-    h5_path: str | Path | None = None,
     train_split: str = "lora_train",
     val_split: str = "lora_val",
     roi_size: tuple[int, int, int] | None = None,
     val_roi_size: tuple[int, int, int] | None = None,
     val_batch_size: int | None = None,
 ) -> tuple[DataLoader, DataLoader]:
-    """Create train and validation DataLoaders.
-
-    Supports two backends:
-    - **NIfTI** (default): when ``data_root`` is set with ``train_ids``/``val_ids``.
-    - **HDF5** (fast): when ``h5_path`` is set, uses pre-preprocessed volumes.
+    """Create train and validation DataLoaders from an H5 file.
 
     Args:
-        data_root: Path to BraTS-MEN directory (NIfTI backend).
-        train_ids: List of subject IDs for training (NIfTI backend).
-        val_ids: List of subject IDs for validation (NIfTI backend).
+        h5_path: Path to HDF5 file (required).
         batch_size: Batch size for both loaders.
         num_workers: Number of data loading workers.
         pin_memory: Whether to pin memory for faster GPU transfer.
-        compute_semantic: Whether to compute/load semantic features.
-        cache_semantic: Whether to cache semantic features (NIfTI only).
+        compute_semantic: Whether to load semantic features.
         augment_train: Whether to apply augmentation to training data.
-        h5_path: Path to HDF5 file (H5 backend). Takes precedence over
-            ``data_root`` when both are set.
         train_split: Split name for training in H5 file.
         val_split: Split name for validation in H5 file.
         roi_size: Override ROI size for training transforms.
         val_roi_size: Override ROI size for validation transforms. If None,
-            H5 backend defaults to FEATURE_ROI_SIZE (192³) for full tumor
-            coverage; NIfTI backend matches training ROI size.
+            defaults to FEATURE_ROI_SIZE (192^3) for full tumor coverage.
         val_batch_size: Override batch size for validation loader. If None,
-            defaults to ``batch_size``. Useful when ``val_roi_size`` is
-            larger than training ROI (e.g. 192³ vs 128³).
+            defaults to ``batch_size``.
 
     Returns:
         Tuple of (train_loader, val_loader).
     """
-    if h5_path is not None:
-        # ---- H5 backend ----
-        from .transforms import DEFAULT_ROI_SIZE, FEATURE_ROI_SIZE
+    from .transforms import DEFAULT_ROI_SIZE, FEATURE_ROI_SIZE
 
-        train_roi = roi_size or DEFAULT_ROI_SIZE
-        val_roi = val_roi_size or FEATURE_ROI_SIZE
+    train_roi = roi_size or DEFAULT_ROI_SIZE
+    val_roi = val_roi_size or FEATURE_ROI_SIZE
 
-        train_dataset = BraTSMENDatasetH5(
-            h5_path=h5_path,
-            split=train_split,
-            transform=get_h5_train_transforms(roi_size=train_roi, augment=augment_train),
-            compute_semantic=compute_semantic,
-        )
+    train_dataset = BraTSDatasetH5(
+        h5_path=h5_path,
+        split=train_split,
+        transform=get_h5_train_transforms(roi_size=train_roi, augment=augment_train),
+        compute_semantic=compute_semantic,
+    )
 
-        val_dataset = BraTSMENDatasetH5(
-            h5_path=h5_path,
-            split=val_split,
-            transform=get_h5_val_transforms(roi_size=val_roi),
-            compute_semantic=compute_semantic,
-        )
-    else:
-        # ---- NIfTI backend (original) ----
-        if data_root is None:
-            raise ValueError("Either h5_path or data_root must be provided")
-
-        train_dataset = BraTSMENDataset(
-            data_root=data_root,
-            subject_ids=train_ids,
-            transform=(get_train_transforms() if augment_train else get_val_transforms()),
-            compute_semantic=compute_semantic,
-            cache_semantic=cache_semantic,
-        )
-
-        val_dataset = BraTSMENDataset(
-            data_root=data_root,
-            subject_ids=val_ids,
-            transform=get_val_transforms(),
-            compute_semantic=compute_semantic,
-            cache_semantic=cache_semantic,
-        )
+    val_dataset = BraTSDatasetH5(
+        h5_path=h5_path,
+        split=val_split,
+        transform=get_h5_val_transforms(roi_size=val_roi),
+        compute_semantic=compute_semantic,
+    )
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -606,86 +369,6 @@ def create_dataloaders(
     )
 
     return train_loader, val_loader
-
-
-def split_subjects(
-    subject_ids: list[str],
-    train_size: int,
-    val_size: int,
-    test_size: int,
-    seed: int = 42,
-) -> dict[str, list[str]]:
-    """Split subjects into train/val/test sets.
-
-    Uses deterministic random shuffling based on seed.
-
-    Args:
-        subject_ids: List of all subject IDs.
-        train_size: Number of subjects for training.
-        val_size: Number of subjects for validation.
-        test_size: Number of subjects for testing.
-        seed: Random seed for reproducibility.
-
-    Returns:
-        Dict with keys 'train', 'val', 'test' mapping to subject ID lists.
-
-    Raises:
-        ValueError: If total size exceeds available subjects.
-
-    Example:
-        >>> all_ids = BraTSMENDataset.get_all_subject_ids(data_root)
-        >>> splits = split_subjects(all_ids, train=200, val=100, test=500)
-        >>> len(splits['train'])
-        200
-    """
-    total_needed = train_size + val_size + test_size
-    if total_needed > len(subject_ids):
-        raise ValueError(f"Requested {total_needed} subjects but only {len(subject_ids)} available")
-
-    # Deterministic shuffle
-    rng = np.random.RandomState(seed)
-    shuffled = list(subject_ids)
-    rng.shuffle(shuffled)
-
-    # Split
-    train_end = train_size
-    val_end = train_end + val_size
-    test_end = val_end + test_size
-
-    return {
-        "train": shuffled[:train_end],
-        "val": shuffled[train_end:val_end],
-        "test": shuffled[val_end:test_end],
-    }
-
-
-def save_splits(splits: dict[str, list[str]], path: str | Path) -> None:
-    """Save data splits to JSON file.
-
-    Args:
-        splits: Dict mapping split names to subject ID lists.
-        path: Output JSON file path.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(path, "w") as f:
-        json.dump(splits, f, indent=2)
-
-    logger.info(f"Saved splits to {path}")
-
-
-def load_splits(path: str | Path) -> dict[str, list[str]]:
-    """Load data splits from JSON file.
-
-    Args:
-        path: Path to JSON file.
-
-    Returns:
-        Dict mapping split names to subject ID lists.
-    """
-    with open(path) as f:
-        return json.load(f)
 
 
 def split_subjects_multi(
@@ -711,10 +394,9 @@ def split_subjects_multi(
         ValueError: If total requested size exceeds available subjects.
 
     Example:
-        >>> all_ids = BraTSMENDataset.get_all_subject_ids(data_root)
         >>> splits = split_subjects_multi(
         ...     all_ids,
-        ...     {"lora_train": 400, "lora_val": 100, "probe_train": 200, "test": 300},
+        ...     {"lora_train": 400, "lora_val": 100, "test": 300},
         ...     seed=42,
         ... )
         >>> len(splits["lora_train"])
@@ -738,3 +420,21 @@ def split_subjects_multi(
         idx += size
 
     return splits
+
+
+def save_splits(splits: dict[str, list[str]], path: str | Path) -> None:
+    """Save data splits to JSON file.
+
+    Args:
+        splits: Dict mapping split names to subject ID lists.
+        path: Output JSON file path.
+    """
+    import json
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(path, "w") as f:
+        json.dump(splits, f, indent=2)
+
+    logger.info(f"Saved splits to {path}")

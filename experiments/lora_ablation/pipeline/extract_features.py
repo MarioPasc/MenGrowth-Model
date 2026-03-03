@@ -24,8 +24,7 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from growth.data.bratsmendata import BraTSMENDataset
-from growth.data.transforms import FEATURE_ROI_SIZE, get_val_transforms
+from growth.data.transforms import FEATURE_ROI_SIZE
 from growth.models.encoder.lora_adapter import LoRASwinViT
 from growth.models.encoder.swin_loader import load_swin_encoder
 from growth.utils.seed import set_seed
@@ -344,26 +343,19 @@ def extract_features_for_split(
     Returns:
         Tuple of (features_dict, targets_dict, subject_ids).
     """
-    if h5_path is not None:
-        from growth.data.bratsmendata import BraTSMENDatasetH5
-        from growth.data.transforms import get_h5_val_transforms
+    from growth.data.bratsmendata import BraTSDatasetH5
+    from growth.data.transforms import get_h5_val_transforms
 
-        dataset = BraTSMENDatasetH5(
-            h5_path=h5_path,
-            split=h5_split,
-            indices=None if h5_split else np.arange(len(subject_ids)),
-            transform=get_h5_val_transforms(roi_size=FEATURE_ROI_SIZE),
-            compute_semantic=True,
-        )
-    else:
-        # 192³ center crop for feature extraction (100% tumor containment)
-        dataset = BraTSMENDataset(
-            data_root=data_root,
-            subject_ids=subject_ids,
-            transform=get_val_transforms(roi_size=FEATURE_ROI_SIZE),
-            compute_semantic=True,
-            cache_semantic=True,
-        )
+    if h5_path is None:
+        raise ValueError("h5_path is required for feature extraction")
+
+    dataset = BraTSDatasetH5(
+        h5_path=h5_path,
+        split=h5_split,
+        indices=None if h5_split else np.arange(len(subject_ids)),
+        transform=get_h5_val_transforms(roi_size=FEATURE_ROI_SIZE),
+        compute_semantic=True,
+    )
 
     dataloader = DataLoader(
         dataset,

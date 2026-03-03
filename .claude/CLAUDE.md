@@ -21,16 +21,27 @@ Phase order: 1 → 2 → 3 → 4. Do NOT start a phase until predecessors pass B
 - **Phase 3 (Encoding + ComBat)**: NOT STARTED — per module_4_encoding spec
 - **Phase 4 (Growth Prediction)**: STUBBED — per module_5_growth_prediction spec (LME → H-GP → PA-MOGP, LOPO-CV)
 
-## Dataset: Dual-Mode NIfTI / HDF5
+## Dataset: HDF5
 
-The pipeline supports two data backends:
+The pipeline uses a single HDF5 backend (`BraTSDatasetH5`, alias `BraTSMENDatasetH5`) that supports two schemas:
 
-- **NIfTI** (`BraTSMENDataset`): Loads 5 NIfTI files per subject. Used for sliding-window inference and conversion.
-- **HDF5** (`BraTSMENDatasetH5`): Single-file backend with pre-preprocessed 192³ volumes. Used for training, feature extraction, and Picasso cluster jobs.
+- **Cross-sectional** (BraTS-MEN): `subject_ids` dataset, one scan per subject.
+- **Longitudinal** (BraTS-GLI): `scan_ids` + `patient_ids` + CSR `longitudinal/` group. Patient-level splits are expanded to scan indices via CSR offsets.
 
-Convert NIfTI → H5: `python scripts/convert_nifti_to_h5.py --data-root /path/to/BraTS_Men_Train --output brats_men_train.h5`
+Schema auto-detected by presence of `scan_ids` (longitudinal) vs `subject_ids` (cross-sectional).
 
-H5 schema: `images [N,4,192,192,192]`, `segs [N,1,192,192,192]`, `subject_ids [N]`, `semantic/{volume,location,shape}`, `splits/{lora_train,lora_val,sdp_train,test}`, `metadata/{grade,age,sex}`. Images are spatially preprocessed but NOT intensity-normalized (normalization at runtime).
+All three datasets (BraTS-MEN, BraTS-GLI, MenGrowth) use `BraTSDatasetH5` — no NIfTI loaders remain.
+
+Convert NIfTI → H5:
+- MEN: `python scripts/convert_brats_men_to_h5.py --data-root /path/to/BraTS_Men_Train --output brats_men_train.h5`
+- GLI: `python scripts/convert_brats_gli_to_h5.py --data-root /path/to/BraTS_GLI --output brats_gli.h5`
+- MenGrowth: `python scripts/convert_mengrowth_to_h5.py --data-root /path/to/MenGrowth-2025 --output mengrowth.h5`
+
+H5 schema (cross-sectional): `images [N,4,192,192,192]`, `segs [N,1,192,192,192]`, `subject_ids [N]`, `semantic/{volume,location,shape}`, `splits/{lora_train,lora_val,test}`, `metadata/{grade,age,sex}`.
+
+H5 schema (longitudinal): adds `scan_ids [N]`, `patient_ids [N]`, `timepoint_idx [N]`, `longitudinal/{patient_offsets, patient_list}`. Splits reference `patient_list` indices.
+
+Images are spatially preprocessed but NOT intensity-normalized (normalization at runtime).
 
 H5 transforms: `get_h5_train_transforms()` / `get_h5_val_transforms()` in `transforms.py`. Config key: `paths.h5_file`.
 
@@ -39,8 +50,7 @@ H5 transforms: `get_h5_train_transforms()` / `get_h5_val_transforms()` in `trans
 - **Channel order**: `["t2f", "t1c", "t1n", "t2w"]` = [FLAIR, T1ce, T1, T2]. Wrong order → Dice ~0.00. Defined in `MODALITY_KEYS` in `src/growth/data/transforms.py`.
 - **ROI size**: 128³ (matching BrainSegFounder fine-tuning), NOT 96³. encoder10 output: `[B, 768, 4, 4, 4]`.
 - **Segmentation output**: 3-ch sigmoid — Ch0=TC, Ch1=WT, Ch2=ET (hierarchical overlapping, NOT individual labels).
-- **Input labels**: 0=background, 1=NCR, 2=ED, 3=ET. Conversion in `segmentation.py._convert_target()`.
-- **Preprocessing (NIfTI)**: Training: CropForeground → SpatialPad(128³) → RandSpatialCrop(128³). Validation: center crop. Inference: sliding window 128³ patches, 50% overlap.
+- **Input labels**: 0=background, 1=NCR, 2=ED, 3=ET (+ 4=RC for GLI, merged into NCR for semantic features). Conversion in `segmentation.py._convert_target()`.
 - **Preprocessing (H5)**: Volumes pre-preprocessed to 192³. Runtime: NormalizeIntensity → optional RandSpatialCrop(128³) for training.
 
 ## Key Libraries
@@ -63,7 +73,7 @@ src/growth/          # Main pipeline
 
 experiments/lora_ablation/  # Phase 1 ablation (complete)
 experiments/sdp/            # Phase 2 SDP (feature extraction + training)
-scripts/                    # Utilities (convert_nifti_to_h5.py)
+scripts/                    # Utilities (convert_brats_men_to_h5.py, convert_brats_gli_to_h5.py, convert_mengrowth_to_h5.py)
 slurm/sdp/                  # SLURM jobs for Picasso cluster
 src/vae/                    # Legacy VAE code (Exp1-3, superseded)
 ```

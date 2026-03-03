@@ -163,16 +163,13 @@ def _run_validation_only(
     # Create validation dataloader
     # Use 128³ (matching BSF fine-tuning) — decoder OOMs at 192³.
     logger.info("Creating validation dataloader...")
-    h5_path = config.get("paths", {}).get("h5_file")
+    h5_path = config["paths"]["h5_file"]
     _, val_loader = create_dataloaders(
-        data_root=config["paths"]["data_root"],
-        train_ids=splits["lora_train"][:10],  # Minimal train set (not used)
-        val_ids=splits["lora_val"],
+        h5_path=h5_path,
         batch_size=training_config["batch_size"],
         num_workers=training_config["num_workers"],
         compute_semantic=False,
         augment_train=False,
-        h5_path=h5_path,
         val_batch_size=training_config.get("val_batch_size", 1),
         val_roi_size=DEFAULT_ROI_SIZE,
     )
@@ -1026,16 +1023,13 @@ def train_condition(
     # Both train and val use 128³ (matching BSF fine-tuning resolution).
     # 192³ is reserved for encoder-only feature extraction (no decoder).
     logger.info("Creating dataloaders...")
-    h5_path = config.get("paths", {}).get("h5_file")
+    h5_path = config["paths"]["h5_file"]
     train_loader, val_loader = create_dataloaders(
-        data_root=config["paths"]["data_root"],
-        train_ids=splits["lora_train"],
-        val_ids=splits["lora_val"],
+        h5_path=h5_path,
         batch_size=training_config["batch_size"],
         num_workers=training_config["num_workers"],
         compute_semantic=use_semantic_heads,
         augment_train=True,
-        h5_path=h5_path,
         val_batch_size=training_config.get("val_batch_size", 1),
         val_roi_size=DEFAULT_ROI_SIZE,
     )
