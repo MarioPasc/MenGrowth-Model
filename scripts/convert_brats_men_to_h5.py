@@ -28,14 +28,14 @@ H5 Schema:
 Usage:
     # Dry-run with 5 subjects
     python scripts/convert_brats_men_to_h5.py \
-        --data-root /path/to/BraTS_Men_Train \
-        --output brats_men_train.h5 \
+        --data-root /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train \
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/BraTS_MEN.h5 \
         --max-subjects 5
 
     # Full conversion (all 1000 subjects)
     python scripts/convert_brats_men_to_h5.py \
-        --data-root /path/to/BraTS_Men_Train \
-        --output brats_men_train.h5
+        --data-root /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train \
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/BraTS_MEN.h5
 
 Estimated output size: ~15 GB for 1000 subjects (gzip-compressed).
 """

@@ -34,14 +34,14 @@ H5 Schema:
 Usage:
     # Dry-run with 3 patients
     python scripts/convert_mengrowth_to_h5.py \
-        --data-root /path/to/MenGrowth-2025 \
-        --output /tmp/test_mengrowth.h5 \
+        --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/preprocessed/MenGrowth-2025 \
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/MenGrowth.h5 \
         --max-patients 3
 
     # Full conversion
     python scripts/convert_mengrowth_to_h5.py \
-        --data-root /path/to/MenGrowth-2025 \
-        --output mengrowth.h5
+        --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/preprocessed/MenGrowth-2025 \
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/MenGrowth.h5
 """
 
 from __future__ import annotations
