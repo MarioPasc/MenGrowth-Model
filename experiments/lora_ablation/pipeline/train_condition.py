@@ -34,11 +34,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import yaml
-import numpy as np
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
@@ -461,19 +461,23 @@ def create_optimizer(
     warmup_epochs = training_config.get("lr_warmup_epochs", 5)
 
     warmup_scheduler = LinearLR(
-        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs,
+        optimizer,
+        start_factor=0.01,
+        end_factor=1.0,
+        total_iters=warmup_epochs,
     )
     plateau_scheduler = ReduceLROnPlateau(
-        optimizer, mode='max',
+        optimizer,
+        mode="max",
         factor=training_config.get("lr_reduce_factor", 0.5),
         patience=training_config.get("lr_reduce_patience", 10),
         min_lr=1e-7,
     )
 
     scheduler_info = {
-        'warmup': warmup_scheduler,
-        'plateau': plateau_scheduler,
-        'warmup_epochs': warmup_epochs,
+        "warmup": warmup_scheduler,
+        "plateau": plateau_scheduler,
+        "warmup_epochs": warmup_epochs,
     }
 
     return optimizer, scheduler_info
@@ -596,7 +600,9 @@ def train_epoch(
     n_batches = len(dataloader)
     log_interval = max(1, n_batches // 4)  # Log at ~25%, 50%, 75%, 100%
 
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training", leave=False, disable=not _INTERACTIVE)):
+    for batch_idx, batch in enumerate(
+        tqdm(dataloader, desc="Training", leave=False, disable=not _INTERACTIVE)
+    ):
         images = batch["image"].to(device)
         segs = batch["seg"].to(device)
 
@@ -607,7 +613,7 @@ def train_epoch(
         # Forward pass under bf16 autocast (no-op when use_amp=False)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
             # Use forward_with_semantics when we need features (for aux or vicreg)
-            need_features = (use_semantic_heads or vicreg_loss_fn is not None)
+            need_features = use_semantic_heads or vicreg_loss_fn is not None
             if need_features and hasattr(model, "forward_with_semantics"):
                 outputs = model.forward_with_semantics(images)
                 pred = outputs["logits"]
@@ -651,9 +657,8 @@ def train_epoch(
         # Backward pass for seg+aux only (outside autocast — gradients in fp32)
         # retain_graph on the last micro-batch before a step boundary so VICReg
         # can still backprop through the features from that forward pass.
-        is_step_boundary = (
-            (batch_idx + 1) % grad_accum_steps == 0
-            or (batch_idx + 1) == len(dataloader)
+        is_step_boundary = (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(
+            dataloader
         )
         need_retain = bool(
             vicreg_loss_fn is not None
@@ -876,9 +881,9 @@ def evaluate_feature_quality_inline(
         gp_results = probe.evaluate(X, Y)
         results[f"probe_{name}_r2"] = max(0.0, gp_results.r2)
 
-    results["probe_mean_r2"] = float(np.mean([
-        results["probe_vol_r2"], results["probe_loc_r2"], results["probe_shape_r2"]
-    ]))
+    results["probe_mean_r2"] = float(
+        np.mean([results["probe_vol_r2"], results["probe_loc_r2"], results["probe_shape_r2"]])
+    )
     return results
 
 
@@ -985,9 +990,7 @@ def train_condition(
     freeze_decoder = training_config.get("freeze_decoder", False)
 
     # Per-condition lambda_aux override (for v3 ablation)
-    lambda_aux = condition_config.get(
-        "lambda_aux_override", training_config.get("lambda_aux", 0.1)
-    )
+    lambda_aux = condition_config.get("lambda_aux_override", training_config.get("lambda_aux", 0.1))
 
     # Auxiliary loss warmup parameters
     aux_warmup_start = training_config.get("aux_warmup_epochs", 0)
@@ -1204,11 +1207,11 @@ def train_condition(
         val_metrics = validate(model, val_loader, seg_loss_fn, dice_metric, device, use_amp=use_amp)
 
         # Update scheduler (warmup then plateau)
-        if epoch < scheduler_info['warmup_epochs']:
-            scheduler_info['warmup'].step()
+        if epoch < scheduler_info["warmup_epochs"]:
+            scheduler_info["warmup"].step()
         else:
-            scheduler_info['plateau'].step(val_metrics['dice_mean'])
-        current_lr = optimizer.param_groups[0]['lr']
+            scheduler_info["plateau"].step(val_metrics["dice_mean"])
+        current_lr = optimizer.param_groups[0]["lr"]
 
         # Log metrics with per-component losses
         log_msg = (
@@ -1311,10 +1314,7 @@ def train_condition(
                 model, condition_dir, is_baseline, epoch + 1, best_metrics, decoder_type
             )
             patience_counter = 0
-            logger.info(
-                f"  New best! probe_mean_r2={checkpoint_score:.4f} "
-                f"(dice={best_dice:.4f})"
-            )
+            logger.info(f"  New best! probe_mean_r2={checkpoint_score:.4f} (dice={best_dice:.4f})")
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -1327,7 +1327,7 @@ def train_condition(
     logger.info(f"Best validation Dice: {best_dice:.4f} at epoch {best_metrics['epoch']}")
 
     # Generate model card for LoRA adapters (if enabled)
-    if not is_baseline and config.get("model_card", {}).get("enabled", True):
+    if not is_baseline and (config.get("model_card") or {}).get("enabled", True):
         adapter_dir = condition_dir / "adapter"
         model_card_cfg = model_card_from_training(
             lora_rank=condition_config["lora_rank"],

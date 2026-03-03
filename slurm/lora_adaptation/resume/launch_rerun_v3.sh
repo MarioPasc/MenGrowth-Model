@@ -119,7 +119,7 @@ echo ""
 echo "Submitting re-run array job (Steps 2-5 only, skip training)..."
 
 ARRAY_JOB_RAW=$(sbatch --parsable \
-    --array=0-6 \
+    --array=2-6 \
     --job-name="v3_rerun" \
     --output="${SLURM_LOG_DIR}/rerun_%a_%j.out" \
     --error="${SLURM_LOG_DIR}/rerun_%a_%j.err" \
@@ -128,7 +128,7 @@ ARRAY_JOB_RAW=$(sbatch --parsable \
 
 ARRAY_JOB_ID="${ARRAY_JOB_RAW%%[_;]*}"
 
-echo "  Array job ID: ${ARRAY_JOB_ID} (7 elements, 0-6)"
+echo "  Array job ID: ${ARRAY_JOB_ID} (5 elements, 2-6 — baselines already complete)"
 echo ""
 
 # ========================================================================
@@ -143,7 +143,7 @@ ANALYSIS_JOB_ID=$(sbatch --parsable \
     --output="${SLURM_LOG_DIR}/analysis_rerun_%j.out" \
     --error="${SLURM_LOG_DIR}/analysis_rerun_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
-    "${SCRIPT_DIR}/analysis_worker_v3.sh")
+    "${SCRIPT_DIR}/../analysis_worker_v3.sh")
 
 echo "  Analysis job ID: ${ANALYSIS_JOB_ID}"
 echo ""
