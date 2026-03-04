@@ -160,23 +160,43 @@ echo ""
 # ========================================================================
 echo "Submitting analysis job (dependent on array ${ARRAY_JOB_ID})..."
 
-# Use base array job ID — SLURM waits for ALL elements to complete
-echo "  Dependency: afterok:${ARRAY_JOB_ID}"
+# Try multiple dependency/constraint combos — Picasso SLURM may reject some
+ANALYSIS_JOB_ID=""
+for DEP_STYLE in \
+    "afterany:${ARRAY_JOB_ID} --constraint=cpu" \
+    "afterany:${ARRAY_JOB_ID}" \
+    "afterok:${ARRAY_JOB_ID} --constraint=cpu" \
+    "afterok:${ARRAY_JOB_ID}"; do
 
-ANALYSIS_JOB_ID=$(sbatch --parsable \
-    --dependency="afterok:${ARRAY_JOB_ID}" \
-    --job-name="ddp_analysis" \
-    --constraint=cpu \
-    --time=02:00:00 \
-    --ntasks=1 \
-    --cpus-per-task=8 \
-    --mem=32G \
-    --output="${SLURM_LOG_DIR}/analysis_%j.out" \
-    --error="${SLURM_LOG_DIR}/analysis_%j.err" \
-    --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
-    "${SCRIPT_DIR}/analysis_worker_v3.sh")
+    DEP_FLAG="${DEP_STYLE%% *}"
+    EXTRA_FLAGS="${DEP_STYLE#* }"
+    [ "${EXTRA_FLAGS}" = "${DEP_FLAG}" ] && EXTRA_FLAGS=""
 
-echo "  Analysis job ID: ${ANALYSIS_JOB_ID}"
+    echo "  Trying: --dependency=${DEP_FLAG} ${EXTRA_FLAGS}"
+    # shellcheck disable=SC2086
+    ANALYSIS_JOB_ID=$(sbatch --parsable \
+        --dependency="${DEP_FLAG}" \
+        --job-name="ddp_analysis" \
+        --time=02:00:00 \
+        --ntasks=1 \
+        --cpus-per-task=8 \
+        --mem=32G \
+        ${EXTRA_FLAGS} \
+        --output="${SLURM_LOG_DIR}/analysis_%j.out" \
+        --error="${SLURM_LOG_DIR}/analysis_%j.err" \
+        --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
+        "${SCRIPT_DIR}/analysis_worker_v3.sh" 2>/dev/null) && break
+
+    ANALYSIS_JOB_ID=""
+done
+
+if [ -n "${ANALYSIS_JOB_ID}" ]; then
+    echo "  Analysis job ID: ${ANALYSIS_JOB_ID}"
+else
+    echo "  [WARN] Could not submit dependent analysis job."
+    echo "         Run manually after training completes:"
+    echo "         sbatch --export=ALL,CONFIG_PATH=${CONFIG_PATH},REPO_SRC=${REPO_SRC},CONDA_ENV_NAME=${CONDA_ENV_NAME} ${SCRIPT_DIR}/analysis_worker_v3.sh"
+fi
 echo ""
 
 # ========================================================================
@@ -189,7 +209,9 @@ echo ""
 echo "Monitor:"
 echo "  squeue -u \$USER"
 echo "  squeue -j ${ARRAY_JOB_ID}         # training array (2x DDP)"
-echo "  squeue -j ${ANALYSIS_JOB_ID}       # analysis (dependent)"
+if [ -n "${ANALYSIS_JOB_ID}" ]; then
+    echo "  squeue -j ${ANALYSIS_JOB_ID}       # analysis (dependent)"
+fi
 echo ""
 echo "Per-condition logs:"
 for i in $(seq 0 ${LAST_IDX}); do
@@ -197,7 +219,11 @@ for i in $(seq 0 ${LAST_IDX}); do
 done
 echo ""
 echo "Cancel all:"
-echo "  scancel ${ARRAY_JOB_ID} ${ANALYSIS_JOB_ID}"
+if [ -n "${ANALYSIS_JOB_ID}" ]; then
+    echo "  scancel ${ARRAY_JOB_ID} ${ANALYSIS_JOB_ID}"
+else
+    echo "  scancel ${ARRAY_JOB_ID}"
+fi
 echo ""
 echo "Estimated timeline:"
 echo "  Training:  ~3-6h per condition (2x GPU DDP)"
