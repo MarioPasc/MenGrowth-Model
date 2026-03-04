@@ -16,19 +16,31 @@ B.Sc. thesis project.
 
 Phase order: 1 → 2 → 3 → 4. Do NOT start a phase until predecessors pass BLOCKING tests.
 
-- **Phase 1 (LoRA Adaptation)**: COMPLETE — code in `experiments/lora_ablation/`
+- **Phase 1 (LoRA Adaptation)**: COMPLETE — code in `experiments/lora/`
 - **Phase 2 (SDP)**: STUBBED — needs implementation per module_3_sdp spec
 - **Phase 3 (Encoding + ComBat)**: NOT STARTED — per module_4_encoding spec
 - **Phase 4 (Growth Prediction)**: STUBBED — per module_5_growth_prediction spec (LME → H-GP → PA-MOGP, LOPO-CV)
 
 ## Dataset: HDF5
 
-The pipeline uses a single HDF5 backend (`BraTSDatasetH5`, alias `BraTSMENDatasetH5`) that supports two schemas:
+The pipeline uses a single HDF5 backend (`BraTSDatasetH5`, alias `BraTSMENDatasetH5`). All three H5 files use the **unified v2.0 schema**:
 
-- **Cross-sectional** (BraTS-MEN): `subject_ids` dataset, one scan per subject.
-- **Longitudinal** (BraTS-GLI): `scan_ids` + `patient_ids` + CSR `longitudinal/` group. Patient-level splits are expanded to scan indices via CSR offsets.
+```
+attrs:           {n_scans, n_patients, roi_size, spacing, channel_order, version="2.0", dataset_type, domain}
+images           [N_scans, 4, 192, 192, 192] float32
+segs             [N_scans, 1, 192, 192, 192] int8
+scan_ids         [N_scans] str
+patient_ids      [N_scans] str
+timepoint_idx    [N_scans] int32
+semantic/        {volume [N,4], location [N,3], shape [N,3]}
+longitudinal/    {patient_offsets [N_patients+1], patient_list [N_patients]}
+splits/          {lora_train, lora_val, test}  (patient-level indices into patient_list)
+metadata/        {grade, age, sex}
+```
 
-Schema auto-detected by presence of `scan_ids` (longitudinal) vs `subject_ids` (cross-sectional).
+For cross-sectional MEN data, the longitudinal structure is trivial: each patient has 1 scan at timepoint 0, so `n_scans == n_patients` and `patient_offsets = [0, 1, ..., N]`. The reader code path is identical for all datasets.
+
+Legacy v1.0 MEN files (with `subject_ids` instead of `scan_ids`) are still auto-detected and supported.
 
 All three datasets (BraTS-MEN, BraTS-GLI, MenGrowth) use `BraTSDatasetH5` — no NIfTI loaders remain.
 
@@ -36,10 +48,6 @@ Convert NIfTI → H5:
 - MEN: `python scripts/convert_brats_men_to_h5.py --data-root /path/to/BraTS_Men_Train --output brats_men_train.h5`
 - GLI: `python scripts/convert_brats_gli_to_h5.py --data-root /path/to/BraTS_GLI --output brats_gli.h5`
 - MenGrowth: `python scripts/convert_mengrowth_to_h5.py --data-root /path/to/MenGrowth-2025 --output mengrowth.h5`
-
-H5 schema (cross-sectional): `images [N,4,192,192,192]`, `segs [N,1,192,192,192]`, `subject_ids [N]`, `semantic/{volume,location,shape}`, `splits/{lora_train,lora_val,test}`, `metadata/{grade,age,sex}`.
-
-H5 schema (longitudinal): adds `scan_ids [N]`, `patient_ids [N]`, `timepoint_idx [N]`, `longitudinal/{patient_offsets, patient_list}`. Splits reference `patient_list` indices.
 
 Images are spatially preprocessed but NOT intensity-normalized (normalization at runtime).
 
@@ -71,7 +79,14 @@ src/growth/          # Main pipeline
   evaluation/        # Probes, metrics, visualization
   inference/         # Sliding window, ComBat harmonization
 
-experiments/lora_ablation/  # Phase 1 ablation (complete)
+experiments/lora/           # Phase 1 LoRA adaptation (unified single+dual domain)
+  engine/                   #   train_condition, extract_features, model_factory, data_splits
+  eval/                     #   evaluate_dice, evaluate_probes, evaluate_domain_gap, evaluate_feature_quality
+  analysis/                 #   statistical_analysis, generate_tables, v3_cache, v3_figures
+  report/                   #   HTML report generator (cli, figures, narrative, html_builder)
+  vis/                      #   visualizations, dual_domain_viz
+  utils/                    #   output_paths
+  config/                   #   YAML configs (ablation, dual_domain, local/server/picasso)
 experiments/sdp/            # Phase 2 SDP (feature extraction + training)
 scripts/                    # Utilities (convert_brats_men_to_h5.py, convert_brats_gli_to_h5.py, convert_mengrowth_to_h5.py)
 slurm/sdp/                  # SLURM jobs for Picasso cluster

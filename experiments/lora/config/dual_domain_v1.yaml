@@ -1,0 +1,137 @@
+# experiments/dual_domain_lora/config/dual_domain_v1.yaml
+# Dual-Domain Mixed-Batch LoRA Adaptation
+#
+# Trains on BraTS-MEN + BraTS-GLI simultaneously so a single LoRA-adapted
+# encoder produces semantically structured features for both tumour types.
+
+experiment:
+  name: dual_domain_lora_v1
+  seed: 42
+  output_dir: /media/hddb/mario/results/growth/dual_domain_lora_v1
+
+paths:
+  checkpoint: /media/hddb/mario/data/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  men_h5_file: /media/mpascual/Sandisk2TB/brats/BraTS_MEN.h5
+  gli_h5_file: /media/mpascual/Sandisk2TB/brats/BraTS_GLI.h5
+
+# Spatial configuration
+data:
+  roi_size: [128, 128, 128]
+  feature_roi_size: [192, 192, 192]
+  domain_ratio: 0.5
+
+# =============================================================================
+# Experimental Conditions
+# =============================================================================
+conditions:
+  # Reference: no training
+  - name: baseline_frozen
+    skip_training: true
+    description: Original BrainSegFounder (completely frozen)
+
+  # Control: MEN-only (reproduces best v3 single-domain config)
+  - name: men_only_r8
+    lora_rank: 8
+    lora_alpha: 16
+    dual_domain: false
+    use_vicreg: true
+    lambda_aux_override: 0.3
+    description: MEN-only LoRA r8 + VICReg + lambda_aux=0.3
+
+  # Primary: dual-domain r8
+  - name: dual_r8
+    lora_rank: 8
+    lora_alpha: 16
+    dual_domain: true
+    use_vicreg: true
+    lambda_aux_override: 0.3
+    description: Dual-domain LoRA r8 + VICReg + lambda_aux=0.3
+
+  # Higher rank dual-domain
+  - name: dual_r16
+    lora_rank: 16
+    lora_alpha: 32
+    dual_domain: true
+    use_vicreg: true
+    lambda_aux_override: 0.3
+    description: Dual-domain LoRA r16 + VICReg + lambda_aux=0.3
+
+# =============================================================================
+# Training Hyperparameters
+# =============================================================================
+training:
+  max_epochs: 150
+  early_stopping_patience: 25
+  batch_size: 2
+  val_batch_size: 1
+  lr_encoder: 1.0e-4
+  lr_decoder: 5.0e-4
+  weight_decay: 1.0e-5
+  num_workers: 4
+  lora_dropout: 0.1
+  gradient_clip: 1.0
+
+  # Decoder configuration
+  decoder_type: "original"
+  freeze_decoder: false
+  use_semantic_heads: true
+
+  # Auxiliary loss (base value; conditions override via lambda_aux_override)
+  lambda_aux: 0.1
+
+  # Auxiliary loss warmup
+  aux_warmup_epochs: 15
+  aux_warmup_duration: 10
+
+  # VICReg encoder regularization
+  lambda_var_enc: 5.0
+  lambda_cov_enc: 1.0
+  vicreg_gamma: 1.0
+
+  # LR schedule
+  lr_warmup_epochs: 5
+  lr_reduce_factor: 0.5
+  lr_reduce_patience: 10
+
+  # Mixed precision and gradient accumulation
+  use_amp: true
+  grad_accum_steps: 4    # effective batch_size = 2 * 4 = 8
+
+  # Gradient monitoring
+  enable_gradient_monitoring: true
+  gradient_monitor_freq: 50
+
+# =============================================================================
+# Loss Weights
+# =============================================================================
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  lambda_volume: 1.0
+  lambda_location: 0.3
+  lambda_shape: 1.0
+
+# =============================================================================
+# Probe Evaluation
+# =============================================================================
+probe:
+  n_restarts: 3
+  r2_ci_samples: 500
+  normalize_features: true
+  normalize_targets: true
+
+# =============================================================================
+# Feature Extraction
+# =============================================================================
+feature_extraction:
+  level: encoder10
+  batch_size: 2
+  pooling_mode: gap
+
+# =============================================================================
+# Visualization
+# =============================================================================
+visualization:
+  umap_n_neighbors: 15
+  umap_min_dist: 0.1
+  color_by_semantic: true

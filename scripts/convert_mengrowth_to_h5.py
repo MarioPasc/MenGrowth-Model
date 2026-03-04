@@ -41,7 +41,7 @@ Usage:
     # Full conversion
     python scripts/convert_mengrowth_to_h5.py \
         --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/preprocessed/MenGrowth-2025 \
-        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/MenGrowth.h5
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5
 """
 
 from __future__ import annotations
@@ -89,9 +89,9 @@ logger = logging.getLogger(__name__)
 # H5 file version
 H5_VERSION = "2.0"
 
-# Default split sizes (patient-level, ~70/10/20 split for 33 patients)
+# Default split sizes (patient-level, ~70/10/20 split for 31 patients)
 DEFAULT_SPLIT_SIZES = {
-    "lora_train": 23,
+    "lora_train": 21,
     "lora_val": 3,
     "test": 7,
 }

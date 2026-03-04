@@ -1,28 +1,26 @@
 # src/growth/data/bratsmendata.py
 """BraTS dataset backed by HDF5 files.
 
-Supports two H5 schemas:
-  - **Cross-sectional** (BraTS-MEN): ``subject_ids`` dataset, one scan per subject.
-  - **Longitudinal** (BraTS-GLI): ``scan_ids`` + ``patient_ids`` + CSR
-    ``longitudinal/`` group.  Patient-level splits are expanded to scan indices
-    via CSR offsets so no patient leaks across splits.
+All three datasets (BraTS-MEN, BraTS-GLI, MenGrowth) use the **unified v2.0
+H5 schema**.  For cross-sectional data (MEN), the longitudinal structure is
+trivial: each patient has exactly 1 scan at timepoint 0, so
+``patient_offsets = [0, 1, ..., N]``.
 
-H5 file schema (cross-sectional, created by ``scripts/convert_brats_men_to_h5.py``):
-    images       [N, 4, 192, 192, 192] float32
-    segs         [N, 1, 192, 192, 192] int8
-    subject_ids  [N] string
-    semantic/    {volume, location, shape} arrays
-    splits/      {lora_train, lora_val, test} index arrays
-
-H5 file schema (longitudinal, created by ``scripts/convert_brats_gli_to_h5.py``):
+Unified H5 v2.0 schema (all datasets):
+    attrs:           {n_scans, n_patients, roi_size, spacing, channel_order,
+                      version, dataset_type, domain}
     images           [N_scans, 4, 192, 192, 192] float32
     segs             [N_scans, 1, 192, 192, 192] int8
     scan_ids         [N_scans] string
     patient_ids      [N_scans] string
     timepoint_idx    [N_scans] int32
-    semantic/        {volume, location, shape}
+    semantic/        {volume [N,4], location [N,3], shape [N,3]}
     longitudinal/    {patient_offsets [N_patients+1], patient_list [N_patients]}
     splits/          {lora_train, lora_val, test}  (patient-level indices)
+    metadata/        {grade, age, sex}
+
+Legacy note: older MEN H5 files (v1.0) used ``subject_ids`` instead of
+``scan_ids``.  The reader still supports this via auto-detection.
 """
 
 import logging
@@ -50,12 +48,13 @@ class BraTSDatasetH5(Dataset):
     Orient -> Resample -> CropForeground -> SpatialPad -> CenterCrop but NOT
     z-score normalized (applied at runtime by H5 transforms).
 
-    Supports both cross-sectional (MEN) and longitudinal (GLI) schemas.
-    Schema is auto-detected by the presence of ``scan_ids`` (longitudinal)
-    vs ``subject_ids`` (cross-sectional).
+    All datasets (MEN, GLI, MenGrowth) use the unified v2.0 schema with
+    ``scan_ids``, ``patient_ids``, ``timepoint_idx``, and a ``longitudinal/``
+    group.  For cross-sectional MEN data, the longitudinal CSR is trivial
+    (1 scan per patient).
 
-    For longitudinal H5 files, split indices reference the *patient list*
-    and are expanded to scan-level indices via CSR offsets.
+    Legacy v1.0 MEN files (``subject_ids`` only, no ``scan_ids``) are still
+    supported via auto-detection.
 
     Args:
         h5_path: Path to the HDF5 file.

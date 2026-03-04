@@ -198,12 +198,12 @@ def splits(smoke_config: dict) -> dict:
 
     set_seed(smoke_config["experiment"]["seed"])
 
-    from experiments.lora_ablation.pipeline.data_splits import main as generate_splits
+    from experiments.lora.engine.data_splits import main as generate_splits
 
     config_path = smoke_config["_config_path"]
     generate_splits(config_path)
 
-    from experiments.lora_ablation.pipeline.data_splits import load_splits
+    from experiments.lora.engine.data_splits import load_splits
 
     return load_splits(config_path)
 
@@ -217,7 +217,7 @@ def baseline_frozen_features(
 
     set_seed(42)
 
-    from experiments.lora_ablation.pipeline.extract_features import extract_features
+    from experiments.lora.engine.extract_features import extract_features
 
     extract_features(
         condition_name="baseline_frozen",
@@ -244,7 +244,7 @@ def lora_r8_trained(smoke_config: dict, splits: dict, device: str) -> Path:
 
     set_seed(42)
 
-    from experiments.lora_ablation.pipeline.train_condition import train_condition
+    from experiments.lora.engine.train_condition import train_condition
 
     train_condition(
         condition_name="lora_r8_full",
@@ -264,7 +264,7 @@ def lora_r8_features(smoke_config: dict, splits: dict, lora_r8_trained: Path, de
 
     set_seed(42)
 
-    from experiments.lora_ablation.pipeline.extract_features import extract_features
+    from experiments.lora.engine.extract_features import extract_features
 
     extract_features(
         condition_name="lora_r8_full",
@@ -442,7 +442,7 @@ class TestFullPipelineProbeEvaluation:
         self, smoke_config: dict, baseline_frozen_features: dict
     ) -> None:
         """evaluate_probes_enhanced produces valid JSON output."""
-        from experiments.lora_ablation.pipeline.evaluate_probes import evaluate_probes_enhanced
+        from experiments.lora.eval.evaluate_probes import evaluate_probes_enhanced
 
         summary = evaluate_probes_enhanced(
             condition_name="baseline_frozen",

@@ -48,11 +48,11 @@ Usage:
     
     python scripts/convert_brats_gli_to_h5.py \
         --data-root /media/mpascual/PortableSSD/BraTS_GLI/source/BraTS2024-BraTS-GLI-TrainingData/training_data1_v2 \
-        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/BraTS_GLI.h5 ; python scripts/convert_brats_men_to_h5.py \
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_GLI.h5 ; python scripts/convert_brats_men_to_h5.py \
         --data-root /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train \
-        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/BraTS_MEN.h5 ; python scripts/convert_mengrowth_to_h5.py \
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_MEN.h5 ; python scripts/convert_mengrowth_to_h5.py \
         --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/preprocessed/MenGrowth-2025 \
-        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/MenGrowth.h5
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5
 """
 
 from __future__ import annotations

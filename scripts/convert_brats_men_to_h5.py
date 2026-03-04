@@ -6,39 +6,51 @@ Pre-applies spatial preprocessing (Orient→Resample→CropForeground→SpatialP
 CenterCrop at 192³) but does NOT apply z-score normalization. Normalization
 happens at runtime so augmentation operates on the original intensity scale.
 
+Uses the **unified v2.0 H5 schema** (same as GLI/MenGrowth). Each MEN subject is
+represented as a patient with exactly 1 scan at timepoint 0, giving a trivial
+CSR longitudinal index where ``patient_offsets = [0, 1, 2, ..., N]``.
+
 H5 Schema:
     brats_men_train.h5
-    ├── attrs: {n_subjects, roi_size, spacing, channel_order, version}
-    ├── images          [N, 4, 192, 192, 192] float32  chunks=[1,...] gzip
-    ├── segs            [N, 1, 192, 192, 192] int8      chunks=[1,...] gzip
-    ├── subject_ids     [N] string (sorted alphabetically)
-    ├── metadata/
-    │   ├── grade       [N] int8  (-1 for missing)
-    │   ├── age         [N] float32 (NaN for missing)
-    │   └── sex         [N] string
-    ├── semantic/
-    │   ├── volume      [N, 4] float32
-    │   ├── location    [N, 3] float32
-    │   └── shape       [N, 3] float32
-    └── splits/
-        ├── lora_train  [750] int32
-        ├── lora_val    [100] int32
-        └── test        [150] int32
+    |-- attrs: {n_scans, n_patients, roi_size, spacing, channel_order, version,
+    |           dataset_type="cross-sectional", domain="MEN"}
+    |-- images           [N, 4, 192, 192, 192] float32  chunks=[1,...] gzip
+    |-- segs             [N, 1, 192, 192, 192] int8      chunks=[1,...] gzip
+    |-- scan_ids         [N] str  (= subject IDs, sorted alphabetically)
+    |-- patient_ids      [N] str  (= subject IDs, 1:1 mapping)
+    |-- timepoint_idx    [N] int32 (all zeros)
+    |-- semantic/
+    |   |-- volume       [N, 4] float32
+    |   |-- location     [N, 3] float32
+    |   +-- shape        [N, 3] float32
+    |-- longitudinal/
+    |   |-- patient_offsets  [N+1] int32 (trivial: [0,1,2,...,N])
+    |   +-- patient_list     [N] str
+    |-- splits/  (patient-level indices into patient_list)
+    |   |-- lora_train   int32
+    |   |-- lora_val     int32
+    |   +-- test         int32
+    +-- metadata/
+        |-- grade        [N] int8  (-1 for missing)
+        |-- age          [N] float32 (NaN for missing)
+        +-- sex          [N] str
 
 Usage:
-    # Dry-run with 5 subjects
+    # Dry-run with 5 patients
     python scripts/convert_brats_men_to_h5.py \
         --data-root /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train \
         --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/BraTS_MEN.h5 \
-        --max-subjects 5
+        --max-patients 5
 
     # Full conversion (all 1000 subjects)
     python scripts/convert_brats_men_to_h5.py \
         --data-root /media/mpascual/PortableSSD/Meningiomas/BraTS/BraTS_Men_Train \
-        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/BraTS_MEN.h5
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_MEN.h5
 
 Estimated output size: ~15 GB for 1000 subjects (gzip-compressed).
 """
+
+from __future__ import annotations
 
 import argparse
 import logging
@@ -88,10 +100,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# H5 file version
-H5_VERSION = "1.0"
+# H5 file version (unified schema matching GLI/MenGrowth)
+H5_VERSION = "2.0"
 
-# Default split sizes (3-way: train/val/test)
+# Default split sizes (patient-level, ~75/10/15 split for 1000)
 DEFAULT_SPLIT_SIZES = {
     "lora_train": 750,
     "lora_val": 100,
@@ -282,17 +294,20 @@ def load_metadata(data_root: Path) -> dict[str, dict]:
 def convert(
     data_root: str,
     output_path: str,
-    max_subjects: int | None = None,
+    max_patients: int | None = None,
     seed: int = 42,
     compression: str = "gzip",
     compression_level: int = 4,
 ) -> None:
-    """Convert NIfTI files to HDF5.
+    """Convert NIfTI files to HDF5 using the unified v2.0 schema.
+
+    Each MEN subject becomes a patient with exactly 1 scan at timepoint 0.
+    The longitudinal CSR structure is trivial: ``patient_offsets = [0,1,...,N]``.
 
     Args:
         data_root: Path to BraTS_Men_Train directory.
         output_path: Output H5 file path.
-        max_subjects: Max subjects for dry-run (None = all).
+        max_patients: Max patients for dry-run (None = all).
         seed: Random seed for split generation.
         compression: HDF5 compression algorithm.
         compression_level: Compression level (1-9).
@@ -301,15 +316,23 @@ def convert(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Discover subjects
+    # Discover subjects (each subject = 1 patient = 1 scan)
     all_subjects = discover_men_subjects(data_root)
     logger.info(f"Found {len(all_subjects)} subjects in {data_root}")
 
-    if max_subjects is not None:
-        all_subjects = all_subjects[:max_subjects]
-        logger.info(f"Limiting to {max_subjects} subjects (dry-run)")
+    if max_patients is not None:
+        all_subjects = all_subjects[:max_patients]
+        logger.info(f"Limiting to {max_patients} patients (dry-run)")
 
-    n_subjects = len(all_subjects)
+    # In cross-sectional MEN: n_scans = n_patients = n_subjects
+    n_scans = len(all_subjects)
+    n_patients = n_scans
+    patient_list = list(all_subjects)  # 1:1 patient-subject mapping
+    # Trivial CSR: patient i owns scan i
+    patient_offsets = np.arange(n_patients + 1, dtype=np.int32)
+    # All at timepoint 0
+    timepoint_indices = np.zeros(n_scans, dtype=np.int32)
+
     roi = list(FEATURE_ROI_SIZE)
 
     # Load metadata
@@ -318,8 +341,8 @@ def convert(
     # Build preprocessing pipeline (no normalization)
     transforms = build_preprocessing_transforms()
 
-    # Generate splits
-    if max_subjects is None or max_subjects >= sum(DEFAULT_SPLIT_SIZES.values()):
+    # Generate patient-level splits
+    if max_patients is None or n_patients >= sum(DEFAULT_SPLIT_SIZES.values()):
         split_sizes = DEFAULT_SPLIT_SIZES
     else:
         # For dry-run: proportional splits
@@ -328,34 +351,37 @@ def convert(
         allocated = 0
         for name, size in DEFAULT_SPLIT_SIZES.items():
             if name == list(DEFAULT_SPLIT_SIZES.keys())[-1]:
-                split_sizes[name] = n_subjects - allocated
+                split_sizes[name] = n_patients - allocated
             else:
-                split_sizes[name] = max(1, round(size * n_subjects / total_default))
+                split_sizes[name] = max(1, round(size * n_patients / total_default))
                 allocated += split_sizes[name]
 
-    splits = split_subjects_multi(all_subjects, split_sizes, seed=seed)
+    patient_splits = split_subjects_multi(patient_list, split_sizes, seed=seed)
 
-    # Build subject → index mapping (subjects are stored in alphabetical order)
-    subject_to_idx = {sid: i for i, sid in enumerate(all_subjects)}
+    # Build patient → index mapping
+    patient_to_idx = {pid: i for i, pid in enumerate(patient_list)}
 
     # Create H5 file
     logger.info(f"Creating H5 file: {output_path}")
-    logger.info(f"  Subjects: {n_subjects}")
+    logger.info(f"  Scans: {n_scans}, Patients: {n_patients}")
     logger.info(f"  ROI size: {roi}")
     logger.info(f"  Compression: {compression} level={compression_level}")
 
     with h5py.File(output_path, "w") as f:
-        # Global attributes
-        f.attrs["n_subjects"] = n_subjects
+        # Global attributes (unified v2.0 schema)
+        f.attrs["n_scans"] = n_scans
+        f.attrs["n_patients"] = n_patients
         f.attrs["roi_size"] = roi
         f.attrs["spacing"] = list(DEFAULT_SPACING)
         f.attrs["channel_order"] = list(MODALITY_KEYS)
         f.attrs["version"] = H5_VERSION
+        f.attrs["dataset_type"] = "cross-sectional"
+        f.attrs["domain"] = "MEN"
 
         # Pre-allocate datasets
         images_ds = f.create_dataset(
             "images",
-            shape=(n_subjects, 4, *roi),
+            shape=(n_scans, 4, *roi),
             dtype="float32",
             chunks=(1, 4, *roi),
             compression=compression,
@@ -364,30 +390,37 @@ def convert(
 
         segs_ds = f.create_dataset(
             "segs",
-            shape=(n_subjects, 1, *roi),
+            shape=(n_scans, 1, *roi),
             dtype="int8",
             chunks=(1, 1, *roi),
             compression=compression,
             compression_opts=compression_level,
         )
 
-        # Subject IDs (variable-length strings)
+        # IDs (unified: scan_ids + patient_ids + timepoint_idx)
         dt = h5py.special_dtype(vlen=str)
-        f.create_dataset("subject_ids", data=all_subjects, dtype=dt)
+        f.create_dataset("scan_ids", data=all_subjects, dtype=dt)
+        f.create_dataset("patient_ids", data=all_subjects, dtype=dt)
+        f.create_dataset("timepoint_idx", data=timepoint_indices)
+
+        # Longitudinal group (trivial CSR for cross-sectional data)
+        long_grp = f.create_group("longitudinal")
+        long_grp.create_dataset("patient_offsets", data=patient_offsets)
+        long_grp.create_dataset("patient_list", data=patient_list, dtype=dt)
 
         # Metadata group
         meta_grp = f.create_group("metadata")
-        grade_ds = meta_grp.create_dataset("grade", shape=(n_subjects,), dtype="int8")
-        age_ds = meta_grp.create_dataset("age", shape=(n_subjects,), dtype="float32")
-        sex_ds = meta_grp.create_dataset("sex", shape=(n_subjects,), dtype=dt)
+        grade_ds = meta_grp.create_dataset("grade", shape=(n_scans,), dtype="int8")
+        age_ds = meta_grp.create_dataset("age", shape=(n_scans,), dtype="float32")
+        sex_ds = meta_grp.create_dataset("sex", shape=(n_scans,), dtype=dt)
 
         # Semantic features group
         sem_grp = f.create_group("semantic")
-        vol_ds = sem_grp.create_dataset("volume", shape=(n_subjects, 4), dtype="float32")
-        loc_ds = sem_grp.create_dataset("location", shape=(n_subjects, 3), dtype="float32")
-        shape_ds = sem_grp.create_dataset("shape", shape=(n_subjects, 3), dtype="float32")
+        vol_ds = sem_grp.create_dataset("volume", shape=(n_scans, 4), dtype="float32")
+        loc_ds = sem_grp.create_dataset("location", shape=(n_scans, 3), dtype="float32")
+        shape_ds = sem_grp.create_dataset("shape", shape=(n_scans, 3), dtype="float32")
 
-        # Process each subject
+        # Process each scan (1 scan per patient for MEN)
         n_errors = 0
         for i, subject_id in enumerate(tqdm(all_subjects, desc="Converting")):
             try:
@@ -432,28 +465,34 @@ def convert(
                 n_errors += 1
                 continue
 
-        # Splits group (store as index arrays)
+        # Splits group (patient-level indices into patient_list)
         splits_grp = f.create_group("splits")
-        for split_name, subject_list in splits.items():
-            indices = np.array([subject_to_idx[sid] for sid in subject_list], dtype=np.int32)
+        for split_name, pid_list in patient_splits.items():
+            indices = np.array(
+                [patient_to_idx[pid] for pid in pid_list], dtype=np.int32
+            )
             splits_grp.create_dataset(split_name, data=indices)
-            logger.info(f"  Split '{split_name}': {len(indices)} subjects")
+            logger.info(
+                f"  Split '{split_name}': {len(indices)} patients, "
+                f"{len(indices)} scans"
+            )
 
     # Summary
     file_size_gb = output_path.stat().st_size / (1024**3)
     logger.info("\nConversion complete!")
     logger.info(f"  Output: {output_path}")
     logger.info(f"  File size: {file_size_gb:.2f} GB")
-    logger.info(f"  Subjects: {n_subjects} ({n_errors} errors)")
+    logger.info(f"  Scans: {n_scans} ({n_errors} errors)")
+    logger.info(f"  Patients: {n_patients}")
 
     # Verification
-    _verify_h5(output_path, all_subjects, n_subjects, roi)
+    _verify_h5(output_path, n_scans, n_patients, roi)
 
 
 def _verify_h5(
     h5_path: Path,
-    subject_ids: list[str],
-    n_subjects: int,
+    n_scans: int,
+    n_patients: int,
     roi: list[int],
 ) -> None:
     """Spot-check the H5 file for correctness."""
@@ -461,26 +500,36 @@ def _verify_h5(
 
     with h5py.File(h5_path, "r") as f:
         # Check attributes
-        assert f.attrs["n_subjects"] == n_subjects
+        assert f.attrs["n_scans"] == n_scans
+        assert f.attrs["n_patients"] == n_patients
         assert list(f.attrs["roi_size"]) == roi
         assert list(f.attrs["channel_order"]) == list(MODALITY_KEYS)
+        assert f.attrs["domain"] == "MEN"
+        assert f.attrs["dataset_type"] == "cross-sectional"
 
         # Check shapes
-        assert f["images"].shape == (n_subjects, 4, *roi)
-        assert f["segs"].shape == (n_subjects, 1, *roi)
-        assert len(f["subject_ids"]) == n_subjects
+        assert f["images"].shape == (n_scans, 4, *roi)
+        assert f["segs"].shape == (n_scans, 1, *roi)
+        assert len(f["scan_ids"]) == n_scans
+        assert len(f["patient_ids"]) == n_scans
+
+        # Check longitudinal structure (trivial for cross-sectional)
+        offsets = f["longitudinal/patient_offsets"][:]
+        assert len(offsets) == n_patients + 1
+        assert offsets[0] == 0
+        assert offsets[-1] == n_scans
 
         # Check semantic shapes
-        assert f["semantic/volume"].shape == (n_subjects, 4)
-        assert f["semantic/location"].shape == (n_subjects, 3)
-        assert f["semantic/shape"].shape == (n_subjects, 3)
+        assert f["semantic/volume"].shape == (n_scans, 4)
+        assert f["semantic/location"].shape == (n_scans, 3)
+        assert f["semantic/shape"].shape == (n_scans, 3)
 
-        # Spot-check 3 random subjects
+        # Spot-check 3 random scans
         rng = np.random.RandomState(42)
-        check_indices = rng.choice(n_subjects, min(3, n_subjects), replace=False)
+        check_indices = rng.choice(n_scans, min(3, n_scans), replace=False)
 
         for idx in check_indices:
-            sid = f["subject_ids"][idx]
+            sid = f["scan_ids"][idx]
             if isinstance(sid, bytes):
                 sid = sid.decode()
 
@@ -503,17 +552,21 @@ def _verify_h5(
                 f"seg labels={sorted(unique_labels)}"
             )
 
-        # Check splits sum
+        # Check splits (patient-level)
         if "splits" in f:
-            total_in_splits = sum(len(f[f"splits/{s}"]) for s in f["splits"])
-            logger.info(f"  Total subjects in splits: {total_in_splits}")
+            total_patients_in_splits = sum(
+                len(f[f"splits/{s}"]) for s in f["splits"]
+            )
+            logger.info(f"  Total patients in splits: {total_patients_in_splits}")
 
     logger.info("  Verification passed!")
 
 
 def main() -> None:
     """Main entry point."""
-    parser = argparse.ArgumentParser(description="Convert BraTS-MEN NIfTI files to HDF5")
+    parser = argparse.ArgumentParser(
+        description="Convert BraTS-MEN NIfTI files to HDF5 (unified v2.0 schema)"
+    )
     parser.add_argument(
         "--data-root",
         type=str,
@@ -527,10 +580,10 @@ def main() -> None:
         help="Output H5 file path",
     )
     parser.add_argument(
-        "--max-subjects",
+        "--max-patients",
         type=int,
         default=None,
-        help="Max subjects for dry-run testing (default: all)",
+        help="Max patients for dry-run testing (default: all)",
     )
     parser.add_argument(
         "--seed",
@@ -550,7 +603,7 @@ def main() -> None:
     convert(
         data_root=args.data_root,
         output_path=args.output,
-        max_subjects=args.max_subjects,
+        max_patients=args.max_patients,
         seed=args.seed,
         compression_level=args.compression_level,
     )

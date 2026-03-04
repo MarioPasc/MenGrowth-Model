@@ -3,5 +3,5 @@
 
 This package contains self-contained experiments for the BSc thesis:
 
-- lora_ablation: LoRA ablation study comparing baseline vs LoRA-adapted encoders
+- lora: Unified LoRA adaptation (single-domain ablation + dual-domain)
 """

@@ -30,7 +30,7 @@ echo ""
 # ========================================================================
 export REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 export CONDA_ENV_NAME="growth"
-export CONFIG_PATH="${REPO_SRC}/experiments/lora_ablation/config/picasso/v3_rank_sweep.yaml"
+export CONFIG_PATH="${REPO_SRC}/experiments/lora/config/picasso/v3_rank_sweep.yaml"
 
 echo "Activating conda environment: ${CONDA_ENV_NAME}"
 if command -v conda >/dev/null 2>&1; then
@@ -123,7 +123,7 @@ echo ""
 # ========================================================================
 echo "Generating data splits..."
 cd "${REPO_SRC}"
-python3 -m experiments.lora_ablation.run_ablation \
+python3 -m experiments.lora.run \
     --config "${CONFIG_PATH}" splits
 echo "  [OK]   Data splits generated"
 echo ""

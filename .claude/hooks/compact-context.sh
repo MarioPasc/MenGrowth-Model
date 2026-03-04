@@ -17,7 +17,7 @@ ENVIRONMENT:
   Tests: ~/.conda/envs/growth/bin/python -m pytest tests/ -v
 
 PIPELINE STATUS:
-  [X] Phase 1: LoRA Adaptation (complete, in experiments/lora_ablation/)
+  [X] Phase 1: LoRA Adaptation (complete, in experiments/lora/)
   [ ] Phase 2: SDP (stubbed, spec in module_3_sdp.md)
   [ ] Phase 3: Encoding + ComBat (not started, spec in module_4_encoding.md)
   [ ] Phase 4: Growth Prediction (stubbed, spec in module_5_growth_prediction.md)

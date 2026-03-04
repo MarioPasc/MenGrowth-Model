@@ -88,8 +88,8 @@ fi
 
 # Quick import check
 python -c "
-from experiments.lora_ablation.run_ablation import main as _
-from experiments.lora_ablation.evaluate_feature_quality import evaluate_feature_quality_single
+from experiments.lora.run import main as _
+from experiments.lora.eval.evaluate_feature_quality import evaluate_feature_quality_single
 print('Imports OK')
 "
 
@@ -104,34 +104,34 @@ echo "=========================================="
 
 # Step 1: Train
 echo "[1/5] Training ${COND}..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     train --condition "${COND}"
 echo "  [OK] Training complete"
 
 # Step 2: Extract features
 echo "[2/5] Extracting features..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     extract --condition "${COND}"
 echo "  [OK] Features extracted"
 
 # Step 3: Domain features
 echo "[3/5] Extracting domain features..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     domain --condition "${COND}" || echo "  [WARN] Domain features failed (non-fatal)"
 
 # Step 4: Evaluate probes
 echo "[4/5] Evaluating probes..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     probes --condition "${COND}"
 echo "  [OK] Probes evaluated"
 
 # Step 5: Test Dice
 echo "[5/5] Computing test Dice..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     test-dice --condition "${COND}" --dataset men
 echo "  [OK] Test Dice computed"

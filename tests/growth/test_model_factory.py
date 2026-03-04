@@ -5,13 +5,10 @@ Verifies that BaselineOriginalDecoderModel.forward_with_semantics()
 calls swinViT only once (not twice as in the buggy version).
 """
 
-from unittest.mock import MagicMock, patch
-
-import pytest
 import torch
 import torch.nn as nn
 
-from experiments.lora_ablation.pipeline.model_factory import BaselineOriginalDecoderModel
+from experiments.lora.engine.model_factory import BaselineOriginalDecoderModel
 
 
 class _FakeSwinViT(nn.Module):
@@ -113,9 +110,7 @@ class TestBaselineForwardWithSemantics:
         with torch.no_grad():
             model.forward_with_semantics(x)
 
-        assert swinvit.call_count == 1, (
-            f"swinViT called {swinvit.call_count} times, expected 1"
-        )
+        assert swinvit.call_count == 1, f"swinViT called {swinvit.call_count} times, expected 1"
 
     def test_forward_with_semantics_output_keys_no_heads(self):
         """Without semantic heads: output has logits and features."""

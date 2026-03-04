@@ -63,7 +63,7 @@ echo "=== Step 2: GPU pipeline smoke test ==="
 echo "This step requires the full BraTS-MEN dataset and model weights."
 echo "Skipping if data is not available."
 
-CONFIG_PATH="${REPO_ROOT}/experiments/lora_ablation/config/picasso/v3_rank_sweep.yaml"
+CONFIG_PATH="${REPO_ROOT}/experiments/lora/config/picasso/v3_rank_sweep.yaml"
 
 if [ ! -f "${CONFIG_PATH}" ]; then
     echo "Config not found: ${CONFIG_PATH}"
@@ -85,14 +85,14 @@ echo "H5 data found: ${H5_PATH}"
 # --- Generate splits if they don't exist ---
 echo ""
 echo "=== Step 2a: Ensure data splits exist ==="
-python -m experiments.lora_ablation.pipeline.data_splits \
+python -m experiments.lora.engine.data_splits \
     --config "${CONFIG_PATH}" 2>&1 | tail -20
 
 echo ""
 echo "Running baseline_frozen condition (3 epochs)..."
 
 # Run a quick training + extraction + probe evaluation for one condition
-python -m experiments.lora_ablation.pipeline.train_condition \
+python -m experiments.lora.engine.train_condition \
     --config "${CONFIG_PATH}" \
     --condition baseline_frozen \
     --max-epochs 3 \
@@ -100,14 +100,14 @@ python -m experiments.lora_ablation.pipeline.train_condition \
 
 echo ""
 echo "Running feature extraction..."
-python -m experiments.lora_ablation.pipeline.extract_features \
+python -m experiments.lora.engine.extract_features \
     --config "${CONFIG_PATH}" \
     --condition baseline_frozen \
     --device cuda 2>&1 | tee "${RESULTS_DIR}/extract_features.log" | tail -10
 
 echo ""
 echo "Running GP probe evaluation..."
-python -m experiments.lora_ablation.pipeline.evaluate_probes \
+python -m experiments.lora.eval.evaluate_probes \
     --config "${CONFIG_PATH}" \
     --condition baseline_frozen \
     --device cuda 2>&1 | tee "${RESULTS_DIR}/evaluate_probes.log" | tail -30

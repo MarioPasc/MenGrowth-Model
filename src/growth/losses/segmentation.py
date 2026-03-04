@@ -5,25 +5,32 @@ Implements Dice loss + Cross-Entropy for meningioma segmentation using
 MONAI's robust loss implementations. Standard BraTS-style multi-class
 segmentation objective with support for deep supervision.
 
-BraTS Segmentation Labels (input):
-    - 0: Background
-    - 1: NCR (Necrotic Core)
-    - 2: ED (Peritumoral Edema)
-    - 3: ET (Enhancing Tumor)
+Supports domain-aware label conversion for dual-domain (MEN + GLI) training:
 
-BrainSegFounder 3-channel sigmoid output convention (TC/WT/ET):
-    - Ch0: TC (Tumor Core) = NCR ∪ ET = (label==1) | (label==3)
-    - Ch1: WT (Whole Tumor) = NCR ∪ ED ∪ ET = (label==1) | (label==2) | (label==3)
-    - Ch2: ET (Enhancing Tumor) = (label==3)
+BraTS-GLI Labels (glioma):
+    - 0: Background
+    - 1: NETC (Non-Enhancing Tumor Core)
+    - 2: SNFH (Surrounding Non-enhancing FLAIR Hyperintensity)
+    - 3: ET (Enhancing Tumor)
+    - 4: RC (Resection Cavity)
+
+BraTS-MEN Labels (meningioma):
+    - 0: Background
+    - 1: ET (Enhancing Tumor)
+    - 2: NET (Non-Enhancing Tumor)
+    - 3: Cyst
+
+3-channel sigmoid output convention (TC/WT/ET):
+    GLI: TC = (1|3|4), WT = (seg>0), ET = (3)
+    MEN: TC = (1|2),   WT = (1|2|3), ET = (1)
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from monai.losses import DiceCELoss, DiceLoss, FocalLoss
+from monai.losses import DiceCELoss
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +87,7 @@ class SegmentationLoss(nn.Module):
             smooth_dr=smooth_dr,
         )
 
-    def forward(
-        self, pred: torch.Tensor, target: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compute combined Dice + CE loss.
 
         Args:
@@ -121,8 +126,8 @@ class DeepSupervisionLoss(nn.Module):
 
     def __init__(
         self,
-        base_loss: Optional[nn.Module] = None,
-        weights: Optional[List[float]] = None,
+        base_loss: nn.Module | None = None,
+        weights: list[float] | None = None,
     ):
         super().__init__()
 
@@ -131,7 +136,7 @@ class DeepSupervisionLoss(nn.Module):
 
     def forward(
         self,
-        pred: Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]],
+        pred: torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]],
         target: torch.Tensor,
     ) -> torch.Tensor:
         """Compute loss with optional deep supervision.
@@ -198,9 +203,7 @@ class DiceMetric(nn.Module):
         self.include_background = include_background
         self.reduction = reduction
 
-    def forward(
-        self, pred: torch.Tensor, target: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compute Dice scores per class.
 
         Args:
@@ -253,7 +256,7 @@ def create_segmentation_loss(
     lambda_dice: float = 1.0,
     lambda_ce: float = 1.0,
     deep_supervision: bool = False,
-    ds_weights: Optional[List[float]] = None,
+    ds_weights: list[float] | None = None,
 ) -> nn.Module:
     """Factory function to create segmentation loss.
 
@@ -300,6 +303,29 @@ def create_segmentation_loss(
 # =============================================================================
 
 
+def _convert_single_domain(target: torch.Tensor, domain: str) -> torch.Tensor:
+    """Convert integer labels to [TC, WT, ET] binary masks for a single domain.
+
+    Args:
+        target: Integer labels [B, D, H, W] (no channel dim).
+        domain: "MEN" or "GLI".
+
+    Returns:
+        Binary masks [B, 3, D, H, W].
+    """
+    if domain == "MEN":
+        # MEN: 1=ET, 2=NET, 3=Cyst
+        tc = ((target == 1) | (target == 2)).float()
+        wt = ((target == 1) | (target == 2) | (target == 3)).float()
+        et = (target == 1).float()
+    else:
+        # GLI: 1=NETC, 2=SNFH, 3=ET, 4=RC
+        tc = ((target == 1) | (target == 3) | (target == 4)).float()
+        wt = (target > 0).float()
+        et = (target == 3).float()
+    return torch.stack([tc, wt, et], dim=1)
+
+
 class SegmentationLoss3Ch(nn.Module):
     """Segmentation loss for 3-channel sigmoid outputs.
 
@@ -329,35 +355,55 @@ class SegmentationLoss3Ch(nn.Module):
         self.lambda_bce = lambda_bce
         self.smooth = smooth
 
-    def _convert_target(self, target: torch.Tensor) -> torch.Tensor:
+    def _convert_target(
+        self,
+        target: torch.Tensor,
+        domain: str | list[str] | None = None,
+    ) -> torch.Tensor:
         """Convert integer labels [B, 1, D, H, W] to binary masks [B, 3, D, H, W].
 
-        Uses BrainSegFounder's hierarchical overlapping region convention:
-            - Ch0: TC (Tumor Core) = NCR ∪ ET = (label==1) | (label==3)
-            - Ch1: WT (Whole Tumor) = NCR ∪ ED ∪ ET = (label==1) | (label==2) | (label==3)
-            - Ch2: ET (Enhancing Tumor) = (label==3)
+        Domain-aware conversion to [TC, WT, ET]:
+            GLI (default): TC = (1|3|4), WT = (seg>0), ET = (3)
+            MEN:           TC = (1|2),   WT = (1|2|3), ET = (1)
 
         Args:
-            target: Integer labels with values 0 (background), 1 (NCR), 2 (ED), 3 (ET).
+            target: Integer labels [B, 1, D, H, W] or [B, D, H, W].
+            domain: Domain string, list of per-sample domain strings, or
+                None (defaults to GLI for backward compatibility).
 
         Returns:
-            Binary masks for TC, WT, ET channels.
+            Binary masks for TC, WT, ET channels [B, 3, D, H, W].
         """
-        # Squeeze channel dim if present
         if target.dim() == 5 and target.shape[1] == 1:
             target = target.squeeze(1)  # [B, D, H, W]
 
-        # Create hierarchical overlapping binary masks
-        tc = ((target == 1) | (target == 3)).float()                       # Tumor Core
-        wt = ((target == 1) | (target == 2) | (target == 3)).float()      # Whole Tumor
-        et = (target == 3).float()                                         # Enhancing Tumor
+        # Uniform domain — fast path
+        if domain is None or isinstance(domain, str):
+            return _convert_single_domain(target, domain or "GLI")
 
-        # Stack to [B, 3, D, H, W]
-        return torch.stack([tc, wt, et], dim=1)
+        # Mixed-batch: list of per-sample domains
+        result = torch.zeros(
+            target.shape[0],
+            3,
+            *target.shape[1:],
+            device=target.device,
+            dtype=torch.float32,
+        )
+        men_mask = torch.tensor(
+            [d == "MEN" for d in domain],
+            device=target.device,
+        )
 
-    def _dice_loss(
-        self, pred: torch.Tensor, target: torch.Tensor
-    ) -> torch.Tensor:
+        if men_mask.any():
+            men_idx = men_mask.nonzero(as_tuple=True)[0]
+            result[men_idx] = _convert_single_domain(target[men_idx], "MEN")
+        if (~men_mask).any():
+            gli_idx = (~men_mask).nonzero(as_tuple=True)[0]
+            result[gli_idx] = _convert_single_domain(target[gli_idx], "GLI")
+
+        return result
+
+    def _dice_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compute Dice loss per channel and average.
 
         Args:
@@ -382,19 +428,23 @@ class SegmentationLoss3Ch(nn.Module):
         return dice_loss.mean()
 
     def forward(
-        self, pred: torch.Tensor, target: torch.Tensor
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        domain: str | list[str] | None = None,
     ) -> torch.Tensor:
         """Compute combined Dice + BCE loss.
 
         Args:
             pred: Predicted logits [B, 3, D, H, W] (pre-sigmoid).
-            target: Ground truth labels [B, 1, D, H, W] (integers 0-3).
+            target: Ground truth labels [B, 1, D, H, W] (integers 0-3/4).
+            domain: Domain string, per-sample list, or None (GLI default).
 
         Returns:
             Combined loss scalar.
         """
         # Convert integer labels to binary masks
-        target_3ch = self._convert_target(target)
+        target_3ch = self._convert_target(target, domain=domain)
 
         # Apply sigmoid to get probabilities
         pred_prob = torch.sigmoid(pred)
@@ -403,9 +453,7 @@ class SegmentationLoss3Ch(nn.Module):
         dice_loss = self._dice_loss(pred_prob, target_3ch)
 
         # BCE loss (using logits for numerical stability)
-        bce_loss = F.binary_cross_entropy_with_logits(
-            pred, target_3ch, reduction="mean"
-        )
+        bce_loss = F.binary_cross_entropy_with_logits(pred, target_3ch, reduction="mean")
 
         return self.lambda_dice * dice_loss + self.lambda_bce * bce_loss
 
@@ -437,31 +485,64 @@ class DiceMetric3Ch(nn.Module):
         self.threshold = threshold
         self.reduction = reduction
 
-    def _convert_target(self, target: torch.Tensor) -> torch.Tensor:
-        """Convert integer labels to binary masks (TC/WT/ET convention)."""
+    def _convert_target(
+        self,
+        target: torch.Tensor,
+        domain: str | list[str] | None = None,
+    ) -> torch.Tensor:
+        """Convert integer labels to binary masks (TC/WT/ET convention).
+
+        Args:
+            target: Integer labels [B, 1, D, H, W] or [B, D, H, W].
+            domain: Domain string, per-sample list, or None (GLI default).
+
+        Returns:
+            Binary masks [B, 3, D, H, W].
+        """
         if target.dim() == 5 and target.shape[1] == 1:
             target = target.squeeze(1)
 
-        tc = ((target == 1) | (target == 3)).float()                       # Tumor Core
-        wt = ((target == 1) | (target == 2) | (target == 3)).float()      # Whole Tumor
-        et = (target == 3).float()                                         # Enhancing Tumor
+        if domain is None or isinstance(domain, str):
+            return _convert_single_domain(target, domain or "GLI")
 
-        return torch.stack([tc, wt, et], dim=1)
+        # Mixed-batch
+        result = torch.zeros(
+            target.shape[0],
+            3,
+            *target.shape[1:],
+            device=target.device,
+            dtype=torch.float32,
+        )
+        men_mask = torch.tensor(
+            [d == "MEN" for d in domain],
+            device=target.device,
+        )
+        if men_mask.any():
+            men_idx = men_mask.nonzero(as_tuple=True)[0]
+            result[men_idx] = _convert_single_domain(target[men_idx], "MEN")
+        if (~men_mask).any():
+            gli_idx = (~men_mask).nonzero(as_tuple=True)[0]
+            result[gli_idx] = _convert_single_domain(target[gli_idx], "GLI")
+        return result
 
     def forward(
-        self, pred: torch.Tensor, target: torch.Tensor
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        domain: str | list[str] | None = None,
     ) -> torch.Tensor:
         """Compute per-sample Dice scores per channel.
 
         Args:
             pred: Predicted logits [B, 3, D, H, W].
             target: Ground truth labels [B, 1, D, H, W].
+            domain: Domain string, per-sample list, or None (GLI default).
 
         Returns:
             Dice scores [B, 3] or scalar if reduction='mean'.
         """
         # Convert target to binary masks
-        target_3ch = self._convert_target(target)
+        target_3ch = self._convert_target(target, domain=domain)
 
         # Apply sigmoid and threshold
         pred_prob = torch.sigmoid(pred)
@@ -470,8 +551,8 @@ class DiceMetric3Ch(nn.Module):
         # Compute per-sample Dice per channel
         dice_scores = []
         for c in range(3):
-            pred_c = pred_binary[:, c]           # [B, D, H, W]
-            target_c = target_3ch[:, c]          # [B, D, H, W]
+            pred_c = pred_binary[:, c]  # [B, D, H, W]
+            target_c = target_3ch[:, c]  # [B, D, H, W]
 
             # Sum over spatial dims only, keep batch dim
             intersection = (pred_c * target_c).sum(dim=(1, 2, 3))  # [B]
@@ -479,9 +560,7 @@ class DiceMetric3Ch(nn.Module):
 
             # Per-sample Dice with empty-set handling
             dice = torch.where(
-                union == 0,
-                torch.ones_like(union),
-                (2.0 * intersection) / (union + 1e-8)
+                union == 0, torch.ones_like(union), (2.0 * intersection) / (union + 1e-8)
             )
             dice_scores.append(dice)  # [B]
 

@@ -129,7 +129,7 @@ import h5py
 print(f'  h5py: {h5py.__version__}')
 from growth.data.bratsmendata import BraTSMENDatasetH5
 print('  BraTSMENDatasetH5: OK')
-from experiments.lora_ablation.extract_features import extract_features_for_split
+from experiments.lora.engine.extract_features import extract_features_for_split
 print('  extract_features_for_split: OK')
 "
 

@@ -84,7 +84,7 @@ if [ ! -f "${CONFIG_PATH}" ]; then
 fi
 
 python -c "
-from experiments.lora_ablation.run_ablation import main as _
+from experiments.lora.run import main as _
 print('Imports OK')
 "
 
@@ -101,27 +101,27 @@ echo ""
 
 # Step 2: Extract features
 echo "[1/4] Extracting features..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     extract --condition "${COND}"
 echo "  [OK] Features extracted"
 
 # Step 3: Domain features
 echo "[2/4] Extracting domain features..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     domain --condition "${COND}" || echo "  [WARN] Domain features failed (non-fatal)"
 
 # Step 4: Evaluate probes
 echo "[3/4] Evaluating probes..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     probes --condition "${COND}"
 echo "  [OK] Probes evaluated"
 
 # Step 5: Test Dice (MEN only — GLI can be added later)
 echo "[4/4] Computing test Dice..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     test-dice --condition "${COND}" --dataset men
 echo "  [OK] Test Dice computed"

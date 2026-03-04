@@ -1,0 +1,44 @@
+experiment:
+  name: smoke_dual_r8
+  seed: 42
+  output_dir: results/smoke_dual_r8
+
+paths:
+  checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  men_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_MEN.h5
+  gli_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_GLI.h5
+
+data:
+  roi_size: [128, 128, 128]
+  feature_roi_size: [192, 192, 192]
+  domain_ratio: 0.5
+
+conditions:
+  - name: dual_r8
+    lora_rank: 8
+    dual_domain: true
+    lora_alpha: 16
+    target_stages: [3, 4]
+    use_vicreg: true
+    use_semantic_heads: true
+
+training:
+  max_epochs: 2
+  batch_size: 2
+  grad_accum_steps: 2
+  lr: 1.0e-4
+  num_workers: 4
+  use_amp: true
+  decoder_type: original
+  use_semantic_heads: true
+  lambda_aux: 0.3
+  enable_gradient_monitoring: true
+
+feature_extraction:
+  batch_size: 2
+  levels: [encoder10]
+
+probe:
+  normalize_targets: true
+  n_restarts: 1
+  r2_ci_samples: 0

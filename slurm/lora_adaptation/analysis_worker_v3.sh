@@ -57,14 +57,14 @@ cd "${REPO_SRC}"
 
 # Step 1: Feature quality evaluation (all conditions)
 echo "[1/2] Feature quality evaluation..."
-python -m experiments.lora_ablation.run_ablation \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     feature-quality
 echo "  [OK] Feature quality complete"
 
 # Step 2: Regenerate analysis (figures, tables, reports)
 echo "[2/2] Regenerating analysis..."
-python -m experiments.lora_ablation.analysis.regenerate_analysis \
+python -m experiments.lora.analysis.regenerate_analysis \
     --config "${CONFIG_PATH}"
 echo "  [OK] Analysis regenerated"
 

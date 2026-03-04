@@ -33,7 +33,7 @@ import torch
 import yaml
 from omegaconf import OmegaConf
 
-from experiments.lora_ablation.extract_features import (
+from experiments.lora.engine.extract_features import (
     extract_features_for_split,
 )
 from growth.utils.seed import set_seed
@@ -57,7 +57,7 @@ def _load_splits(cfg: OmegaConf) -> dict[str, list[str]]:
 
     # 1. Try H5 splits (embedded in the dataset file)
     if h5_path and Path(str(h5_path)).exists():
-        from experiments.lora_ablation.data_splits import load_splits_h5
+        from experiments.lora.engine.data_splits import load_splits_h5
 
         logger.info(f"Loading splits from H5: {h5_path}")
         return load_splits_h5(str(h5_path))
@@ -65,13 +65,13 @@ def _load_splits(cfg: OmegaConf) -> dict[str, list[str]]:
     # 2. Try JSON splits from LoRA ablation output
     splits_config = cfg.data.get("splits_config", None)
     if splits_config:
-        from experiments.lora_ablation.data_splits import load_splits
+        from experiments.lora.engine.data_splits import load_splits
 
         try:
             return load_splits(splits_config)
         except FileNotFoundError:
             logger.warning("Splits JSON not found. Auto-generating...")
-            from experiments.lora_ablation.data_splits import main as generate_splits
+            from experiments.lora.engine.data_splits import main as generate_splits
 
             generate_splits(splits_config)
             return load_splits(splits_config)
@@ -135,7 +135,7 @@ def _load_encoder(cfg: OmegaConf, device: str) -> torch.nn.Module:
     # 2. Fallback: load via LoRA ablation config
     splits_config = cfg.data.get("splits_config", None)
     if splits_config:
-        from experiments.lora_ablation.extract_features import load_encoder_for_condition
+        from experiments.lora.engine.extract_features import load_encoder_for_condition
 
         logger.info("Loading encoder via LoRA ablation config (fallback)")
         with open(splits_config) as f:
