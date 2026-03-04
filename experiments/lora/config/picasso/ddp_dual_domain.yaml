@@ -1,0 +1,74 @@
+experiment:
+  name: ddp_dual_domain
+  seed: 42
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/results/lora_ddp_dual_domain
+
+paths:
+  checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  men_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_MEN.h5
+  gli_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_GLI.h5
+
+data:
+  roi_size: [128, 128, 128]
+  feature_roi_size: [192, 192, 192]
+  domain_ratio: 0.5
+
+ddp:
+  enabled: true
+  gpus_per_node: 2
+
+conditions:
+  # Baseline: frozen BrainSegFounder encoder + trainable original decoder
+  - name: baseline
+    lora_rank: null
+    dual_domain: false
+    use_semantic_heads: false
+    description: "Frozen encoder baseline (original decoder)"
+
+  # LoRA r8 + VICReg + dual-domain MEN+GLI
+  - name: dual_r8
+    lora_rank: 8
+    dual_domain: true
+    lora_alpha: 16
+    target_stages: [3, 4]
+    use_vicreg: true
+    use_semantic_heads: true
+    description: "LoRA r8 + VICReg + semantic heads + dual-domain"
+
+training:
+  max_epochs: 100
+  early_stopping_patience: 20
+  batch_size: 2
+  grad_accum_steps: 2
+  lr_encoder: 1.0e-4
+  lr_decoder: 5.0e-4
+  weight_decay: 1.0e-5
+  num_workers: 8
+  use_amp: true
+  decoder_type: original
+  use_semantic_heads: true
+  lambda_aux: 0.3
+  aux_warmup_epochs: 5
+  aux_warmup_duration: 10
+  gradient_clip: 1.0
+  lr_warmup_epochs: 5
+  lr_reduce_factor: 0.5
+  lr_reduce_patience: 10
+  enable_gradient_monitoring: true
+  gradient_monitor_freq: 50
+
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  lambda_volume: 1.0
+  lambda_location: 0.3
+  lambda_shape: 1.0
+
+feature_extraction:
+  batch_size: 2
+  levels: [encoder10]
+
+probe:
+  normalize_targets: true
+  n_restarts: 3
+  r2_ci_samples: 100

@@ -646,6 +646,11 @@ def main() -> None:
     run_all_parser.add_argument("--device", type=str, default="cuda")
     run_all_parser.add_argument("--skip-training", action="store_true")
 
+    # train-ddp
+    train_ddp_parser = subparsers.add_parser("train-ddp", help="Train a condition with DDP")
+    train_ddp_parser.add_argument("--condition", type=str, required=True)
+    train_ddp_parser.add_argument("--max-epochs", type=int, default=None)
+
     # analyze-only
     ao_parser = subparsers.add_parser("analyze-only", help="Re-run analysis only")
     ao_parser.add_argument("--device", type=str, default="cuda")
@@ -699,6 +704,10 @@ def main() -> None:
         run_regenerate(args.config, args.skip_cache, args.figures_only, args.tables_only)
     elif args.command == "run-all":
         run_all(args.config, args.max_epochs, args.device, args.skip_training)
+    elif args.command == "train-ddp":
+        from .engine.train_condition import main_ddp
+
+        main_ddp(args.config, args.condition, args.max_epochs)
     elif args.command == "analyze-only":
         run_analyze_only(
             args.config,

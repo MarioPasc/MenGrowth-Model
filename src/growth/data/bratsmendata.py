@@ -31,7 +31,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 from .transforms import (
     get_h5_train_transforms,
@@ -308,6 +308,9 @@ def create_dataloaders(
     roi_size: tuple[int, int, int] | None = None,
     val_roi_size: tuple[int, int, int] | None = None,
     val_batch_size: int | None = None,
+    ddp_rank: int | None = None,
+    ddp_world_size: int | None = None,
+    persistent_workers: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     """Create train and validation DataLoaders from an H5 file.
 
@@ -325,6 +328,9 @@ def create_dataloaders(
             defaults to FEATURE_ROI_SIZE (192^3) for full tumor coverage.
         val_batch_size: Override batch size for validation loader. If None,
             defaults to ``batch_size``.
+        ddp_rank: DDP rank (None for single-GPU).
+        ddp_world_size: DDP world size (None for single-GPU).
+        persistent_workers: Keep workers alive across epochs.
 
     Returns:
         Tuple of (train_loader, val_loader).
@@ -348,23 +354,39 @@ def create_dataloaders(
         compute_semantic=compute_semantic,
     )
 
-    # Create dataloaders
+    # DDP samplers
+    train_sampler = None
+    val_sampler = None
+    if ddp_rank is not None and ddp_world_size is not None:
+        train_sampler = DistributedSampler(
+            train_dataset, num_replicas=ddp_world_size, rank=ddp_rank, shuffle=True
+        )
+        val_sampler = DistributedSampler(
+            val_dataset, num_replicas=ddp_world_size, rank=ddp_rank, shuffle=False
+        )
+
+    pw = persistent_workers and num_workers > 0
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=True,
+        persistent_workers=pw,
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=val_batch_size or batch_size,
         shuffle=False,
+        sampler=val_sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=False,
+        persistent_workers=pw,
     )
 
     return train_loader, val_loader
