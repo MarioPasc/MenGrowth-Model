@@ -136,7 +136,7 @@ echo "  Conditions: ${CONDITION_NAMES[*]}"
 
 ARRAY_JOB_RAW=$(sbatch --parsable \
     --array=0-${LAST_IDX}%${N_CONDITIONS} \
-    --job-name="ddp_%a" \
+    --job-name="ddp_lora" \
     --output="${SLURM_LOG_DIR}/train_%a_%j.out" \
     --error="${SLURM_LOG_DIR}/train_%a_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
@@ -151,12 +151,8 @@ for i in $(seq 0 ${LAST_IDX}); do
 done
 echo ""
 
-# Rename array elements for better squeue readability
-for i in $(seq 0 ${LAST_IDX}); do
-    scontrol update JobId="${ARRAY_JOB_ID}_${i}" \
-        JobName="ddp_${CONDITION_NAMES[$i]}" 2>/dev/null || true
-done
-echo "  [OK] Per-element job names set"
+# Note: per-element job names are set by train_worker_ddp.sh at runtime
+# via scontrol (SLURM doesn't support %a in --job-name at submission time)
 echo ""
 
 # ========================================================================
@@ -164,16 +160,13 @@ echo ""
 # ========================================================================
 echo "Submitting analysis job (dependent on array ${ARRAY_JOB_ID})..."
 
-# Build dependency string: afterok:JOBID_0:JOBID_1:...
-DEP_STR="afterok"
-for i in $(seq 0 ${LAST_IDX}); do
-    DEP_STR="${DEP_STR}:${ARRAY_JOB_ID}_${i}"
-done
-echo "  Dependency: ${DEP_STR}"
+# Use base array job ID — SLURM waits for ALL elements to complete
+echo "  Dependency: afterok:${ARRAY_JOB_ID}"
 
 ANALYSIS_JOB_ID=$(sbatch --parsable \
-    --dependency="${DEP_STR}" \
+    --dependency="afterok:${ARRAY_JOB_ID}" \
     --job-name="ddp_analysis" \
+    --constraint=cpu \
     --time=02:00:00 \
     --ntasks=1 \
     --cpus-per-task=8 \
