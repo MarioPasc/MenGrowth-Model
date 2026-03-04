@@ -31,7 +31,7 @@ from growth.models.encoder.lora_adapter import LoRASwinViT
 from growth.models.encoder.swin_loader import load_swin_encoder
 from growth.utils.seed import set_seed
 
-from .data_splits import load_splits
+from .data_splits import load_splits, load_splits_h5
 
 logging.basicConfig(
     level=logging.INFO,
@@ -599,8 +599,8 @@ def extract_features(
         if h5_path:
             logger.info(f"Using H5 backend: {h5_path}")
 
-        # Load splits
-        splits = load_splits(None, config=config)
+        # Load splits from H5
+        splits = load_splits_h5(h5_path)
 
         # Determine probe split
         if "sdp_train" in splits and len(splits["sdp_train"]) > 0:

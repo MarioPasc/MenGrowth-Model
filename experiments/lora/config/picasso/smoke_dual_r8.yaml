@@ -24,15 +24,25 @@ conditions:
 
 training:
   max_epochs: 2
+  early_stopping_patience: 5
   batch_size: 2
   grad_accum_steps: 2
-  lr: 1.0e-4
+  lr_encoder: 1.0e-4
+  lr_decoder: 5.0e-4
+  weight_decay: 1.0e-5
   num_workers: 4
   use_amp: true
   decoder_type: original
   use_semantic_heads: true
   lambda_aux: 0.3
   enable_gradient_monitoring: true
+
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  lambda_volume: 1.0
+  lambda_location: 0.3
+  lambda_shape: 1.0
 
 feature_extraction:
   batch_size: 2
