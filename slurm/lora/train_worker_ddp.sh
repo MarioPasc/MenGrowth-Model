@@ -43,7 +43,11 @@ echo "Array ID:    ${SLURM_ARRAY_TASK_ID:-?}"
 echo "Condition:   ${COND}"
 echo "Config:      ${CONFIG_PATH:-NOT SET}"
 echo "GPUs req'd:  ${NGPUS}"
+echo "CUDA_VIS:    ${CUDA_VISIBLE_DEVICES:-unset}"
 echo ""
+
+# Update SLURM job name to include condition
+scontrol update JobId="${SLURM_JOB_ID}" JobName="ddp_${COND}" 2>/dev/null || true
 
 # ========================================================================
 # ENVIRONMENT SETUP
@@ -78,14 +82,19 @@ echo ""
 # ========================================================================
 # GPU COUNT ASSERTION (critical: prevents world-size bug)
 # ========================================================================
+echo "=========================================="
+echo "GPU VERIFICATION"
+echo "=========================================="
+nvidia-smi -L
 ACTUAL_GPUS=$(nvidia-smi -L | wc -l)
 if [ "${ACTUAL_GPUS}" -ne "${NGPUS}" ]; then
+    echo ""
     echo "[FATAL] Expected ${NGPUS} GPUs but found ${ACTUAL_GPUS}. Aborting."
     echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
-    nvidia-smi -L
     exit 1
 fi
-echo "[OK] GPU count assertion passed: ${ACTUAL_GPUS} GPUs"
+echo ""
+echo "[OK] GPU count: ${ACTUAL_GPUS}/${NGPUS}"
 echo ""
 
 # ========================================================================
@@ -122,42 +131,54 @@ echo "=========================================="
 # Master port offset prevents conflicts between array elements
 MASTER_PORT=$((29500 + ${SLURM_ARRAY_TASK_ID:-0}))
 
+step_start() { STEP_T0=$(date +%s); }
+step_done() {
+    local elapsed=$(($(date +%s) - STEP_T0))
+    echo "  [OK] Done in ${elapsed}s"
+}
+
 # Step 1: Train (DDP, 2 GPUs)
 echo "[1/5] Training ${COND} (DDP, ${NGPUS} GPUs, port=${MASTER_PORT})..."
+step_start
 torchrun \
     --nproc_per_node=${NGPUS} \
     --master_port=${MASTER_PORT} \
     -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     train-ddp --condition "${COND}"
-echo "  [OK] Training complete"
+step_done
 
 # Step 2: Extract features (single GPU)
-echo "[2/5] Extracting features..."
+echo "[2/5] Extracting features for ${COND}..."
+step_start
 python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     extract --condition "${COND}"
-echo "  [OK] Features extracted"
+step_done
 
 # Step 3: Domain gap
-echo "[3/5] Domain gap analysis..."
+echo "[3/5] Domain gap analysis for ${COND}..."
+step_start
 python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     domain-gap --condition "${COND}" || echo "  [WARN] Domain gap failed (non-fatal)"
+step_done
 
 # Step 4: Evaluate probes
-echo "[4/5] Evaluating probes..."
+echo "[4/5] Evaluating probes for ${COND}..."
+step_start
 python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     probes --condition "${COND}"
-echo "  [OK] Probes evaluated"
+step_done
 
 # Step 5: Test Dice
-echo "[5/5] Computing test Dice..."
+echo "[5/5] Computing test Dice for ${COND}..."
+step_start
 python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     dice --condition "${COND}"
-echo "  [OK] Test Dice computed"
+step_done
 
 # ========================================================================
 # COMPLETION

@@ -122,21 +122,41 @@ print('  [OK]   DDP imports')
 echo ""
 
 # ========================================================================
+# CONDITION NAMES (for per-element job naming)
+# ========================================================================
+CONDITION_NAMES=("baseline" "dual_r8")
+N_CONDITIONS=${#CONDITION_NAMES[@]}
+LAST_IDX=$((N_CONDITIONS - 1))
+
+# ========================================================================
 # SUBMIT ARRAY JOB (2 conditions, 2 GPUs each)
 # ========================================================================
-echo "Submitting DDP training array job..."
+echo "Submitting DDP training array job (${N_CONDITIONS} conditions, 2 GPUs each)..."
+echo "  Conditions: ${CONDITION_NAMES[*]}"
 
 ARRAY_JOB_RAW=$(sbatch --parsable \
-    --array=0-1 \
-    --job-name="ddp_lora" \
+    --array=0-${LAST_IDX}%${N_CONDITIONS} \
+    --job-name="ddp_%a" \
     --output="${SLURM_LOG_DIR}/train_%a_%j.out" \
     --error="${SLURM_LOG_DIR}/train_%a_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
     "${SCRIPT_DIR}/train_worker_ddp.sh")
 
+# --parsable on array jobs may return "JOBID;cluster" — extract base ID
 ARRAY_JOB_ID="${ARRAY_JOB_RAW%%[_;]*}"
 
-echo "  Array job ID: ${ARRAY_JOB_ID} (2 elements, 0-1)"
+echo "  Array job ID: ${ARRAY_JOB_ID} (${N_CONDITIONS} elements, 0-${LAST_IDX})"
+for i in $(seq 0 ${LAST_IDX}); do
+    echo "    Element ${i} -> ${CONDITION_NAMES[$i]} (job ${ARRAY_JOB_ID}_${i})"
+done
+echo ""
+
+# Rename array elements for better squeue readability
+for i in $(seq 0 ${LAST_IDX}); do
+    scontrol update JobId="${ARRAY_JOB_ID}_${i}" \
+        JobName="ddp_${CONDITION_NAMES[$i]}" 2>/dev/null || true
+done
+echo "  [OK] Per-element job names set"
 echo ""
 
 # ========================================================================
@@ -144,10 +164,20 @@ echo ""
 # ========================================================================
 echo "Submitting analysis job (dependent on array ${ARRAY_JOB_ID})..."
 
+# Build dependency string: afterok:JOBID_0:JOBID_1:...
+DEP_STR="afterok"
+for i in $(seq 0 ${LAST_IDX}); do
+    DEP_STR="${DEP_STR}:${ARRAY_JOB_ID}_${i}"
+done
+echo "  Dependency: ${DEP_STR}"
+
 ANALYSIS_JOB_ID=$(sbatch --parsable \
-    --dependency="afterok:${ARRAY_JOB_ID}" \
+    --dependency="${DEP_STR}" \
     --job-name="ddp_analysis" \
-    --constraint=cpu \
+    --time=02:00:00 \
+    --ntasks=1 \
+    --cpus-per-task=8 \
+    --mem=32G \
     --output="${SLURM_LOG_DIR}/analysis_%j.out" \
     --error="${SLURM_LOG_DIR}/analysis_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
@@ -169,7 +199,9 @@ echo "  squeue -j ${ARRAY_JOB_ID}         # training array (2x DDP)"
 echo "  squeue -j ${ANALYSIS_JOB_ID}       # analysis (dependent)"
 echo ""
 echo "Per-condition logs:"
-echo "  tail -f ${SLURM_LOG_DIR}/train_<ARRAY_ID>_<JOB_ID>.out"
+for i in $(seq 0 ${LAST_IDX}); do
+    echo "  tail -f ${SLURM_LOG_DIR}/train_${i}_*.out   # ${CONDITION_NAMES[$i]}"
+done
 echo ""
 echo "Cancel all:"
 echo "  scancel ${ARRAY_JOB_ID} ${ANALYSIS_JOB_ID}"
