@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
-# LORA V3 RANK SWEEP — PICASSO LAUNCHER
+# LORA DDP SWEEP — PICASSO LAUNCHER
 #
-# Submits a 7-element array job (1 A100 GPU each, 12h walltime) plus a
-# dependent CPU-only analysis job that regenerates figures/tables/reports.
+# Submits a 3-element array job (2 GPUs each). Each element runs the full
+# pipeline: train (DDP) → extract → domain-gap → probes → dice →
+# feature-quality → generate-tables.
+# Plotting and reports are done locally after syncing results.
 #
 # Conditions (SLURM_ARRAY_TASK_ID):
-#   0: baseline_frozen    3: lora_r8_full     6: lora_r64_full
-#   1: baseline           4: lora_r16_full
-#   2: lora_r4_full       5: lora_r32_full
+#   0: baseline        (frozen encoder + trainable decoder)
+#   1: dual_r8         (LoRA r8 + VICReg + dual-domain MEN+GLI)
+#   2: men_r8          (LoRA r8 + VICReg + single-domain MEN only)
 #
 # Usage (from Picasso login node):
 #   cd /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
-#   bash slurm/lora_adaptation/launch_v3.sh
+#   bash slurm/lora/ddp/launch_ddp.sh
 # =============================================================================
 
 set -euo pipefail
@@ -20,7 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "=========================================="
-echo "LORA V3 RANK SWEEP — PICASSO LAUNCHER"
+echo "LORA DDP SWEEP — PICASSO LAUNCHER"
 echo "=========================================="
 echo "Time: $(date)"
 echo ""
@@ -30,7 +32,7 @@ echo ""
 # ========================================================================
 export REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 export CONDA_ENV_NAME="growth"
-export CONFIG_PATH="${REPO_SRC}/experiments/lora/config/picasso/v3_rank_sweep.yaml"
+export CONFIG_PATH="${REPO_SRC}/experiments/lora/config/picasso/ddp_dual_domain.yaml"
 
 echo "Activating conda environment: ${CONDA_ENV_NAME}"
 if command -v conda >/dev/null 2>&1; then
@@ -43,6 +45,7 @@ fi
 echo "  Python: $(which python)"
 echo "  Version: $(python --version)"
 echo ""
+
 # Extract output dir from config
 OUTPUT_DIR=$(python3 -c "
 import yaml
@@ -92,13 +95,17 @@ with open('${CONFIG_PATH}') as f:
     cfg = yaml.safe_load(f)
 
 checkpoint = Path(cfg['paths']['checkpoint'])
-h5_file = Path(cfg['paths']['h5_file'])
+men_h5 = Path(cfg['paths']['men_h5_file'])
+gli_h5 = Path(cfg['paths']['gli_h5_file'])
 
 assert checkpoint.exists(), f'Checkpoint not found: {checkpoint}'
 print(f'  [OK]   Checkpoint: {checkpoint}')
 
-assert h5_file.exists(), f'H5 file not found: {h5_file}'
-print(f'  [OK]   H5 file: {h5_file}')
+assert men_h5.exists(), f'MEN H5 not found: {men_h5}'
+print(f'  [OK]   MEN H5: {men_h5}')
+
+assert gli_h5.exists(), f'GLI H5 not found: {gli_h5}'
+print(f'  [OK]   GLI H5: {gli_h5}')
 
 n_cond = len(cfg['conditions'])
 print(f'  [OK]   {n_cond} conditions defined')
@@ -109,59 +116,46 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Quick conda/import check
-if command -v conda >/dev/null 2>&1; then
-    echo "  [OK]   Conda available"
-else
-    echo "  [WARN] Conda not in PATH (will be loaded by workers)"
-fi
+# Quick import check
+python3 -c "
+from experiments.lora.engine.ddp_utils import setup_ddp, DistributedDomainBalancedSampler
+print('  [OK]   DDP imports')
+"
 
 echo ""
 
 # ========================================================================
-# STEP 1: Generate data splits (fast, on login node)
+# CONDITION NAMES (for per-element job naming)
 # ========================================================================
-echo "Generating data splits..."
-cd "${REPO_SRC}"
-python3 -m experiments.lora.run \
-    --config "${CONFIG_PATH}" splits
-echo "  [OK]   Data splits generated"
-echo ""
+CONDITION_NAMES=("baseline" "dual_r8" "men_r8")
+N_CONDITIONS=${#CONDITION_NAMES[@]}
+LAST_IDX=$((N_CONDITIONS - 1))
 
 # ========================================================================
-# STEP 2: Submit array job (7 conditions, 1 GPU each)
+# SUBMIT ARRAY JOB (3 conditions, 2 GPUs each)
 # ========================================================================
-echo "Submitting training array job..."
+echo "Submitting DDP training array job (${N_CONDITIONS} conditions, 2 GPUs each, full pipeline)..."
+echo "  Conditions: ${CONDITION_NAMES[*]}"
 
 ARRAY_JOB_RAW=$(sbatch --parsable \
-    --array=0-6 \
-    --job-name="v3_rank" \
+    --array=0-${LAST_IDX}%${N_CONDITIONS} \
+    --job-name="ddp_lora" \
     --output="${SLURM_LOG_DIR}/train_%a_%j.out" \
     --error="${SLURM_LOG_DIR}/train_%a_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
-    "${SCRIPT_DIR}/train_worker_v3.sh")
+    "${SCRIPT_DIR}/train_worker_ddp.sh")
 
-# --parsable on array jobs may return "JOBID;cluster" or "JOBID_0" — extract base ID
+# --parsable on array jobs may return "JOBID;cluster" — extract base ID
 ARRAY_JOB_ID="${ARRAY_JOB_RAW%%[_;]*}"
 
-echo "  Array job ID: ${ARRAY_JOB_ID} (7 elements, 0-6)"
+echo "  Array job ID: ${ARRAY_JOB_ID} (${N_CONDITIONS} elements, 0-${LAST_IDX})"
+for i in $(seq 0 ${LAST_IDX}); do
+    echo "    Element ${i} -> ${CONDITION_NAMES[$i]} (job ${ARRAY_JOB_ID}_${i})"
+done
 echo ""
 
-# ========================================================================
-# STEP 3: Submit analysis job (dependent on array completion)
-# ========================================================================
-echo "Submitting analysis job (dependent on array ${ARRAY_JOB_ID})..."
-
-ANALYSIS_JOB_ID=$(sbatch --parsable \
-    --dependency="afterok:${ARRAY_JOB_ID}" \
-    --job-name="v3_analysis" \
-    --constraint=cpu \
-    --output="${SLURM_LOG_DIR}/analysis_%j.out" \
-    --error="${SLURM_LOG_DIR}/analysis_%j.err" \
-    --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}" \
-    "${SCRIPT_DIR}/analysis_worker_v3.sh")
-
-echo "  Analysis job ID: ${ANALYSIS_JOB_ID}"
+# Note: per-element job names are set by train_worker_ddp.sh at runtime
+# via scontrol (SLURM doesn't support %a in --job-name at submission time)
 echo ""
 
 # ========================================================================
@@ -173,16 +167,20 @@ echo "=========================================="
 echo ""
 echo "Monitor:"
 echo "  squeue -u \$USER"
-echo "  squeue -j ${ARRAY_JOB_ID}         # training array"
-echo "  squeue -j ${ANALYSIS_JOB_ID}       # analysis (dependent)"
+echo "  squeue -j ${ARRAY_JOB_ID}         # training array (${N_CONDITIONS}x DDP)"
 echo ""
 echo "Per-condition logs:"
-echo "  tail -f ${SLURM_LOG_DIR}/train_<ARRAY_ID>_<JOB_ID>.out"
+for i in $(seq 0 ${LAST_IDX}); do
+    echo "  tail -f ${SLURM_LOG_DIR}/train_${i}_*.out   # ${CONDITION_NAMES[$i]}"
+done
 echo ""
 echo "Cancel all:"
-echo "  scancel ${ARRAY_JOB_ID} ${ANALYSIS_JOB_ID}"
+echo "  scancel ${ARRAY_JOB_ID}"
 echo ""
 echo "Estimated timeline:"
-echo "  Training:  ~6-12h per condition (12h limit)"
-echo "  Analysis:  ~30 min after all training completes"
-echo "  Total:     ~12.5h (all 7 train in parallel)"
+echo "  Per condition:  ~4-7h (train DDP + per-10-epoch diagnostics) + ~1h (extract/probes/dice/tables)"
+echo "  All parallel:   ~8h total (${N_CONDITIONS} conditions run concurrently)"
+echo ""
+echo "After completion, sync results locally for plotting/analysis:"
+echo "  rsync -avz picasso:${OUTPUT_DIR}/ results/ddp_dual_domain/"
+echo "  python -m experiments.lora.run --config <local_config> visualize"

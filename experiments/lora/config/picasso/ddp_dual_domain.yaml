@@ -1,7 +1,7 @@
 experiment:
   name: ddp_dual_domain
   seed: 42
-  output_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/results/lora_ddp_dual_domain
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/lora_ddp_dual_domain
 
 paths:
   checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
@@ -35,6 +35,16 @@ conditions:
     use_semantic_heads: true
     description: "LoRA r8 + VICReg + semantic heads + dual-domain"
 
+  # LoRA r8 + VICReg + single-domain MEN only
+  - name: men_r8
+    lora_rank: 8
+    dual_domain: false
+    lora_alpha: 16
+    target_stages: [3, 4]
+    use_vicreg: true
+    use_semantic_heads: true
+    description: "LoRA r8 + VICReg + semantic heads + MEN only"
+
 training:
   max_epochs: 100
   early_stopping_patience: 20
@@ -56,6 +66,7 @@ training:
   lr_reduce_patience: 10
   enable_gradient_monitoring: true
   gradient_monitor_freq: 50
+  diagnostic_interval: 10
 
 loss:
   lambda_dice: 1.0

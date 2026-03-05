@@ -62,6 +62,11 @@ logger = logging.getLogger(__name__)
 _file_logging_initialized = False
 
 
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    """Unwrap DDP/FSDP to access the underlying model's custom attributes."""
+    return model.module if isinstance(model, DDP) else model
+
+
 # =============================================================================
 # File Logging
 # =============================================================================
@@ -436,6 +441,125 @@ def evaluate_feature_quality_inline(
 
 
 # =============================================================================
+# Per-Epoch Diagnostics (domain gap + extended probes)
+# =============================================================================
+
+
+@torch.no_grad()
+def _extract_val_features(
+    model: nn.Module,
+    val_loaders: dict[str, DataLoader],
+    device: str,
+    use_amp: bool = False,
+) -> dict[str, np.ndarray]:
+    """Extract encoder10 features from all validation loaders.
+
+    Runs the encoder through each val loader in eval mode and returns
+    GAP-pooled 768-dim features per domain. Used for per-epoch domain
+    gap tracking — lightweight, no disk I/O.
+
+    Args:
+        model: Unwrapped model (not DDP).
+        val_loaders: Dict of domain → DataLoader (e.g. {"men": ..., "gli": ...}).
+        device: Device string.
+        use_amp: Whether to use bf16 autocast.
+
+    Returns:
+        Dict of domain → features array [N, 768].
+    """
+    model.eval()
+    domain_features: dict[str, np.ndarray] = {}
+
+    for domain, loader in val_loaders.items():
+        batched: list[np.ndarray] = []
+        for batch in loader:
+            images = batch["image"].to(device)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                # Get encoder10 features via hidden states → encoder10 → GAP
+                raw = _unwrap_model(model)
+                if hasattr(raw, "model") and hasattr(raw.model, "get_hidden_states"):
+                    hidden_states = raw.model.get_hidden_states(images)
+                    enc10 = raw.model.decoder.encoder10(hidden_states[4])
+                elif hasattr(raw, "lora_encoder"):
+                    hidden_states = raw.lora_encoder.get_hidden_states(images)
+                    enc10 = raw.decoder.encoder10(hidden_states[4])
+                elif hasattr(raw, "encoder"):
+                    hidden_states = raw.encoder.swinViT(images, raw.encoder.normalize)
+                    enc10 = raw.encoder.encoder10(hidden_states[4])
+                else:
+                    logger.debug("Cannot extract features: unknown model type")
+                    return {}
+
+                features = F.adaptive_avg_pool3d(enc10, 1).flatten(1)  # [B, 768]
+            batched.append(features.float().cpu().numpy())
+
+        if batched:
+            domain_features[domain] = np.concatenate(batched, axis=0)
+
+    return domain_features
+
+
+def compute_epoch_diagnostics(
+    model: nn.Module,
+    val_loaders: dict[str, DataLoader],
+    device: str,
+    use_amp: bool = False,
+) -> dict[str, float]:
+    """Compute domain gap and feature quality metrics for the current epoch.
+
+    Extracts encoder10 features from all val domains and computes:
+    - MMD² between MEN and GLI (if both available)
+    - PAD (Proxy A-Distance)
+    - Per-domain effective rank
+    - Domain classifier accuracy
+
+    Args:
+        model: Unwrapped model (not DDP).
+        val_loaders: Dict of domain → DataLoader.
+        device: Device string.
+        use_amp: Whether to use bf16 autocast.
+
+    Returns:
+        Dict with diagnostic metrics (prefixed with "diag_").
+    """
+    from growth.evaluation.latent_quality import (
+        compute_domain_classifier_accuracy,
+        compute_effective_rank,
+        compute_proxy_a_distance,
+        mmd_permutation_test,
+    )
+
+    domain_features = _extract_val_features(model, val_loaders, device, use_amp)
+
+    if not domain_features:
+        return {}
+
+    results: dict[str, float] = {}
+
+    # Per-domain effective rank
+    for domain, feats in domain_features.items():
+        results[f"diag_{domain}_effective_rank"] = compute_effective_rank(feats)
+
+    # Domain gap (MEN vs GLI)
+    men_feats = domain_features.get("men")
+    gli_feats = domain_features.get("gli")
+
+    if men_feats is not None and gli_feats is not None:
+        # MMD² with fewer permutations for speed (50 vs 200 in final eval)
+        mmd_val, mmd_pval = mmd_permutation_test(men_feats, gli_feats, n_perm=50)
+        results["diag_mmd_squared"] = mmd_val
+        results["diag_mmd_pvalue"] = mmd_pval
+
+        # PAD
+        domain_acc = compute_domain_classifier_accuracy(men_feats, gli_feats)
+        pad = compute_proxy_a_distance(men_feats, gli_feats)
+        results["diag_domain_classifier_acc"] = domain_acc
+        results["diag_pad"] = pad
+
+    return results
+
+
+# =============================================================================
 # Checkpoint Saving
 # =============================================================================
 
@@ -647,10 +771,7 @@ def validate_single_domain(
         segs = batch["seg"].to(device)
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-            if hasattr(model, "model"):
-                pred = model.model(images)
-            else:
-                pred = model(images)
+            pred = model(images)
 
             loss = seg_loss_fn(pred, segs, domain=domain)
 
@@ -774,9 +895,10 @@ def train_epoch(
     model.train()
 
     # Keep encoder in eval for baseline
+    raw = _unwrap_model(model)
     if decoder_type == "original":
-        if hasattr(model, "model") and hasattr(model.model, "encoder"):
-            model.model.encoder.eval()
+        if hasattr(raw, "model") and hasattr(raw.model, "encoder"):
+            raw.model.encoder.eval()
 
     # Accumulators
     total_seg_loss = 0.0
@@ -817,15 +939,16 @@ def train_epoch(
         # no_sync for non-step-boundary micro-batches (skip premature all-reduce)
         is_step_boundary = (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == n_batches
         maybe_no_sync = (
-            ddp_model.no_sync() if (ddp_model is not None and not is_step_boundary)
+            ddp_model.no_sync()
+            if (ddp_model is not None and not is_step_boundary)
             else contextlib.nullcontext()
         )
 
         with maybe_no_sync:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
                 need_features = use_semantic_heads or vicreg_loss_fn is not None
-                if need_features and hasattr(model, "forward_with_semantics"):
-                    outputs = model.forward_with_semantics(images)
+                if need_features and hasattr(_unwrap_model(model), "forward_with_semantics"):
+                    outputs = model(images, return_semantics=True)
                     pred = outputs["logits"]
                 else:
                     pred = model(images)
@@ -1009,11 +1132,14 @@ def train_condition(
     gradient_monitor_freq = training_config.get("gradient_monitor_freq", 50)
     use_amp = training_config.get("use_amp", False)
     grad_accum_steps = training_config.get("grad_accum_steps", 1)
+    diagnostic_interval = training_config.get("diagnostic_interval", 10)
     persistent_workers = _is_ddp  # Avoid worker respawn per epoch in DDP
 
     logger.info(f"Dual-domain: {is_dual}")
     if _is_ddp:
-        logger.info(f"DDP: rank={ddp_rank}, local_rank={ddp_local_rank}, world_size={ddp_world_size}")
+        logger.info(
+            f"DDP: rank={ddp_rank}, local_rank={ddp_local_rank}, world_size={ddp_world_size}"
+        )
     logger.info(f"Decoder type: {decoder_type}, semantic heads: {use_semantic_heads}")
     if use_amp:
         logger.info("Mixed precision: bf16")
@@ -1087,6 +1213,9 @@ def train_condition(
     param_counts = model.get_trainable_param_count()
     logger.info(f"Trainable parameters: {param_counts}")
 
+    # Optimizer + scheduler (BEFORE DDP wrapping — needs custom model methods)
+    optimizer, scheduler_info = create_optimizer(model, config, is_baseline, decoder_type)
+
     # DDP wrapping
     raw_model = model  # For checkpoint saving, probes, param counting
     ddp_wrapper: DDP | None = None
@@ -1094,9 +1223,6 @@ def train_condition(
         ddp_wrapper = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=False)
         model = ddp_wrapper  # Use DDP model for forward/backward
         logger.info("Model wrapped with DistributedDataParallel")
-
-    # Optimizer + scheduler
-    optimizer, scheduler_info = create_optimizer(model, config, is_baseline, decoder_type)
 
     # Losses
     seg_loss_fn = SegmentationLoss3Ch(
@@ -1171,6 +1297,12 @@ def train_condition(
         "probe_loc_r2",
         "probe_shape_r2",
         "probe_mean_r2",
+        # Per-N-epoch diagnostics (empty on non-diagnostic epochs)
+        "diag_mmd_squared",
+        "diag_pad",
+        "diag_domain_classifier_acc",
+        "diag_men_effective_rank",
+        "diag_gli_effective_rank",
     ]
     if enable_gradient_monitoring:
         csv_columns.extend(["encoder_grad_norm", "decoder_grad_norm", "semantic_grad_norm"])
@@ -1272,9 +1404,7 @@ def train_condition(
         if use_semantic_heads and _is_main:
             men_val = val_loaders.get("men")
             if men_val is not None:
-                probe_metrics = evaluate_feature_quality_inline(
-                    raw_model, men_val, device, use_amp
-                )
+                probe_metrics = evaluate_feature_quality_inline(raw_model, men_val, device, use_amp)
                 raw_model.train()
                 if probe_metrics:
                     logger.info(
@@ -1282,6 +1412,25 @@ def train_condition(
                         f"loc={probe_metrics['probe_loc_r2']:.3f}, "
                         f"shape={probe_metrics['probe_shape_r2']:.3f}"
                     )
+
+        # Per-N-epoch diagnostics (domain gap, effective rank)
+        diag_metrics: dict[str, float] = {}
+        is_diagnostic_epoch = (epoch + 1) % diagnostic_interval == 0 or epoch == 0
+        if is_diagnostic_epoch and _is_main:
+            logger.info(f"  Running epoch diagnostics (interval={diagnostic_interval})...")
+            diag_metrics = compute_epoch_diagnostics(raw_model, val_loaders, device, use_amp)
+            raw_model.train()
+            if diag_metrics:
+                parts = []
+                if "diag_mmd_squared" in diag_metrics:
+                    parts.append(f"MMD²={diag_metrics['diag_mmd_squared']:.4f}")
+                if "diag_pad" in diag_metrics:
+                    parts.append(f"PAD={diag_metrics['diag_pad']:.4f}")
+                for dom in ("men", "gli"):
+                    key = f"diag_{dom}_effective_rank"
+                    if key in diag_metrics:
+                        parts.append(f"rank_{dom}={diag_metrics[key]:.1f}")
+                logger.info(f"  Diagnostics: {' | '.join(parts)}")
 
         checkpoint_score = probe_metrics.get("probe_mean_r2", combined_dice)
 
@@ -1319,6 +1468,12 @@ def train_condition(
                 probe_metrics.get("probe_loc_r2", ""),
                 probe_metrics.get("probe_shape_r2", ""),
                 probe_metrics.get("probe_mean_r2", ""),
+                # Diagnostic columns (empty on non-diagnostic epochs)
+                diag_metrics.get("diag_mmd_squared", ""),
+                diag_metrics.get("diag_pad", ""),
+                diag_metrics.get("diag_domain_classifier_acc", ""),
+                diag_metrics.get("diag_men_effective_rank", ""),
+                diag_metrics.get("diag_gli_effective_rank", ""),
             ]
             if enable_gradient_monitoring:
                 csv_row.extend(

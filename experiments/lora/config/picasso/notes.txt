@@ -1,0 +1,29 @@
+  ┌────────────────────────────────────────┬───────────────┬──────────────────────────────┐
+  │              Column group              │   Frequency   │        Available for         │
+  ├────────────────────────────────────────┼───────────────┼──────────────────────────────┤
+  │ Train losses (seg, aux, VICReg,        │ Every epoch   │ All conditions               │
+  │ variance_hinge)                        │               │                              │
+  ├────────────────────────────────────────┼───────────────┼──────────────────────────────┤
+  │ Val Dice (MEN TC/WT/ET, GLI TC/WT/ET,  │ Every epoch   │ All conditions               │
+  │ combined)                              │               │                              │
+  ├────────────────────────────────────────┼───────────────┼──────────────────────────────┤
+  │ Probe R² (vol, loc, shape, mean)       │ Every epoch   │ Semantic head conditions     │
+  ├────────────────────────────────────────┼───────────────┼──────────────────────────────┤
+  │ Gradient norms (encoder, decoder,      │ Every epoch   │ All conditions               │
+  │ semantic)                              │               │                              │
+  ├────────────────────────────────────────┼───────────────┼──────────────────────────────┤
+  │ MMD², PAD, domain classifier acc       │ Every 10      │ dual_r8 (both domains)       │
+  │                                        │ epochs        │                              │
+  ├────────────────────────────────────────┼───────────────┼──────────────────────────────┤
+  │ Effective rank (MEN, GLI)              │ Every 10      │ All conditions (MEN only for │
+  │                                        │ epochs        │  men_r8)                     │
+  └────────────────────────────────────────┴───────────────┴──────────────────────────────┘
+
+  This gives you epoch-resolved curves for:
+  - Dice convergence: Does dual_r8 converge faster/better than men_r8 on MEN?
+  - Domain gap dynamics: Does MMD² decrease during dual-domain training? Does PAD drop as the
+  encoder learns domain-invariant features?
+  - Representation quality trajectory: Does effective rank grow or collapse? Do probe R²
+  scores plateau before Dice does?
+  - VICReg effect: Does the variance hinge track with effective rank? Does VICReg prevent rank
+   collapse?

@@ -17,7 +17,6 @@ References:
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -42,7 +41,7 @@ def _get_out_layer_channels(out_layer: nn.Module) -> tuple:
         (in_channels, out_channels) tuple.
     """
     # Try original MONAI structure first
-    if hasattr(out_layer, 'conv') and hasattr(out_layer.conv, 'conv'):
+    if hasattr(out_layer, "conv") and hasattr(out_layer.conv, "conv"):
         return out_layer.conv.conv.in_channels, out_layer.conv.conv.out_channels
 
     # Try Sequential (already replaced)
@@ -105,13 +104,17 @@ class OriginalDecoderWrapper(nn.Module):
 
         # Log parameter counts
         dec_params = self._count_decoder_params()
-        logger.info(f"Original decoder initialized: {dec_params/1e6:.2f}M params")
+        logger.info(f"Original decoder initialized: {dec_params / 1e6:.2f}M params")
 
     def _freeze_decoder(self):
         """Freeze all decoder parameters."""
         decoder_modules = [
-            self.decoder5, self.decoder4, self.decoder3,
-            self.decoder2, self.decoder1, self.out
+            self.decoder5,
+            self.decoder4,
+            self.decoder3,
+            self.decoder2,
+            self.decoder1,
+            self.out,
         ]
         for module in decoder_modules:
             for param in module.parameters():
@@ -120,18 +123,19 @@ class OriginalDecoderWrapper(nn.Module):
     def _count_decoder_params(self) -> int:
         """Count decoder parameters (excluding encoder blocks)."""
         decoder_modules = [
-            self.decoder5, self.decoder4, self.decoder3,
-            self.decoder2, self.decoder1, self.out
+            self.decoder5,
+            self.decoder4,
+            self.decoder3,
+            self.decoder2,
+            self.decoder1,
+            self.out,
         ]
-        return sum(
-            p.numel() for m in decoder_modules
-            for p in m.parameters()
-        )
+        return sum(p.numel() for m in decoder_modules for p in m.parameters())
 
     def forward(
         self,
         x_in: torch.Tensor,
-        hidden_states: List[torch.Tensor],
+        hidden_states: list[torch.Tensor],
     ) -> torch.Tensor:
         """Forward pass through original decoder.
 
@@ -156,7 +160,7 @@ class OriginalDecoderWrapper(nn.Module):
             Segmentation logits [B, out_channels, 96, 96, 96].
         """
         # Process features through encoder blocks for skip connections
-        enc0 = self.encoder1(x_in)              # [B, 4, 96³] -> [B, 48, 96³]
+        enc0 = self.encoder1(x_in)  # [B, 4, 96³] -> [B, 48, 96³]
         enc1 = self.encoder2(hidden_states[0])  # [B, 48, 48³] -> [B, 48, 48³]
         enc2 = self.encoder3(hidden_states[1])  # [B, 96, 24³] -> [B, 96, 24³]
         enc3 = self.encoder4(hidden_states[2])  # [B, 192, 12³] -> [B, 192, 12³]
@@ -168,13 +172,13 @@ class OriginalDecoderWrapper(nn.Module):
         # decoder5: 3³ -> 6³, skip from hidden_states[3] directly (NOT enc3!)
         dec3 = self.decoder5(dec4, hidden_states[3])  # [B, 384, 6³]
         # decoder4: 6³ -> 12³, skip from enc3
-        dec2 = self.decoder4(dec3, enc3)              # [B, 192, 12³]
+        dec2 = self.decoder4(dec3, enc3)  # [B, 192, 12³]
         # decoder3: 12³ -> 24³, skip from enc2
-        dec1 = self.decoder3(dec2, enc2)              # [B, 96, 24³]
+        dec1 = self.decoder3(dec2, enc2)  # [B, 96, 24³]
         # decoder2: 24³ -> 48³, skip from enc1
-        dec0 = self.decoder2(dec1, enc1)              # [B, 48, 48³]
+        dec0 = self.decoder2(dec1, enc1)  # [B, 48, 48³]
         # decoder1: 48³ -> 96³, skip from enc0
-        out = self.decoder1(dec0, enc0)               # [B, 48, 96³]
+        out = self.decoder1(dec0, enc0)  # [B, 48, 96³]
 
         logits = self.out(out)  # [B, out_channels, 96³]
 
@@ -182,7 +186,7 @@ class OriginalDecoderWrapper(nn.Module):
 
     def get_bottleneck_features(
         self,
-        hidden_states: List[torch.Tensor],
+        hidden_states: list[torch.Tensor],
     ) -> torch.Tensor:
         """Extract 768-dim bottleneck features.
 
@@ -258,7 +262,7 @@ class OriginalDecoderSegmentationModel(nn.Module):
         # Decode (pass both original input and hidden states)
         return self.decoder(x, hidden_states)
 
-    def get_hidden_states(self, x: torch.Tensor) -> List[torch.Tensor]:
+    def get_hidden_states(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Get encoder hidden states for feature extraction."""
         return self.encoder.swinViT(x, self.encoder.normalize)
 
@@ -267,7 +271,7 @@ class OriginalDecoderSegmentationModel(nn.Module):
         hidden_states = self.get_hidden_states(x)
         return self.decoder.get_bottleneck_features(hidden_states)
 
-    def get_trainable_param_count(self) -> Dict[str, int]:
+    def get_trainable_param_count(self) -> dict[str, int]:
         """Count trainable parameters by component.
 
         Note: For baseline, encoder (swinViT) is frozen, so encoder count should be 0.
@@ -346,6 +350,7 @@ class LoRAOriginalDecoderModel(nn.Module):
         # Optional semantic prediction heads
         if use_semantic_heads:
             from .semantic_heads import AuxiliarySemanticHeads
+
             self.semantic_heads = AuxiliarySemanticHeads(
                 input_dim=768,
                 volume_dim=4,
@@ -359,22 +364,38 @@ class LoRAOriginalDecoderModel(nn.Module):
         self,
         x: torch.Tensor,
         return_features: bool = False,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        return_semantics: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | dict[str, torch.Tensor]:
         """Forward pass through LoRA encoder and original decoder.
 
         Args:
-            x: Input tensor [B, 4, 96, 96, 96].
-            return_features: If True, also return bottleneck features.
+            x: Input tensor [B, 4, 128, 128, 128].
+            return_features: If True, also return bottleneck features as tuple.
+            return_semantics: If True, return dict with logits, features, and
+                semantic predictions. Takes precedence over return_features.
 
         Returns:
-            If return_features=False: Segmentation logits [B, 4, 96, 96, 96].
+            If return_semantics=True: Dict with 'logits', 'features', and
+                optionally 'pred_volume', 'pred_location', 'pred_shape'.
             If return_features=True: (logits, features [B, 768]).
+            Otherwise: Segmentation logits [B, 3, 128, 128, 128].
         """
         # Get hidden states through LoRA-adapted encoder
         hidden_states = self.lora_encoder.get_hidden_states(x)
 
         # Decode (pass both original input and hidden states)
         logits = self.decoder(x, hidden_states)
+
+        if return_semantics:
+            features = self.decoder.get_bottleneck_features(hidden_states)
+            result: dict[str, torch.Tensor] = {
+                "logits": logits,
+                "features": features,
+            }
+            if self.semantic_heads is not None:
+                semantic_preds = self.semantic_heads(features)
+                result.update(semantic_preds)
+            return result
 
         if return_features:
             features = self.decoder.get_bottleneck_features(hidden_states)
@@ -385,38 +406,12 @@ class LoRAOriginalDecoderModel(nn.Module):
     def forward_with_semantics(
         self,
         x: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Forward pass with semantic predictions.
 
-        Args:
-            x: Input tensor [B, 4, 96, 96, 96].
-
-        Returns:
-            Dict with:
-                - 'logits': Segmentation logits [B, 4, 96, 96, 96]
-                - 'features': Bottleneck features [B, 768]
-                - 'pred_volume': Volume predictions [B, 4] (if semantic_heads)
-                - 'pred_location': Location predictions [B, 3] (if semantic_heads)
-                - 'pred_shape': Shape predictions [B, 3] (if semantic_heads)
+        Deprecated: use forward(x, return_semantics=True) for DDP compatibility.
         """
-        # Get hidden states
-        hidden_states = self.lora_encoder.get_hidden_states(x)
-
-        # Decode (pass both original input and hidden states)
-        logits = self.decoder(x, hidden_states)
-        features = self.decoder.get_bottleneck_features(hidden_states)
-
-        result = {
-            'logits': logits,
-            'features': features,
-        }
-
-        # Semantic predictions
-        if self.semantic_heads is not None:
-            semantic_preds = self.semantic_heads(features)
-            result.update(semantic_preds)
-
-        return result
+        return self.forward(x, return_semantics=True)
 
     def _unfreeze_decoder(self):
         """Unfreeze all decoder parameters.
@@ -431,12 +426,17 @@ class LoRAOriginalDecoderModel(nn.Module):
         # features used for SDP come from encoder10's output. Unfreezing it
         # allows the bottleneck representation to adapt to meningioma data.
         decoder_modules = [
-            self.decoder.encoder1, self.decoder.encoder2,
-            self.decoder.encoder3, self.decoder.encoder4,
+            self.decoder.encoder1,
+            self.decoder.encoder2,
+            self.decoder.encoder3,
+            self.decoder.encoder4,
             self.decoder.encoder10,
-            self.decoder.decoder5, self.decoder.decoder4,
-            self.decoder.decoder3, self.decoder.decoder2,
-            self.decoder.decoder1, self.decoder.out,
+            self.decoder.decoder5,
+            self.decoder.decoder4,
+            self.decoder.decoder3,
+            self.decoder.decoder2,
+            self.decoder.decoder1,
+            self.decoder.out,
         ]
         unfrozen_count = 0
         for module in decoder_modules:
@@ -445,7 +445,7 @@ class LoRAOriginalDecoderModel(nn.Module):
                 unfrozen_count += param.numel()
         logger.info(f"Unfroze {unfrozen_count:,} decoder parameters")
 
-    def get_hidden_states(self, x: torch.Tensor) -> List[torch.Tensor]:
+    def get_hidden_states(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Get encoder hidden states."""
         return self.lora_encoder.get_hidden_states(x)
 
@@ -468,7 +468,7 @@ class LoRAOriginalDecoderModel(nn.Module):
             params.extend(self.semantic_heads.parameters())
         return [p for p in params if p.requires_grad]
 
-    def get_trainable_param_count(self) -> Dict[str, int]:
+    def get_trainable_param_count(self) -> dict[str, int]:
         """Count trainable parameters by component.
 
         For LoRA model:
@@ -478,14 +478,13 @@ class LoRAOriginalDecoderModel(nn.Module):
         """
         # Count only LoRA parameters for encoder
         lora_trainable = sum(
-            p.numel() for name, p in self.lora_encoder.model.named_parameters()
+            p.numel()
+            for name, p in self.lora_encoder.model.named_parameters()
             if "lora_" in name.lower() and p.requires_grad
         )
 
         # Count decoder parameters (excludes LoRA params which are in swinViT)
-        dec_trainable = sum(
-            p.numel() for p in self.decoder.parameters() if p.requires_grad
-        )
+        dec_trainable = sum(p.numel() for p in self.decoder.parameters() if p.requires_grad)
 
         sem_trainable = 0
         if self.semantic_heads is not None:

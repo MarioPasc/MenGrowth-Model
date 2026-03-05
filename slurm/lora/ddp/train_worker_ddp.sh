@@ -11,8 +11,9 @@
 # LORA DDP — PER-CONDITION TRAINING WORKER (2 GPUs)
 #
 # Each SLURM array element trains one condition using torchrun (2-GPU DDP),
-# then extracts features, runs domain analysis, evaluates probes, and
-# computes test Dice (single-GPU).
+# then extracts features, runs domain analysis, evaluates probes, computes
+# test Dice, evaluates feature quality, and generates summary tables.
+# All compute-heavy work happens here; plotting/reports are done locally.
 #
 # Expected env vars (exported by launch_ddp.sh):
 #   REPO_SRC, CONDA_ENV_NAME, CONFIG_PATH
@@ -28,6 +29,7 @@ NGPUS=2
 CONDITIONS=(
     baseline
     dual_r8
+    men_r8
 )
 
 COND="${CONDITIONS[$SLURM_ARRAY_TASK_ID]}"
@@ -138,7 +140,7 @@ step_done() {
 }
 
 # Step 1: Train (DDP, 2 GPUs)
-echo "[1/5] Training ${COND} (DDP, ${NGPUS} GPUs, port=${MASTER_PORT})..."
+echo "[1/7] Training ${COND} (DDP, ${NGPUS} GPUs, port=${MASTER_PORT})..."
 step_start
 torchrun \
     --nproc_per_node=${NGPUS} \
@@ -149,7 +151,7 @@ torchrun \
 step_done
 
 # Step 2: Extract features (single GPU)
-echo "[2/5] Extracting features for ${COND}..."
+echo "[2/7] Extracting features for ${COND}..."
 step_start
 python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
@@ -157,7 +159,7 @@ python -m experiments.lora.run \
 step_done
 
 # Step 3: Domain gap
-echo "[3/5] Domain gap analysis for ${COND}..."
+echo "[3/7] Domain gap analysis for ${COND}..."
 step_start
 python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
@@ -165,7 +167,7 @@ python -m experiments.lora.run \
 step_done
 
 # Step 4: Evaluate probes
-echo "[4/5] Evaluating probes for ${COND}..."
+echo "[4/7] Evaluating probes for ${COND}..."
 step_start
 python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
@@ -173,11 +175,27 @@ python -m experiments.lora.run \
 step_done
 
 # Step 5: Test Dice
-echo "[5/5] Computing test Dice for ${COND}..."
+echo "[5/7] Computing test Dice for ${COND}..."
 step_start
 python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
     dice --condition "${COND}"
+step_done
+
+# Step 6: Feature quality (CPU, reads cached features)
+echo "[6/7] Feature quality evaluation for ${COND}..."
+step_start
+python -m experiments.lora.run \
+    --config "${CONFIG_PATH}" \
+    feature-quality --condition "${COND}" || echo "  [WARN] Feature quality failed (non-fatal)"
+step_done
+
+# Step 7: Generate summary tables (CPU, aggregates all JSONs)
+echo "[7/7] Generating summary tables for ${COND}..."
+step_start
+python -m experiments.lora.run \
+    --config "${CONFIG_PATH}" \
+    generate-tables || echo "  [WARN] Table generation failed (non-fatal)"
 step_done
 
 # ========================================================================

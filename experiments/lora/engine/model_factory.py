@@ -202,42 +202,49 @@ class BaselineOriginalDecoderModel(nn.Module):
         else:
             self.semantic_heads = None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
-
-    def forward_with_semantics(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Forward pass with semantic predictions.
-
-        Computes hidden states once and reuses them for both decoding and
-        feature extraction (avoids double swinViT forward pass).
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_semantics: bool = False,
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        """Forward pass through frozen encoder + original decoder.
 
         Args:
             x: Input tensor [B, 4, 128, 128, 128].
+            return_semantics: If True, return dict with logits, features,
+                and semantic predictions. DDP-compatible alternative to
+                forward_with_semantics().
 
         Returns:
-            Dict with:
-                - 'logits': Segmentation logits [B, 3, 128, 128, 128]
-                - 'features': Bottleneck features [B, 768]
-                - 'pred_volume': Volume predictions [B, 4] (if semantic_heads)
-                - 'pred_location': Location predictions [B, 3] (if semantic_heads)
-                - 'pred_shape': Shape predictions [B, 3] (if semantic_heads)
+            If return_semantics=False: Segmentation logits [B, 3, 128, 128, 128].
+            If return_semantics=True: Dict with 'logits', 'features', and
+                optionally 'pred_volume', 'pred_location', 'pred_shape'.
         """
+        if not return_semantics:
+            return self.model(x)
+
         # Single swinViT pass — reuse hidden states for decoder + features
         hidden_states = self.model.get_hidden_states(x)
         logits = self.model.decoder(x, hidden_states)
         features = self.model.decoder.get_bottleneck_features(hidden_states)
 
-        result = {
+        result: dict[str, torch.Tensor] = {
             "logits": logits,
             "features": features,
         }
 
-        # Semantic predictions
         if self.semantic_heads is not None:
             semantic_preds = self.semantic_heads(features)
             result.update(semantic_preds)
 
         return result
+
+    def forward_with_semantics(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Forward pass with semantic predictions.
+
+        Deprecated: use forward(x, return_semantics=True) for DDP compatibility.
+        """
+        return self.forward(x, return_semantics=True)
 
     def get_hidden_states(self, x: torch.Tensor) -> list[torch.Tensor]:
         return self.model.get_hidden_states(x)
