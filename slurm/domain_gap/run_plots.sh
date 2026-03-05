@@ -57,26 +57,35 @@ echo ""
 # ========================================================================
 # CHECK PREREQUISITE DATA EXISTS
 # ========================================================================
-if [ ! -f "${OUTPUT_DIR}/metrics/domain_metrics.json" ]; then
+if [ ! -f "${OUTPUT_DIR}/metrics/pairwise_metrics.json" ]; then
     echo "[FAIL] GPU pipeline data not found — GPU job likely failed."
-    echo "  Expected: ${OUTPUT_DIR}/metrics/domain_metrics.json"
+    echo "  Expected: ${OUTPUT_DIR}/metrics/pairwise_metrics.json"
     exit 1
 fi
 echo "[OK] GPU pipeline data found"
+
+# Detect 3-domain mode: check if MenGrowth features were saved
+DATASETS="gli men"
+if [ -f "${OUTPUT_DIR}/features/mengrowth_features.npz" ]; then
+    DATASETS="gli men mengrowth"
+    echo "[OK] 3-domain mode detected (MenGrowth features found)"
+else
+    echo "[OK] 2-domain mode (GLI + MEN)"
+fi
 echo ""
 
 # ========================================================================
 # GENERATE FIGURES
 # ========================================================================
 echo "[1/2] Generating figures..."
-python -m experiments.domain_gap.plot_domain_gap --output-dir "${OUTPUT_DIR}"
+python -m experiments.domain_gap.plot_domain_gap --output-dir "${OUTPUT_DIR}" --datasets ${DATASETS}
 echo "  [OK] Figures saved"
 
 # ========================================================================
 # GENERATE LATEX TABLE
 # ========================================================================
 echo "[2/2] Generating LaTeX table..."
-python -m experiments.domain_gap.generate_latex_table --output-dir "${OUTPUT_DIR}"
+python -m experiments.domain_gap.generate_latex_table --output-dir "${OUTPUT_DIR}" --datasets ${DATASETS}
 echo "  [OK] Table saved"
 
 # ========================================================================

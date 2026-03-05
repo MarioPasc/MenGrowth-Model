@@ -80,17 +80,24 @@ with open('${CONFIG_PATH}') as f:
 
 checkpoint = Path(cfg['paths']['checkpoint'])
 h5_file = Path(cfg['paths']['h5_file'])
-glioma_root = Path(cfg['paths']['glioma_root'])
+gli_h5_file = Path(cfg['paths']['gli_h5_file'])
 
 assert checkpoint.exists(), f'Checkpoint not found: {checkpoint}'
 print(f'  [OK]   Checkpoint: {checkpoint}')
 
-assert h5_file.exists(), f'H5 file not found: {h5_file}'
-print(f'  [OK]   H5 file: {h5_file}')
+assert h5_file.exists(), f'MEN H5 not found: {h5_file}'
+print(f'  [OK]   MEN H5: {h5_file}')
 
-assert glioma_root.exists(), f'GLI data not found: {glioma_root}'
-gli_count = len([d for d in glioma_root.iterdir() if d.is_dir() and d.name.startswith('BraTS-GLI-')])
-print(f'  [OK]   GLI data: {gli_count} subjects in {glioma_root}')
+assert gli_h5_file.exists(), f'GLI H5 not found: {gli_h5_file}'
+print(f'  [OK]   GLI H5: {gli_h5_file}')
+
+mg_path = cfg['paths'].get('mengrowth_h5_file')
+if mg_path:
+    mg_h5 = Path(mg_path)
+    assert mg_h5.exists(), f'MenGrowth H5 not found: {mg_h5}'
+    print(f'  [OK]   MenGrowth H5: {mg_h5}')
+else:
+    print(f'  [INFO] MenGrowth H5: not configured (2-domain mode)')
 "
 
 if [ $? -ne 0 ]; then
