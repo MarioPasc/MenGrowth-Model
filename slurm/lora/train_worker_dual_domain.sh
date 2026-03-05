@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
-#SBATCH -J ddp_lora_train
+#SBATCH -J dd_lora_train
 #SBATCH --time=1-00:00:00
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
 #SBATCH --constraint=dgx
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 
 # =============================================================================
-# LORA DDP — PER-CONDITION TRAINING WORKER (2 GPUs)
+# DUAL-DOMAIN LORA — PER-CONDITION TRAINING WORKER (1 GPU)
 #
-# Each SLURM array element trains one condition using torchrun (2-GPU DDP),
-# then extracts features, runs domain analysis, evaluates probes, computes
+# Each SLURM array element trains one condition on a single GPU, then
+# extracts features, runs domain analysis, evaluates probes, computes
 # test Dice, evaluates feature quality, and generates summary tables.
-# All compute-heavy work happens here; plotting/reports are done locally.
 #
-# Expected env vars (exported by launch_ddp.sh):
+# Expected env vars (exported by launch_dual_domain.sh):
 #   REPO_SRC, CONDA_ENV_NAME, CONFIG_PATH
 # =============================================================================
 
 set -euo pipefail
-
-NGPUS=2
 
 # ========================================================================
 # CONDITION MAPPING
@@ -36,7 +33,7 @@ COND="${CONDITIONS[$SLURM_ARRAY_TASK_ID]}"
 
 START_TIME=$(date +%s)
 echo "=========================================="
-echo "LORA DDP TRAINING WORKER"
+echo "DUAL-DOMAIN LORA TRAINING WORKER"
 echo "=========================================="
 echo "Started:     $(date)"
 echo "Hostname:    $(hostname)"
@@ -44,12 +41,10 @@ echo "SLURM Job:   ${SLURM_JOB_ID:-local}"
 echo "Array ID:    ${SLURM_ARRAY_TASK_ID:-?}"
 echo "Condition:   ${COND}"
 echo "Config:      ${CONFIG_PATH:-NOT SET}"
-echo "GPUs req'd:  ${NGPUS}"
-echo "CUDA_VIS:    ${CUDA_VISIBLE_DEVICES:-unset}"
 echo ""
 
 # Update SLURM job name to include condition
-scontrol update JobId="${SLURM_JOB_ID}" JobName="ddp_${COND}" 2>/dev/null || true
+scontrol update JobId="${SLURM_JOB_ID}" JobName="dd_${COND}" 2>/dev/null || true
 
 # ========================================================================
 # ENVIRONMENT SETUP
@@ -78,25 +73,7 @@ echo "ENVIRONMENT"
 echo "=========================================="
 echo "[python] $(which python || true)"
 python -c "import sys; print('Python', sys.version.split()[0])"
-python -c "import torch; print('PyTorch', torch.__version__); print('CUDA:', torch.cuda.is_available()); print('GPU count:', torch.cuda.device_count()); [print(f'  GPU {i}:', torch.cuda.get_device_name(i)) for i in range(torch.cuda.device_count())]"
-echo ""
-
-# ========================================================================
-# GPU COUNT ASSERTION (critical: prevents world-size bug)
-# ========================================================================
-echo "=========================================="
-echo "GPU VERIFICATION"
-echo "=========================================="
-nvidia-smi -L
-ACTUAL_GPUS=$(nvidia-smi -L | wc -l)
-if [ "${ACTUAL_GPUS}" -ne "${NGPUS}" ]; then
-    echo ""
-    echo "[FATAL] Expected ${NGPUS} GPUs but found ${ACTUAL_GPUS}. Aborting."
-    echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
-    exit 1
-fi
-echo ""
-echo "[OK] GPU count: ${ACTUAL_GPUS}/${NGPUS}"
+python -c "import torch; print('PyTorch', torch.__version__); print('CUDA:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
 echo ""
 
 # ========================================================================
@@ -111,8 +88,7 @@ fi
 
 # Quick import check
 python -c "
-from experiments.lora.run import main as _
-from experiments.lora.engine.ddp_utils import setup_ddp
+from experiments.lora.engine.train_condition import train_condition
 print('Imports OK')
 "
 
@@ -130,27 +106,21 @@ echo "=========================================="
 echo "PIPELINE: ${COND}"
 echo "=========================================="
 
-# Master port offset prevents conflicts between array elements
-MASTER_PORT=$((29500 + ${SLURM_ARRAY_TASK_ID:-0}))
-
 step_start() { STEP_T0=$(date +%s); }
 step_done() {
     local elapsed=$(($(date +%s) - STEP_T0))
     echo "  [OK] Done in ${elapsed}s"
 }
 
-# Step 1: Train (DDP, 2 GPUs)
-echo "[1/7] Training ${COND} (DDP, ${NGPUS} GPUs, port=${MASTER_PORT})..."
+# Step 1: Train (single GPU)
+echo "[1/7] Training ${COND}..."
 step_start
-torchrun \
-    --nproc_per_node=${NGPUS} \
-    --master_port=${MASTER_PORT} \
-    -m experiments.lora.run \
+python -m experiments.lora.run \
     --config "${CONFIG_PATH}" \
-    train-ddp --condition "${COND}"
+    train --condition "${COND}"
 step_done
 
-# Step 2: Extract features (single GPU)
+# Step 2: Extract features
 echo "[2/7] Extracting features for ${COND}..."
 step_start
 python -m experiments.lora.run \

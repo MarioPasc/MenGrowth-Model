@@ -1,7 +1,7 @@
 experiment:
-  name: ddp_dual_domain
+  name: dual_domain_v1
   seed: 42
-  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/lora_ddp_dual_domain
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/lora_dual_domain_v1
 
 paths:
   checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
@@ -12,10 +12,6 @@ data:
   roi_size: [128, 128, 128]
   feature_roi_size: [192, 192, 192]
   domain_ratio: 0.5
-
-ddp:
-  enabled: true
-  gpus_per_node: 2
 
 conditions:
   # Baseline: frozen BrainSegFounder encoder + trainable original decoder

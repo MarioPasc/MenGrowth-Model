@@ -10,7 +10,6 @@ import logging
 from torch.utils.data import (
     ConcatDataset,
     DataLoader,
-    DistributedSampler,
     WeightedRandomSampler,
 )
 
@@ -35,15 +34,12 @@ def create_dual_domain_train_loader(
     augment: bool = True,
     train_split: str = "lora_train",
     pin_memory: bool = True,
-    ddp_rank: int | None = None,
-    ddp_world_size: int | None = None,
     seed: int = 0,
     persistent_workers: bool = False,
 ) -> DataLoader:
     """Create a mixed MEN + GLI training DataLoader.
 
-    Uses ConcatDataset + WeightedRandomSampler (single-GPU) or
-    DistributedDomainBalancedSampler (DDP) to balance domain representation.
+    Uses ConcatDataset + WeightedRandomSampler to balance domain representation.
 
     Args:
         men_h5_path: Path to BraTS-MEN H5 file.
@@ -56,9 +52,7 @@ def create_dual_domain_train_loader(
         augment: Whether to apply data augmentation.
         train_split: Split name in H5 files.
         pin_memory: Pin memory for GPU transfer.
-        ddp_rank: DDP rank (None for single-GPU).
-        ddp_world_size: DDP world size (None for single-GPU).
-        seed: Random seed for DDP sampler determinism.
+        seed: Random seed for sampler determinism.
         persistent_workers: Keep workers alive across epochs.
 
     Returns:
@@ -83,47 +77,27 @@ def create_dual_domain_train_loader(
     n_gli = len(gli_dataset)
     combined = ConcatDataset([men_dataset, gli_dataset])
 
-    if ddp_rank is not None and ddp_world_size is not None:
-        from experiments.lora.engine.ddp_utils import DistributedDomainBalancedSampler
+    # WeightedRandomSampler: inverse-domain-size weights for balance
+    men_weight = 1.0 / n_men if n_men > 0 else 0.0
+    gli_weight = 1.0 / n_gli if n_gli > 0 else 0.0
 
-        sampler = DistributedDomainBalancedSampler(
-            dataset=combined,
-            n_men=n_men,
-            n_gli=n_gli,
-            domain_ratio=domain_ratio,
-            num_replicas=ddp_world_size,
-            rank=ddp_rank,
-            seed=seed,
-            drop_last=True,
-        )
-        num_samples = sampler.num_samples_global
-        logger.info(
-            f"Dual-domain DDP train loader: {n_men} MEN + {n_gli} GLI, "
-            f"rank={ddp_rank}/{ddp_world_size}, "
-            f"{sampler.num_samples} samples/rank/epoch"
-        )
-    else:
-        # WeightedRandomSampler: inverse-domain-size weights for balance
-        men_weight = 1.0 / n_men if n_men > 0 else 0.0
-        gli_weight = 1.0 / n_gli if n_gli > 0 else 0.0
+    # Scale by target ratio
+    men_weight *= domain_ratio
+    gli_weight *= 1.0 - domain_ratio
 
-        # Scale by target ratio
-        men_weight *= domain_ratio
-        gli_weight *= 1.0 - domain_ratio
+    weights = [men_weight] * n_men + [gli_weight] * n_gli
+    num_samples = 2 * max(n_men, n_gli)
 
-        weights = [men_weight] * n_men + [gli_weight] * n_gli
-        num_samples = 2 * max(n_men, n_gli)
-
-        sampler = WeightedRandomSampler(
-            weights=weights,
-            num_samples=num_samples,
-            replacement=True,
-        )
-        logger.info(
-            f"Dual-domain train loader: {n_men} MEN + {n_gli} GLI = "
-            f"{len(combined)} total, {num_samples} samples/epoch, "
-            f"ratio={domain_ratio:.2f}"
-        )
+    sampler = WeightedRandomSampler(
+        weights=weights,
+        num_samples=num_samples,
+        replacement=True,
+    )
+    logger.info(
+        f"Dual-domain train loader: {n_men} MEN + {n_gli} GLI = "
+        f"{len(combined)} total, {num_samples} samples/epoch, "
+        f"ratio={domain_ratio:.2f}"
+    )
 
     return DataLoader(
         combined,
@@ -145,8 +119,6 @@ def create_per_domain_val_loaders(
     compute_semantic: bool = True,
     val_split: str = "lora_val",
     pin_memory: bool = True,
-    ddp_rank: int | None = None,
-    ddp_world_size: int | None = None,
     persistent_workers: bool = False,
 ) -> dict[str, DataLoader]:
     """Create separate MEN and GLI validation DataLoaders.
@@ -160,8 +132,6 @@ def create_per_domain_val_loaders(
         compute_semantic: Whether to load semantic features.
         val_split: Split name in H5 files.
         pin_memory: Pin memory for GPU transfer.
-        ddp_rank: DDP rank (None for single-GPU).
-        ddp_world_size: DDP world size (None for single-GPU).
         persistent_workers: Keep workers alive across epochs.
 
     Returns:
@@ -178,29 +148,15 @@ def create_per_domain_val_loaders(
             compute_semantic=compute_semantic,
         )
 
-        sampler = None
-        shuffle = False
-        if ddp_rank is not None and ddp_world_size is not None:
-            sampler = DistributedSampler(
-                dataset,
-                num_replicas=ddp_world_size,
-                rank=ddp_rank,
-                shuffle=False,
-            )
-
         loaders[name] = DataLoader(
             dataset,
             batch_size=batch_size,
-            shuffle=shuffle if sampler is None else False,
-            sampler=sampler,
+            shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
             drop_last=False,
             persistent_workers=persistent_workers and num_workers > 0,
         )
-        logger.info(
-            f"Validation loader [{name.upper()}]: {len(dataset)} samples"
-            + (f" (DDP rank {ddp_rank}/{ddp_world_size})" if ddp_rank is not None else "")
-        )
+        logger.info(f"Validation loader [{name.upper()}]: {len(dataset)} samples")
 
     return loaders

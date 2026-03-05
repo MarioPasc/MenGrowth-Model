@@ -28,11 +28,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 import yaml
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
@@ -60,11 +58,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _file_logging_initialized = False
-
-
-def _unwrap_model(model: nn.Module) -> nn.Module:
-    """Unwrap DDP/FSDP to access the underlying model's custom attributes."""
-    return model.module if isinstance(model, DDP) else model
 
 
 # =============================================================================
@@ -459,7 +452,7 @@ def _extract_val_features(
     gap tracking — lightweight, no disk I/O.
 
     Args:
-        model: Unwrapped model (not DDP).
+        model: Model instance.
         val_loaders: Dict of domain → DataLoader (e.g. {"men": ..., "gli": ...}).
         device: Device string.
         use_amp: Whether to use bf16 autocast.
@@ -476,7 +469,7 @@ def _extract_val_features(
             images = batch["image"].to(device)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
                 # Get encoder10 features via hidden states → encoder10 → GAP
-                raw = _unwrap_model(model)
+                raw = model
                 if hasattr(raw, "model") and hasattr(raw.model, "get_hidden_states"):
                     hidden_states = raw.model.get_hidden_states(images)
                     enc10 = raw.model.decoder.encoder10(hidden_states[4])
@@ -514,7 +507,7 @@ def compute_epoch_diagnostics(
     - Domain classifier accuracy
 
     Args:
-        model: Unwrapped model (not DDP).
+        model: Model instance.
         val_loaders: Dict of domain → DataLoader.
         device: Device string.
         use_amp: Whether to use bf16 autocast.
@@ -861,7 +854,6 @@ def train_epoch(
     use_amp: bool = False,
     grad_accum_steps: int = 1,
     vicreg_loss_fn: nn.Module | None = None,
-    ddp_model: DDP | None = None,
     show_progress: bool = True,
 ) -> dict[str, float]:
     """Train for one epoch with domain-aware loss.
@@ -870,7 +862,7 @@ def train_epoch(
     is present in the batch, per-domain loss tracking is enabled.
 
     Args:
-        model: Model to train (unwrapped or DDP-wrapped).
+        model: Model to train.
         dataloader: Training DataLoader (mixed or single domain).
         seg_loss_fn: Segmentation loss (domain-aware).
         aux_loss_fn: Auxiliary semantic loss (optional).
@@ -886,7 +878,6 @@ def train_epoch(
         use_amp: bf16 autocast.
         grad_accum_steps: Gradient accumulation steps.
         vicreg_loss_fn: Optional VICReg loss.
-        ddp_model: DDP wrapper (for no_sync during grad accum). None = single GPU.
         show_progress: Whether to show tqdm progress bar.
 
     Returns:
@@ -895,7 +886,7 @@ def train_epoch(
     model.train()
 
     # Keep encoder in eval for baseline
-    raw = _unwrap_model(model)
+    raw = model
     if decoder_type == "original":
         if hasattr(raw, "model") and hasattr(raw.model, "encoder"):
             raw.model.encoder.eval()
@@ -936,18 +927,12 @@ def train_epoch(
         if batch_idx % grad_accum_steps == 0:
             optimizer.zero_grad()
 
-        # no_sync for non-step-boundary micro-batches (skip premature all-reduce)
         is_step_boundary = (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == n_batches
-        maybe_no_sync = (
-            ddp_model.no_sync()
-            if (ddp_model is not None and not is_step_boundary)
-            else contextlib.nullcontext()
-        )
 
-        with maybe_no_sync:
+        with contextlib.nullcontext():
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
                 need_features = use_semantic_heads or vicreg_loss_fn is not None
-                if need_features and hasattr(_unwrap_model(model), "forward_with_semantics"):
+                if need_features and hasattr(model, "forward_with_semantics"):
                     outputs = model(images, return_semantics=True)
                     pred = outputs["logits"]
                 else:
@@ -984,33 +969,38 @@ def train_epoch(
                     aux_loss, _ = aux_loss_fn(outputs, semantic_targets)
                     loss = seg_loss + lambda_aux * aux_loss
 
-                # Buffer features for VICReg
+                # Buffer detached features for VICReg variance stats
                 if vicreg_loss_fn is not None and "features" in outputs:
-                    vicreg_feature_buffer.append(outputs["features"])
+                    vicreg_feature_buffer.append(outputs["features"].detach())
 
-            # Backward (inside no_sync for non-step-boundary micro-batches)
-            need_retain = bool(
-                vicreg_loss_fn is not None and is_step_boundary and vicreg_feature_buffer
-            )
-            (loss / grad_accum_steps).backward(retain_graph=need_retain)
+                # On step boundary, compute VICReg and add to total loss.
+                # Only the current micro-batch features retain grad; earlier
+                # ones are detached (VICReg regularizes batch statistics but
+                # backprops through the last micro-batch only).
+                step_vicreg_loss = 0.0
+                step_vicreg_components: dict[str, float] = {}
+                if vicreg_loss_fn is not None and is_step_boundary and "features" in outputs:
+                    current_features = outputs["features"]  # retains grad
+                    if len(vicreg_feature_buffer) > 1:
+                        all_features = torch.cat(
+                            vicreg_feature_buffer[:-1] + [current_features], dim=0
+                        )
+                    else:
+                        all_features = current_features
+
+                    vicreg_loss_t, step_vicreg_components = vicreg_loss_fn(all_features)
+                    loss = loss + vicreg_loss_t
+                    step_vicreg_loss = vicreg_loss_t.item()
+
+            # Single backward per micro-batch
+            (loss / grad_accum_steps).backward()
 
         if is_step_boundary:
-            # VICReg on accumulated features
-            step_vicreg_loss = 0.0
-            step_vicreg_components: dict[str, float] = {}
+            # VICReg variance tracking
             if vicreg_loss_fn is not None and vicreg_feature_buffer:
-                detached = [f.detach() for f in vicreg_feature_buffer[:-1]]
-                last_with_grad = vicreg_feature_buffer[-1]
-                all_features = torch.cat(detached + [last_with_grad], dim=0)
-
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-                    vicreg_loss_t, step_vicreg_components = vicreg_loss_fn(all_features)
-
-                (vicreg_loss_t / grad_accum_steps).backward()
-                step_vicreg_loss = vicreg_loss_t.item()
-
                 with torch.no_grad():
-                    feat_std = all_features.float().std(dim=0)
+                    all_feats_for_stats = torch.cat(vicreg_feature_buffer, dim=0)
+                    feat_std = all_feats_for_stats.float().std(dim=0)
                     vh = torch.clamp(1.0 - feat_std, min=0.0).mean().item()
                     total_variance_hinge += vh
                     variance_hinge_count += 1
@@ -1079,9 +1069,6 @@ def train_condition(
     config: dict,
     max_epochs: int | None = None,
     device: str = "cuda",
-    ddp_rank: int | None = None,
-    ddp_local_rank: int | None = None,
-    ddp_world_size: int | None = None,
 ) -> dict[str, float]:
     """Train a single experimental condition (single or dual domain).
 
@@ -1090,17 +1077,10 @@ def train_condition(
         config: Full experiment configuration.
         max_epochs: Override max epochs.
         device: Device.
-        ddp_rank: DDP global rank (None for single-GPU).
-        ddp_local_rank: DDP local rank (None for single-GPU).
-        ddp_world_size: DDP world size (None for single-GPU).
 
     Returns:
         Dict with best validation metrics.
     """
-    from .ddp_utils import broadcast_scalar, is_main_process, reduce_metric
-
-    _is_ddp = ddp_rank is not None
-    _is_main = is_main_process(ddp_rank)
 
     condition_config = get_condition_config(config, condition_name)
     is_baseline = condition_config.get("lora_rank") is None
@@ -1133,26 +1113,17 @@ def train_condition(
     use_amp = training_config.get("use_amp", False)
     grad_accum_steps = training_config.get("grad_accum_steps", 1)
     diagnostic_interval = training_config.get("diagnostic_interval", 10)
-    persistent_workers = _is_ddp  # Avoid worker respawn per epoch in DDP
 
     logger.info(f"Dual-domain: {is_dual}")
-    if _is_ddp:
-        logger.info(
-            f"DDP: rank={ddp_rank}, local_rank={ddp_local_rank}, world_size={ddp_world_size}"
-        )
     logger.info(f"Decoder type: {decoder_type}, semantic heads: {use_semantic_heads}")
     if use_amp:
         logger.info("Mixed precision: bf16")
     if grad_accum_steps > 1:
         logger.info(f"Gradient accumulation: {grad_accum_steps} steps")
 
-    # Set up output (rank 0 only creates dirs)
     output_dir = Path(config["experiment"]["output_dir"])
     condition_dir = output_dir / "conditions" / condition_name
-    if _is_main:
-        condition_dir.mkdir(parents=True, exist_ok=True)
-    if _is_ddp:
-        dist.barrier()  # Ensure dir exists before other ranks proceed
+    condition_dir.mkdir(parents=True, exist_ok=True)
 
     # Create dataloaders
     if is_dual:
@@ -1168,10 +1139,8 @@ def train_condition(
             num_workers=training_config["num_workers"],
             compute_semantic=use_semantic_heads,
             augment=True,
-            ddp_rank=ddp_rank,
-            ddp_world_size=ddp_world_size,
             seed=config["experiment"]["seed"],
-            persistent_workers=persistent_workers,
+            persistent_workers=True,
         )
         val_loaders = create_per_domain_val_loaders(
             men_h5_path=men_h5,
@@ -1180,9 +1149,7 @@ def train_condition(
             num_workers=training_config["num_workers"],
             roi_size=DEFAULT_ROI_SIZE,
             compute_semantic=use_semantic_heads,
-            ddp_rank=ddp_rank,
-            ddp_world_size=ddp_world_size,
-            persistent_workers=persistent_workers,
+            persistent_workers=True,
         )
     else:
         # Single-domain (MEN only)
@@ -1196,9 +1163,7 @@ def train_condition(
             augment_train=True,
             val_batch_size=training_config.get("val_batch_size", 1),
             val_roi_size=DEFAULT_ROI_SIZE,
-            ddp_rank=ddp_rank,
-            ddp_world_size=ddp_world_size,
-            persistent_workers=persistent_workers,
+            persistent_workers=True,
         )
         val_loaders = {"men": val_loader}
 
@@ -1213,16 +1178,7 @@ def train_condition(
     param_counts = model.get_trainable_param_count()
     logger.info(f"Trainable parameters: {param_counts}")
 
-    # Optimizer + scheduler (BEFORE DDP wrapping — needs custom model methods)
     optimizer, scheduler_info = create_optimizer(model, config, is_baseline, decoder_type)
-
-    # DDP wrapping
-    raw_model = model  # For checkpoint saving, probes, param counting
-    ddp_wrapper: DDP | None = None
-    if _is_ddp:
-        ddp_wrapper = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=False)
-        model = ddp_wrapper  # Use DDP model for forward/backward
-        logger.info("Model wrapped with DistributedDataParallel")
 
     # Losses
     seg_loss_fn = SegmentationLoss3Ch(
@@ -1307,9 +1263,8 @@ def train_condition(
     if enable_gradient_monitoring:
         csv_columns.extend(["encoder_grad_norm", "decoder_grad_norm", "semantic_grad_norm"])
 
-    if _is_main:
-        with open(log_path, "w", newline="") as f:
-            csv.writer(f).writerow(csv_columns)
+    with open(log_path, "w", newline="") as f:
+        csv.writer(f).writerow(csv_columns)
 
     # Training loop
     best_score = 0.0
@@ -1321,10 +1276,6 @@ def train_condition(
 
     for epoch in range(epochs):
         logger.info(f"\nEpoch {epoch + 1}/{epochs}")
-
-        # Set epoch on samplers for DDP deterministic shuffling
-        if hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_epoch"):
-            train_loader.sampler.set_epoch(epoch)
 
         lambda_aux_eff = compute_lambda_aux_effective(
             epoch, lambda_aux, aux_warmup_start, aux_warmup_duration
@@ -1348,8 +1299,7 @@ def train_condition(
             use_amp=use_amp,
             grad_accum_steps=grad_accum_steps,
             vicreg_loss_fn=vicreg_loss_fn,
-            ddp_model=ddp_wrapper,
-            show_progress=_is_main and _INTERACTIVE,
+            show_progress=_INTERACTIVE,
         )
 
         # Validate per domain
@@ -1361,13 +1311,6 @@ def train_condition(
             device,
             use_amp=use_amp,
         )
-
-        # DDP metric reduction (average across ranks)
-        if _is_ddp:
-            for key in list(train_metrics.keys()):
-                train_metrics[key] = reduce_metric(train_metrics[key], ddp_world_size, device)
-            for key in list(val_metrics.keys()):
-                val_metrics[key] = reduce_metric(val_metrics[key], ddp_world_size, device)
 
         # Scheduler
         combined_dice = val_metrics["combined_dice_mean"]
@@ -1399,13 +1342,12 @@ def train_condition(
             )
         logger.info(f"  Combined Dice: {combined_dice:.4f} | LR: {current_lr:.2e}")
 
-        # Inline probes (rank 0 only, uses raw_model for forward_with_semantics)
         probe_metrics: dict[str, float] = {}
-        if use_semantic_heads and _is_main:
+        if use_semantic_heads:
             men_val = val_loaders.get("men")
             if men_val is not None:
-                probe_metrics = evaluate_feature_quality_inline(raw_model, men_val, device, use_amp)
-                raw_model.train()
+                probe_metrics = evaluate_feature_quality_inline(model, men_val, device, use_amp)
+                model.train()
                 if probe_metrics:
                     logger.info(
                         f"  Probe R²: vol={probe_metrics['probe_vol_r2']:.3f}, "
@@ -1416,10 +1358,10 @@ def train_condition(
         # Per-N-epoch diagnostics (domain gap, effective rank)
         diag_metrics: dict[str, float] = {}
         is_diagnostic_epoch = (epoch + 1) % diagnostic_interval == 0 or epoch == 0
-        if is_diagnostic_epoch and _is_main:
+        if is_diagnostic_epoch:
             logger.info(f"  Running epoch diagnostics (interval={diagnostic_interval})...")
-            diag_metrics = compute_epoch_diagnostics(raw_model, val_loaders, device, use_amp)
-            raw_model.train()
+            diag_metrics = compute_epoch_diagnostics(model, val_loaders, device, use_amp)
+            model.train()
             if diag_metrics:
                 parts = []
                 if "diag_mmd_squared" in diag_metrics:
@@ -1434,64 +1376,55 @@ def train_condition(
 
         checkpoint_score = probe_metrics.get("probe_mean_r2", combined_dice)
 
-        # Broadcast checkpoint_score so all ranks agree on early stopping
-        if _is_ddp:
-            checkpoint_score = broadcast_scalar(checkpoint_score, src=0, device=device)
+        # Write CSV row
+        csv_row = [
+            epoch + 1,
+            train_metrics["loss"],
+            train_metrics["seg_loss"],
+            train_metrics["men_seg_loss"],
+            train_metrics["gli_seg_loss"],
+            train_metrics["aux_loss"],
+            train_metrics["vicreg_loss"],
+            train_metrics["vicreg_var_loss"],
+            train_metrics["vicreg_cov_loss"],
+            val_metrics.get("men_loss", ""),
+            val_metrics.get("men_dice_mean", ""),
+            val_metrics.get("men_dice_tc", ""),
+            val_metrics.get("men_dice_wt", ""),
+            val_metrics.get("men_dice_et", ""),
+            val_metrics.get("gli_loss", ""),
+            val_metrics.get("gli_dice_mean", ""),
+            val_metrics.get("gli_dice_tc", ""),
+            val_metrics.get("gli_dice_wt", ""),
+            val_metrics.get("gli_dice_et", ""),
+            combined_dice,
+            current_lr,
+            lambda_aux_eff,
+            train_metrics.get("variance_hinge", ""),
+            probe_metrics.get("probe_vol_r2", ""),
+            probe_metrics.get("probe_loc_r2", ""),
+            probe_metrics.get("probe_shape_r2", ""),
+            probe_metrics.get("probe_mean_r2", ""),
+            # Diagnostic columns (empty on non-diagnostic epochs)
+            diag_metrics.get("diag_mmd_squared", ""),
+            diag_metrics.get("diag_pad", ""),
+            diag_metrics.get("diag_domain_classifier_acc", ""),
+            diag_metrics.get("diag_men_effective_rank", ""),
+            diag_metrics.get("diag_gli_effective_rank", ""),
+        ]
+        if enable_gradient_monitoring:
+            csv_row.extend(
+                [
+                    train_metrics.get("encoder_grad_norm", 0.0),
+                    train_metrics.get("decoder_grad_norm", 0.0),
+                    train_metrics.get("semantic_grad_norm", 0.0),
+                ]
+            )
 
-        # Write CSV row (rank 0 only)
-        if _is_main:
-            csv_row = [
-                epoch + 1,
-                train_metrics["loss"],
-                train_metrics["seg_loss"],
-                train_metrics["men_seg_loss"],
-                train_metrics["gli_seg_loss"],
-                train_metrics["aux_loss"],
-                train_metrics["vicreg_loss"],
-                train_metrics["vicreg_var_loss"],
-                train_metrics["vicreg_cov_loss"],
-                val_metrics.get("men_loss", ""),
-                val_metrics.get("men_dice_mean", ""),
-                val_metrics.get("men_dice_tc", ""),
-                val_metrics.get("men_dice_wt", ""),
-                val_metrics.get("men_dice_et", ""),
-                val_metrics.get("gli_loss", ""),
-                val_metrics.get("gli_dice_mean", ""),
-                val_metrics.get("gli_dice_tc", ""),
-                val_metrics.get("gli_dice_wt", ""),
-                val_metrics.get("gli_dice_et", ""),
-                combined_dice,
-                current_lr,
-                lambda_aux_eff,
-                train_metrics.get("variance_hinge", ""),
-                probe_metrics.get("probe_vol_r2", ""),
-                probe_metrics.get("probe_loc_r2", ""),
-                probe_metrics.get("probe_shape_r2", ""),
-                probe_metrics.get("probe_mean_r2", ""),
-                # Diagnostic columns (empty on non-diagnostic epochs)
-                diag_metrics.get("diag_mmd_squared", ""),
-                diag_metrics.get("diag_pad", ""),
-                diag_metrics.get("diag_domain_classifier_acc", ""),
-                diag_metrics.get("diag_men_effective_rank", ""),
-                diag_metrics.get("diag_gli_effective_rank", ""),
-            ]
-            if enable_gradient_monitoring:
-                csv_row.extend(
-                    [
-                        train_metrics.get("encoder_grad_norm", 0.0),
-                        train_metrics.get("decoder_grad_norm", 0.0),
-                        train_metrics.get("semantic_grad_norm", 0.0),
-                    ]
-                )
+        with open(log_path, "a", newline="") as f:
+            csv.writer(f).writerow(csv_row)
 
-            with open(log_path, "a", newline="") as f:
-                csv.writer(f).writerow(csv_row)
-
-        # Barrier before checkpoint (ensure all ranks finish epoch)
-        if _is_ddp:
-            dist.barrier()
-
-        # Checkpoint (rank 0 only saves)
+        # Checkpoint
         if checkpoint_score > best_score:
             best_score = checkpoint_score
             best_metrics = {
@@ -1500,10 +1433,9 @@ def train_condition(
                 **val_metrics,
                 **probe_metrics,
             }
-            if _is_main:
-                save_checkpoint(
-                    raw_model, condition_dir, is_baseline, epoch + 1, best_metrics, decoder_type
-                )
+            save_checkpoint(
+                model, condition_dir, is_baseline, epoch + 1, best_metrics, decoder_type
+            )
             patience_counter = 0
             logger.info(f"  New best! score={checkpoint_score:.4f}")
         else:
@@ -1519,20 +1451,18 @@ def train_condition(
         f"at epoch {best_metrics.get('epoch', 0)}"
     )
 
-    # Save summary (rank 0 only)
-    if _is_main:
-        summary = {
-            "condition": condition_name,
-            "is_baseline": is_baseline,
-            "dual_domain": is_dual,
-            "param_counts": param_counts,
-            "best_epoch": best_metrics.get("epoch", 0),
-            "best_combined_dice": best_metrics.get("combined_dice_mean", 0),
-            "total_epochs": epoch + 1,
-            "training_time_minutes": total_time / 60,
-        }
-        with open(condition_dir / "training_summary.yaml", "w") as f:
-            yaml.dump(summary, f, default_flow_style=False)
+    summary = {
+        "condition": condition_name,
+        "is_baseline": is_baseline,
+        "dual_domain": is_dual,
+        "param_counts": param_counts,
+        "best_epoch": best_metrics.get("epoch", 0),
+        "best_combined_dice": best_metrics.get("combined_dice_mean", 0),
+        "total_epochs": epoch + 1,
+        "training_time_minutes": total_time / 60,
+    }
+    with open(condition_dir / "training_summary.yaml", "w") as f:
+        yaml.dump(summary, f, default_flow_style=False)
 
     return best_metrics
 
@@ -1566,51 +1496,6 @@ def main(
         max_epochs=max_epochs,
         device=device,
     )
-
-
-def main_ddp(
-    config_path: str,
-    condition: str,
-    max_epochs: int | None = None,
-) -> None:
-    """DDP entry point — called by each torchrun worker.
-
-    Sets up the DDP process group, configures the device, and runs
-    train_condition with DDP parameters.
-
-    Args:
-        config_path: Path to experiment config YAML.
-        condition: Condition name to train.
-        max_epochs: Override max epochs.
-    """
-    from .ddp_utils import cleanup_ddp, is_main_process, setup_ddp
-
-    rank, local_rank, world_size = setup_ddp()
-    device = f"cuda:{local_rank}"
-
-    torch.backends.cudnn.benchmark = True  # Fixed input size 128^3
-
-    try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
-
-        if is_main_process(rank):
-            output_dir = Path(config["experiment"]["output_dir"])
-            setup_file_logging(output_dir, condition)
-
-        set_seed(config["experiment"]["seed"] + rank)  # Per-rank seed offset
-
-        train_condition(
-            condition_name=condition,
-            config=config,
-            max_epochs=max_epochs,
-            device=device,
-            ddp_rank=rank,
-            ddp_local_rank=local_rank,
-            ddp_world_size=world_size,
-        )
-    finally:
-        cleanup_ddp()
 
 
 if __name__ == "__main__":
