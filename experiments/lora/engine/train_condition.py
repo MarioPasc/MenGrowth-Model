@@ -396,17 +396,18 @@ def evaluate_feature_quality_inline(
     all_loc: list[np.ndarray] = []
     all_shape: list[np.ndarray] = []
 
-    for batch in dataloader:
-        images = batch["image"].to(device)
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-            if hasattr(model, "forward_with_semantics"):
-                outputs = model.forward_with_semantics(images)
-                all_features.append(outputs["features"].float().cpu().numpy())
+    with torch.no_grad():
+        for batch in dataloader:
+            images = batch["image"].to(device)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                if hasattr(model, "forward_with_semantics"):
+                    outputs = model.forward_with_semantics(images)
+                    all_features.append(outputs["features"].float().cpu().numpy())
 
-        if "semantic_features" in batch:
-            all_vol.append(batch["semantic_features"]["volume"].numpy())
-            all_loc.append(batch["semantic_features"]["location"].numpy())
-            all_shape.append(batch["semantic_features"]["shape"].numpy())
+            if "semantic_features" in batch:
+                all_vol.append(batch["semantic_features"]["volume"].numpy())
+                all_loc.append(batch["semantic_features"]["location"].numpy())
+                all_shape.append(batch["semantic_features"]["shape"].numpy())
 
     if not all_features or not all_vol:
         return {}
