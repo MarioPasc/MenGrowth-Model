@@ -62,6 +62,9 @@ CONDITION_COLORS = {
     "lora_r16_full": "#F0E442",  # Yellow
     "lora_r32_full": "#0072B2",  # Blue
     "lora_r64_full": "#D55E00",  # Vermillion
+    # Dual-domain conditions (Wong 2011)
+    "dual_r8": "#0072B2",  # Blue
+    "men_r8": "#D55E00",  # Vermillion
     # DoRA conditions
     "dora_r2": "#b2df8a",
     "dora_r4": "#6a3d9a",
@@ -83,6 +86,8 @@ CONDITION_MARKERS = {
     "lora_r16_full": "^",
     "lora_r32_full": "p",
     "lora_r64_full": "h",  # Hexagon
+    "dual_r8": "D",  # Diamond
+    "men_r8": "s",  # Square
     "dora_r2": "v",
     "dora_r4": "s",
     "dora_r8": "D",
@@ -103,6 +108,8 @@ CONDITION_LINESTYLES = {
     "lora_r16_full": "-",
     "lora_r32_full": "-",
     "lora_r64_full": "-",
+    "dual_r8": "-",  # Solid
+    "men_r8": "-",  # Solid
     "dora_r2": "-.",  # Dash-dot (DoRA)
     "dora_r4": "-.",
     "dora_r8": "-.",
@@ -123,6 +130,8 @@ CONDITION_HATCHES = {
     "lora_r16_full": None,
     "lora_r32_full": None,
     "lora_r64_full": "\\\\",
+    "dual_r8": None,  # Solid
+    "men_r8": None,  # Solid
     "dora_r2": None,
     "dora_r4": None,
     "dora_r8": None,
@@ -144,6 +153,8 @@ CONDITION_LABELS = {
     "lora_r16_full": "LoRA r=16",
     "lora_r32_full": "LoRA r=32",
     "lora_r64_full": "LoRA r=64",
+    "dual_r8": "Dual LoRA r=8",
+    "men_r8": "MEN LoRA r=8",
     "dora_r2": "DoRA r=2",
     "dora_r4": "DoRA r=4",
     "dora_r8": "DoRA r=8",
@@ -165,6 +176,8 @@ CONDITION_LABELS_SHORT = {
     "lora_r16_full": "r=16",
     "lora_r32_full": "r=32",
     "lora_r64_full": "r=64",
+    "dual_r8": "Dual",
+    "men_r8": "MEN",
     "dora_r2": "dr=2",
     "dora_r4": "dr=4",
     "dora_r8": "dr=8",
@@ -586,6 +599,8 @@ CONDITION_ORDER_ALL: list[str] = [
     "dora_r32",
 ]
 
+CONDITION_ORDER_DUAL: list[str] = ["baseline", "men_r8", "dual_r8"]
+
 RANKS: list[int] = [2, 4, 8, 16, 32]
 
 # =============================================================================
@@ -594,6 +609,7 @@ RANKS: list[int] = [2, 4, 8, 16, 32]
 
 PROBE_COLORS: dict[str, str] = {
     "linear": "#0072B2",  # Blue
+    "rbf": "#E69F00",  # Orange (Wong palette)
     "mlp": "#D55E00",  # Vermillion
 }
 

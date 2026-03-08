@@ -23,6 +23,8 @@ from growth.evaluation.gp_probes import (
     GPSemanticResults,
 )
 
+pytestmark = [pytest.mark.evaluation, pytest.mark.unit]
+
 
 def test_gp_linear_matches_ridge():
     """GP with linear kernel produces R² within 0.05 of Ridge regression.

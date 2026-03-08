@@ -19,6 +19,8 @@ from growth.models.encoder.swin_loader import (
     load_swin_encoder,
 )
 
+pytestmark = [pytest.mark.phase1]
+
 
 class TestCreateSwinunetr:
     """Tests for create_swinunetr function."""
@@ -374,6 +376,7 @@ class TestWeightLoadingVerification:
         )
 
 
+@pytest.mark.real_data
 class TestRealDataForwardPass:
     """Tests with real BraTS-MEN data to verify end-to-end functionality."""
 
@@ -382,7 +385,7 @@ class TestRealDataForwardPass:
     ):
         """Test complete forward pass with real MRI data."""
         from growth.models.encoder.feature_extractor import FeatureExtractor
-        from growth.data.transforms import get_val_transforms
+        from growth.data.transforms import get_h5_val_transforms as get_val_transforms
 
         # Load encoder and create feature extractor
         encoder = load_swin_encoder(real_checkpoint_path, freeze=True)
@@ -424,7 +427,7 @@ class TestRealDataForwardPass:
     ):
         """Verify output statistics are reasonable for real data."""
         from growth.models.encoder.feature_extractor import FeatureExtractor
-        from growth.data.transforms import get_val_transforms
+        from growth.data.transforms import get_h5_val_transforms as get_val_transforms
 
         encoder = load_swin_encoder(real_checkpoint_path, freeze=True)
         extractor = FeatureExtractor(encoder, level="encoder10")
@@ -478,7 +481,7 @@ class TestRealDataForwardPass:
     ):
         """Verify forward pass is deterministic for frozen encoder."""
         from growth.models.encoder.feature_extractor import FeatureExtractor
-        from growth.data.transforms import get_val_transforms
+        from growth.data.transforms import get_h5_val_transforms as get_val_transforms
 
         encoder = load_swin_encoder(real_checkpoint_path, freeze=True)
         extractor = FeatureExtractor(encoder, level="encoder10")

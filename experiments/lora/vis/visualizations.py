@@ -11,7 +11,7 @@ Features:
 
 Usage:
     python -m experiments.lora.vis.visualizations \
-        --config experiments/lora_ablation/config/ablation.yaml
+        --config experiments/lora/config/local/dual_domain_v1.yaml
 """
 
 import argparse

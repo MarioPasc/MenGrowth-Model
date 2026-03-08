@@ -5,10 +5,13 @@ Verifies that SemanticRegressionLoss computes plain MSE (mean over B×k_p),
 not MSE/k_p (which was the double-normalization bug).
 """
 
+import pytest
 import torch
 import torch.nn.functional as F
 
 from growth.losses.semantic import SemanticRegressionLoss
+
+pytestmark = [pytest.mark.phase2, pytest.mark.unit]
 
 
 class TestSemanticRegressionLossNormalization:

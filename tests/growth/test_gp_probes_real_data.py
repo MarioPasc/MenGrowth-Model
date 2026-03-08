@@ -41,6 +41,8 @@ _LOCAL_CKPT = (
     "checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt"
 )
 
+pytestmark = [pytest.mark.evaluation, pytest.mark.real_data, pytest.mark.slow]
+
 
 def _resolve_path(env_var: str, picasso_default: str, local_default: str) -> Path | None:
     """Resolve a data path from env var, Picasso default, or local default."""

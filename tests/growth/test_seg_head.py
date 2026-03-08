@@ -13,6 +13,8 @@ from growth.models.segmentation.seg_head import (
     LoRASegmentationModel,
 )
 
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
+
 
 class TestConvBlock:
     """Tests for ConvBlock."""

@@ -16,6 +16,8 @@ from growth.utils.config import (
     validate_config,
 )
 
+pytestmark = [pytest.mark.unit]
+
 
 class TestLoadConfig:
     """Tests for load_config function."""

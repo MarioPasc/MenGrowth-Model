@@ -19,6 +19,8 @@ from growth.data.transforms import (
     get_intensity_transforms,
 )
 
+pytestmark = [pytest.mark.phase0, pytest.mark.unit]
+
 
 class TestConstants:
     """Tests for module constants."""

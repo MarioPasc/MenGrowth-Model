@@ -6,6 +6,8 @@ import pytest
 
 from growth.losses.encoder_vicreg import EncoderVICRegLoss
 
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
+
 
 class TestEncoderVICRegLoss:
     """Tests for EncoderVICRegLoss."""

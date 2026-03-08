@@ -5,10 +5,13 @@ Verifies that BaselineOriginalDecoderModel.forward_with_semantics()
 calls swinViT only once (not twice as in the buggy version).
 """
 
+import pytest
 import torch
 import torch.nn as nn
 
 from experiments.lora.engine.model_factory import BaselineOriginalDecoderModel
+
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
 
 
 class _FakeSwinViT(nn.Module):

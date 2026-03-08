@@ -22,6 +22,8 @@ from growth.data.semantic_features import (
     extract_semantic_features,
 )
 
+pytestmark = [pytest.mark.phase0, pytest.mark.unit]
+
 
 class TestComputeVolumes:
     """Tests for volume computation."""

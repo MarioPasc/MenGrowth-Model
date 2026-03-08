@@ -7,7 +7,10 @@ Verifies:
 3. Variance hinge: low for diverse features, high for collapsed
 """
 
+import pytest
 import torch
+
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
 
 
 class TestProbeCheckpointScore:

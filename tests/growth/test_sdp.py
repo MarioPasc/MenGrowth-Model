@@ -22,6 +22,8 @@ from growth.models.projection.partition import (
 )
 from growth.models.projection.sdp import SDP, SDPWithHeads
 
+pytestmark = [pytest.mark.phase2]
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -309,6 +311,7 @@ class TestLossComputation:
 # ===========================================================================
 # TEST_3.4: Training Convergence [BLOCKING, slow]
 # ===========================================================================
+@pytest.mark.slow
 class TestTrainingConvergence:
     """TEST_3.4: Loss decreases over training."""
 
@@ -368,6 +371,7 @@ class TestTrainingConvergence:
 # ===========================================================================
 # TEST_3.5: Semantic Quality [BLOCKING, slow]
 # ===========================================================================
+@pytest.mark.slow
 class TestSemanticQuality:
     """TEST_3.5: R² thresholds on synthetic linearly-related data."""
 

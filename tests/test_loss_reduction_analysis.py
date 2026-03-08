@@ -11,8 +11,11 @@ Key findings guide the choice between:
 Run with: python -m pytest tests/test_loss_reduction_analysis.py -v -s
 """
 
+import pytest
 import torch
 import numpy as np
+
+pytestmark = [pytest.mark.unit, pytest.mark.gpu]
 
 
 def compute_loss_components(

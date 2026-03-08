@@ -14,6 +14,8 @@ from growth.models.encoder.lora_adapter import (
 )
 from growth.models.encoder.swin_loader import load_swin_encoder, create_swinunetr
 
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
+
 
 class TestFindLoraTargets:
     """Tests for target module discovery."""

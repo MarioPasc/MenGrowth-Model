@@ -7,9 +7,12 @@ Verifies:
 3. Gradient flows through last micro-batch in accumulation
 """
 
+import pytest
 import torch
 
 from growth.losses.encoder_vicreg import EncoderVICRegLoss
+
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
 
 
 class TestVICRegBatchSizeGuard:

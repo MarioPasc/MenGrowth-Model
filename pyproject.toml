@@ -127,6 +127,17 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::UserWarning",
 ]
+markers = [
+    "phase0: Data loading, transforms, semantic features (Module 0)",
+    "phase1: LoRA encoder adaptation (Module 2)",
+    "phase2: Supervised Disentangled Projection (Module 3)",
+    "evaluation: Probes, DCI, latent quality metrics",
+    "experiment: Tests for experiment scripts (lora, sdp analysis)",
+    "slow: Tests that take >30s (training loops, convergence)",
+    "gpu: Requires GPU",
+    "real_data: Requires real checkpoint or H5 data files",
+    "unit: Fast unit tests with synthetic data only",
+]
 
 [tool.setuptools.packages.find]
 where = ["src", "."]

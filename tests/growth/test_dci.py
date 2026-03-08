@@ -5,8 +5,11 @@ Verifies compute_dci() on synthetic data with known disentanglement properties.
 """
 
 import numpy as np
+import pytest
 
 from growth.evaluation.latent_quality import DCIResults, compute_dci
+
+pytestmark = [pytest.mark.evaluation, pytest.mark.unit]
 
 # ---------------------------------------------------------------------------
 # Helpers

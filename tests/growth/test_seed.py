@@ -9,6 +9,8 @@ import torch
 
 from growth.utils.seed import set_seed
 
+pytestmark = [pytest.mark.unit]
+
 
 class TestSetSeed:
     """Tests for set_seed function."""

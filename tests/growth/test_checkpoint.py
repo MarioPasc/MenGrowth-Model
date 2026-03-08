@@ -17,6 +17,8 @@ from growth.utils.checkpoint import (
     print_checkpoint_summary,
 )
 
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
+
 
 class TestLoadCheckpoint:
     """Tests for load_checkpoint function."""

@@ -14,6 +14,8 @@ from growth.data.bratsmendata import (
     split_subjects_multi,
 )
 
+pytestmark = [pytest.mark.phase0, pytest.mark.unit]
+
 
 # =========================================================================
 # Shared Utilities

@@ -7,9 +7,12 @@ Verifies:
 3. Warmup → plateau transition works correctly
 """
 
+import pytest
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
+
+pytestmark = [pytest.mark.unit]
 
 
 def _make_optimizer_and_schedulers(

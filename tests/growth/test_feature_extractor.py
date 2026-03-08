@@ -14,6 +14,8 @@ from growth.models.encoder.feature_extractor import (
 )
 from growth.models.encoder.swin_loader import create_swinunetr, load_swin_encoder
 
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
+
 
 class TestLevelDims:
     """Tests for LEVEL_DIMS constants."""

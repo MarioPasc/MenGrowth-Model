@@ -14,6 +14,8 @@ from growth.losses.segmentation import (
     _convert_single_domain,
 )
 
+pytestmark = [pytest.mark.phase0, pytest.mark.unit]
+
 # ---------------------------------------------------------------------------
 # _convert_single_domain
 # ---------------------------------------------------------------------------

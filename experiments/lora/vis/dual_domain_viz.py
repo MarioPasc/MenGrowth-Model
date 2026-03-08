@@ -11,7 +11,7 @@ Generates:
 
 Usage:
     python -m experiments.lora.vis.dual_domain_viz \
-        --config experiments/dual_domain_lora/config/dual_domain_v1.yaml
+        --config experiments/lora/config/local/dual_domain_v1.yaml
 """
 
 import argparse
@@ -27,6 +27,12 @@ import pandas as pd
 import torch
 import yaml
 
+from experiments.utils.settings import (
+    CONDITION_COLORS,
+    CONDITION_LABELS,
+    PLOT_SETTINGS,
+    apply_ieee_style,
+)
 from growth.evaluation.latent_quality import compute_variance_per_dim
 
 logging.basicConfig(
@@ -34,6 +40,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Publication DPI for all figures
+_DPI = PLOT_SETTINGS["dpi_print"]  # 300
 
 
 def _load_features(features_dir: Path, domain: str, split: str) -> np.ndarray | None:
@@ -173,7 +182,8 @@ def plot_dual_domain_umap(
         plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.savefig(output_path, dpi=_DPI, bbox_inches="tight")
+    plt.savefig(output_path.with_suffix(".pdf"), dpi=_DPI, bbox_inches="tight")
     plt.close()
     logger.info(f"Saved UMAP to {output_path}")
 
@@ -228,7 +238,8 @@ def plot_training_curves(
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.savefig(output_path, dpi=_DPI, bbox_inches="tight")
+    plt.savefig(output_path.with_suffix(".pdf"), dpi=_DPI, bbox_inches="tight")
     plt.close()
     logger.info(f"Saved training curves to {output_path}")
 
@@ -271,7 +282,8 @@ def plot_variance_spectrum(
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.savefig(output_path, dpi=_DPI, bbox_inches="tight")
+    plt.savefig(output_path.with_suffix(".pdf"), dpi=_DPI, bbox_inches="tight")
     plt.close()
     logger.info(f"Saved variance spectrum to {output_path}")
 
@@ -316,7 +328,8 @@ def plot_correlation_matrix(
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="|correlation|")
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.savefig(output_path, dpi=_DPI, bbox_inches="tight")
+    plt.savefig(output_path.with_suffix(".pdf"), dpi=_DPI, bbox_inches="tight")
     plt.close()
     logger.info(f"Saved correlation matrix to {output_path}")
 
@@ -380,7 +393,8 @@ def plot_sausage_plots(
         plt.suptitle(f"{condition_name} — {domain.upper()} Semantic Targets", fontsize=12)
         plt.tight_layout()
         output_path = output_dir_path / f"sausage_{domain}_{condition_name}.png"
-        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        plt.savefig(output_path, dpi=_DPI, bbox_inches="tight")
+        plt.savefig(output_path.with_suffix(".pdf"), dpi=_DPI, bbox_inches="tight")
         plt.close()
         logger.info(f"Saved sausage plot to {output_path}")
 
@@ -393,6 +407,8 @@ def generate_all_visualizations(
     Args:
         config: Full experiment configuration.
     """
+    apply_ieee_style()
+
     output_dir = Path(config["experiment"]["output_dir"])
     figures_dir = output_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)

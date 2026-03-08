@@ -11,6 +11,8 @@ from growth.losses.segmentation import (
     create_segmentation_loss,
 )
 
+pytestmark = [pytest.mark.phase1, pytest.mark.unit]
+
 
 class TestSegmentationLoss:
     """Tests for SegmentationLoss."""

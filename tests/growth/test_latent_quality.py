@@ -18,6 +18,8 @@ from growth.evaluation.latent_quality import (
     mmd_permutation_test,
 )
 
+pytestmark = [pytest.mark.evaluation, pytest.mark.unit]
+
 
 class TestDistanceCorrelation:
     """Tests for distance correlation."""
