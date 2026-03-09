@@ -214,12 +214,10 @@ def generate_feature_quality_section(exp: ExperimentData) -> SectionContent:
     best_r2 = best.metrics_enhanced.get("r2_mean_linear", 0)
 
     section.paragraphs.append(
-        f"Best mean linear R² is {_fmt(best_r2)} "
-        f"({CONDITION_LABELS.get(best_r2_name, best_r2_name)}), "
-        f"with per-feature breakdown: "
-        f"volume = {_fmt(best.metrics_enhanced.get('r2_volume_linear', 0))}, "
-        f"location = {_fmt(best.metrics_enhanced.get('r2_location_linear', 0))}, "
-        f"shape = {_fmt(best.metrics_enhanced.get('r2_shape_linear', 0))}."
+        f"Best volume linear R² is "
+        f"{_fmt(best.metrics_enhanced.get('r2_volume_linear', 0))} "
+        f"({CONDITION_LABELS.get(best_r2_name, best_r2_name)}). "
+        f"Mean linear R² = {_fmt(best_r2)}."
     )
 
     # Compare linear vs GP-RBF
@@ -241,20 +239,12 @@ def generate_feature_quality_section(exp: ExperimentData) -> SectionContent:
             f"indicating semantic features are linearly encoded."
         )
 
-    # Volume vs location vs shape analysis
+    # Volume R² is the primary metric after Methodology Revision R1
     vol_r2 = best.metrics_enhanced.get("r2_volume_linear", 0)
-    loc_r2 = best.metrics_enhanced.get("r2_location_linear", 0)
-    shape_r2 = best.metrics_enhanced.get("r2_shape_linear", 0)
-    features_ranked = sorted(
-        [("volume", vol_r2), ("location", loc_r2), ("shape", shape_r2)],
-        key=lambda x: x[1],
-        reverse=True,
-    )
     section.paragraphs.append(
-        f"Feature decodability ranking: "
-        f"{features_ranked[0][0]} ({_fmt(features_ranked[0][1])}) > "
-        f"{features_ranked[1][0]} ({_fmt(features_ranked[1][1])}) > "
-        f"{features_ranked[2][0]} ({_fmt(features_ranked[2][1])})."
+        f"Volume R² = {_fmt(vol_r2)} is the primary feature quality metric "
+        f"(Methodology Revision R1: shape R² <= 0.11, removed as scientifically unjustified; "
+        f"location is temporally static, used as GP covariate)."
     )
 
     return section

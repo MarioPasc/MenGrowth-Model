@@ -1,5 +1,8 @@
 # Phase 4: GP-based growth prediction configuration.
-# Three-model hierarchy: LME → H-GP → PA-MOGP on SDP latent trajectories.
+# Three-model hierarchy: LME → H-GP → MOGP on SDP latent trajectories.
+#
+# Methodology Revision R1: PA-MOGP → MOGP (volume-only z_vol ∈ ℝ³²).
+# Location used as static GP covariate, not temporal latent.
 
 growth:
   time_unit: months
@@ -16,14 +19,13 @@ hgp:
   max_iter: 1000
   n_restarts: 5                 # random restarts for hyperparameter optimization
 
-pamogp:
-  vol_kernel: matern52
-  loc_kernel: se
-  shape_kernel: matern32
-  coupling_rank: 1              # rank of B_cross
+mogp:
+  kernel: matern52              # single kernel for all 32 volume dimensions
   optimizer: lbfgsb
   max_iter: 2000
   n_restarts: 5
+  static_covariates:
+    location: true              # centroid coords as non-temporal covariates
 
 evaluation:
   cv: lopo                      # leave-one-patient-out

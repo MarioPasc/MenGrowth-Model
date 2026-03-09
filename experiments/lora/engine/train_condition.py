@@ -336,31 +336,21 @@ def create_optimizer(
 
 
 def compute_target_statistics(dataloader: DataLoader) -> dict[str, torch.Tensor]:
-    """Compute mean and std of semantic targets for normalization."""
+    """Compute mean and std of volume target for normalization."""
     all_volumes: list[torch.Tensor] = []
-    all_locations: list[torch.Tensor] = []
-    all_shapes: list[torch.Tensor] = []
 
     for batch in dataloader:
         if "semantic_features" in batch:
             all_volumes.append(batch["semantic_features"]["volume"])
-            all_locations.append(batch["semantic_features"]["location"])
-            all_shapes.append(batch["semantic_features"]["shape"])
 
     if not all_volumes:
         return {}
 
     volumes = torch.cat(all_volumes, dim=0)
-    locations = torch.cat(all_locations, dim=0)
-    shapes = torch.cat(all_shapes, dim=0)
 
     return {
         "volume_mean": volumes.mean(dim=0),
         "volume_std": volumes.std(dim=0).clamp(min=1e-6),
-        "location_mean": locations.mean(dim=0),
-        "location_std": locations.std(dim=0).clamp(min=1e-6),
-        "shape_mean": shapes.mean(dim=0),
-        "shape_std": shapes.std(dim=0).clamp(min=1e-6),
     }
 
 
@@ -393,8 +383,6 @@ def evaluate_feature_quality_inline(
     model.eval()
     all_features: list[np.ndarray] = []
     all_vol: list[np.ndarray] = []
-    all_loc: list[np.ndarray] = []
-    all_shape: list[np.ndarray] = []
 
     with torch.no_grad():
         for batch in dataloader:
@@ -406,8 +394,6 @@ def evaluate_feature_quality_inline(
 
             if "semantic_features" in batch:
                 all_vol.append(batch["semantic_features"]["volume"].numpy())
-                all_loc.append(batch["semantic_features"]["location"].numpy())
-                all_shape.append(batch["semantic_features"]["shape"].numpy())
 
     if not all_features or not all_vol:
         return {}
@@ -416,21 +402,17 @@ def evaluate_feature_quality_inline(
 
     X = np.concatenate(all_features)
     results: dict[str, float] = {}
-    for name, y_list in [("vol", all_vol), ("loc", all_loc), ("shape", all_shape)]:
-        Y = np.concatenate(y_list)
-        probe = GPProbe(
-            kernel_type="linear",
-            normalize_features=True,
-            normalize_targets=True,
-            r2_ci_samples=0,
-        )
-        probe.fit(X, Y)
-        gp_results = probe.evaluate(X, Y)
-        results[f"probe_{name}_r2"] = max(0.0, gp_results.r2)
-
-    results["probe_mean_r2"] = float(
-        np.mean([results["probe_vol_r2"], results["probe_loc_r2"], results["probe_shape_r2"]])
+    Y = np.concatenate(all_vol)
+    probe = GPProbe(
+        kernel_type="linear",
+        normalize_features=True,
+        normalize_targets=True,
+        r2_ci_samples=0,
     )
+    probe.fit(X, Y)
+    gp_results = probe.evaluate(X, Y)
+    results["probe_vol_r2"] = max(0.0, gp_results.r2)
+    results["probe_mean_r2"] = results["probe_vol_r2"]
     return results
 
 
@@ -964,8 +946,6 @@ def train_epoch(
                 ):
                     semantic_targets = {
                         "volume": batch["semantic_features"]["volume"].to(device),
-                        "location": batch["semantic_features"]["location"].to(device),
-                        "shape": batch["semantic_features"]["shape"].to(device),
                     }
                     aux_loss, _ = aux_loss_fn(outputs, semantic_targets)
                     loss = seg_loss + lambda_aux * aux_loss
@@ -1193,8 +1173,6 @@ def train_condition(
     if use_semantic_heads and decoder_type == "original":
         aux_loss_fn = AuxiliarySemanticLoss(
             lambda_volume=config["loss"].get("lambda_volume", 1.0),
-            lambda_location=config["loss"].get("lambda_location", 1.0),
-            lambda_shape=config["loss"].get("lambda_shape", 0.5),
             normalize_targets=True,
         )
         logger.info("Computing target statistics...")
@@ -1202,10 +1180,6 @@ def train_condition(
         if stats:
             aux_loss_fn.volume_mean.copy_(stats["volume_mean"])
             aux_loss_fn.volume_std.copy_(stats["volume_std"])
-            aux_loss_fn.location_mean.copy_(stats["location_mean"])
-            aux_loss_fn.location_std.copy_(stats["location_std"])
-            aux_loss_fn.shape_mean.copy_(stats["shape_mean"])
-            aux_loss_fn.shape_std.copy_(stats["shape_std"])
             aux_loss_fn._stats_initialized = True
 
     # VICReg

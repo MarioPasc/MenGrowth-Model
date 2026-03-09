@@ -104,7 +104,7 @@ class SDPWithHeads(nn.Module):
         >>> z.shape
         torch.Size([800, 128])
         >>> preds["vol"].shape
-        torch.Size([800, 4])
+        torch.Size([800, 1])
     """
 
     def __init__(
@@ -144,13 +144,10 @@ class SDPWithHeads(nn.Module):
         hidden_dim: int = 512,
         out_dim: int = 128,
         dropout: float = 0.1,
-        vol_dim: int = 24,
-        loc_dim: int = 8,
-        shape_dim: int = 12,
-        residual_dim: int = 84,
-        n_vol: int = 4,
-        n_loc: int = 3,
-        n_shape: int = 3,
+        vol_dim: int = 32,
+        residual_dim: int = 96,
+        n_vol: int = 1,
+        **kwargs,
     ) -> "SDPWithHeads":
         """Construct from hyperparameters.
 
@@ -160,12 +157,9 @@ class SDPWithHeads(nn.Module):
             out_dim: Total latent dimension.
             dropout: SDP dropout rate.
             vol_dim: Latent dims for volume partition.
-            loc_dim: Latent dims for location partition.
-            shape_dim: Latent dims for shape partition.
             residual_dim: Latent dims for residual partition.
-            n_vol: Volume target dimensionality.
-            n_loc: Location target dimensionality.
-            n_shape: Shape target dimensionality.
+            n_vol: Volume target dimensionality (1: log V_WT).
+            **kwargs: Ignored (backward compat for old configs with loc/shape).
 
         Returns:
             Configured SDPWithHeads instance.
@@ -173,19 +167,11 @@ class SDPWithHeads(nn.Module):
         sdp = SDP(in_dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim, dropout=dropout)
         partition = LatentPartition.from_config(
             vol_dim=vol_dim,
-            loc_dim=loc_dim,
-            shape_dim=shape_dim,
             residual_dim=residual_dim,
             n_vol=n_vol,
-            n_loc=n_loc,
-            n_shape=n_shape,
         )
         heads = SemanticHeads(
             vol_in=vol_dim,
             vol_out=n_vol,
-            loc_in=loc_dim,
-            loc_out=n_loc,
-            shape_in=shape_dim,
-            shape_out=n_shape,
         )
         return cls(sdp=sdp, partition=partition, heads=heads)

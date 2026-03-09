@@ -2,7 +2,9 @@
 """Latent space partitioning for Supervised Disentangled Projection.
 
 Defines the partition schema that splits a 128-dim latent vector into
-semantically meaningful subspaces: volume, location, shape, and residual.
+volume and residual subspaces. Methodology Revision R1: location and
+shape partitions removed — location is temporally static (GP covariate),
+shape R² <= 0.11 (scientifically unjustified).
 """
 
 from dataclasses import dataclass
@@ -33,16 +35,14 @@ class PartitionSpec:
 
 
 # Default partition layout: 128 dims total
-# Must match sdp_default.yaml: vol=24, loc=12, shape=12, residual=80
+# Methodology Revision R1: vol + residual only
 DEFAULT_PARTITIONS: dict[str, PartitionSpec] = {
-    "vol": PartitionSpec(name="vol", start=0, end=24, target_dim=4),
-    "loc": PartitionSpec(name="loc", start=24, end=36, target_dim=3),
-    "shape": PartitionSpec(name="shape", start=36, end=48, target_dim=1),
-    "residual": PartitionSpec(name="residual", start=48, end=128, target_dim=None),
+    "vol": PartitionSpec(name="vol", start=0, end=32, target_dim=1),
+    "residual": PartitionSpec(name="residual", start=32, end=128, target_dim=None),
 }
 
 # Partitions with supervised regression targets
-SUPERVISED_PARTITIONS: list[str] = ["vol", "loc", "shape"]
+SUPERVISED_PARTITIONS: list[str] = ["vol"]
 
 
 class LatentPartition:
@@ -120,37 +120,27 @@ class LatentPartition:
     @classmethod
     def from_config(
         cls,
-        vol_dim: int = 24,
-        loc_dim: int = 8,
-        shape_dim: int = 12,
-        residual_dim: int = 84,
-        n_vol: int = 4,
-        n_loc: int = 3,
-        n_shape: int = 3,
+        vol_dim: int = 32,
+        residual_dim: int = 96,
+        n_vol: int = 1,
+        **kwargs,
     ) -> "LatentPartition":
         """Construct from dimension sizes (for ablations).
 
         Args:
             vol_dim: Latent dims for volume partition.
-            loc_dim: Latent dims for location partition.
-            shape_dim: Latent dims for shape partition.
             residual_dim: Latent dims for residual partition.
             n_vol: Target dimensionality for volume.
-            n_loc: Target dimensionality for location.
-            n_shape: Target dimensionality for shape.
+            **kwargs: Ignored (backward compat for old configs with loc/shape).
 
         Returns:
             Configured LatentPartition instance.
         """
-        loc_start = vol_dim
-        shape_start = loc_start + loc_dim
-        res_start = shape_start + shape_dim
+        res_start = vol_dim
         res_end = res_start + residual_dim
 
         partitions = {
-            "vol": PartitionSpec("vol", 0, loc_start, n_vol),
-            "loc": PartitionSpec("loc", loc_start, shape_start, n_loc),
-            "shape": PartitionSpec("shape", shape_start, res_start, n_shape),
+            "vol": PartitionSpec("vol", 0, res_start, n_vol),
             "residual": PartitionSpec("residual", res_start, res_end, None),
         }
         return cls(partitions)

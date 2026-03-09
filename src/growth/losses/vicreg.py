@@ -41,7 +41,7 @@ class CovarianceLoss(nn.Module):
     def forward(
         self,
         partitions: dict[str, torch.Tensor],
-        partition_names: list[str] = ("vol", "loc", "shape"),
+        partition_names: list[str] = ("vol", "residual"),
     ) -> torch.Tensor:
         """Compute cross-partition covariance loss.
 

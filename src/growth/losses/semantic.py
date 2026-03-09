@@ -1,8 +1,8 @@
 # src/growth/losses/semantic.py
 """Semantic regression losses for SDP training.
 
-MSE losses for volume, location, and shape prediction from latent partitions.
-Ensures informativeness of the disentangled representation.
+MSE loss for volume prediction from latent partition.
+Methodology Revision R1: location and shape losses removed.
 """
 
 import logging
@@ -14,35 +14,27 @@ logger = logging.getLogger(__name__)
 
 
 class SemanticRegressionLoss(nn.Module):
-    """Weighted per-partition MSE loss for semantic target prediction.
+    """Weighted MSE loss for volume target prediction.
 
-    Each partition's loss is the mean squared error (averaged over B × k_p),
-    weighted by a per-partition lambda.
-
-    Loss per partition: L_p = lambda_p * MSE(pred_p, target_p)
+    Loss: L_vol = lambda_vol * MSE(pred_vol, target_vol)
 
     Args:
         lambda_vol: Weight for volume loss.
-        lambda_loc: Weight for location loss.
-        lambda_shape: Weight for shape loss.
 
     Example:
         >>> loss_fn = SemanticRegressionLoss()
-        >>> preds = {"vol": torch.randn(8, 4), "loc": torch.randn(8, 3),
-        ...          "shape": torch.randn(8, 3)}
-        >>> targets = {"vol": torch.randn(8, 4), "loc": torch.randn(8, 3),
-        ...            "shape": torch.randn(8, 3)}
+        >>> preds = {"vol": torch.randn(8, 1)}
+        >>> targets = {"vol": torch.randn(8, 1)}
         >>> total, details = loss_fn(preds, targets)
     """
 
     def __init__(
         self,
-        lambda_vol: float = 20.0,
-        lambda_loc: float = 12.0,
-        lambda_shape: float = 15.0,
+        lambda_vol: float = 25.0,
+        **kwargs,
     ) -> None:
         super().__init__()
-        self.lambdas = {"vol": lambda_vol, "loc": lambda_loc, "shape": lambda_shape}
+        self.lambdas = {"vol": lambda_vol}
 
     def forward(
         self,
@@ -61,7 +53,7 @@ class SemanticRegressionLoss(nn.Module):
         total_loss = torch.tensor(0.0, device=next(iter(predictions.values())).device)
         details = {}
 
-        for name in ["vol", "loc", "shape"]:
+        for name in ["vol"]:
             pred = predictions[name]
             target = targets[name]
 

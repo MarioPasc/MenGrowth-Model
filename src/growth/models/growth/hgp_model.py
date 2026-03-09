@@ -2,7 +2,7 @@
 """
 Hierarchical Gaussian Process (H-GP) growth model (Model B).
 
-Per-dimension GP on z_vol ∈ ℝ²⁴ with:
+Per-dimension GP on z_vol ∈ ℝ³² with:
 - Population linear mean from LME (D18)
 - Matérn-5/2 temporal kernel (default; SE and Matérn-3/2 as ablation A9)
 - Hierarchical hyperparameter sharing across patients (empirical Bayes, D19)

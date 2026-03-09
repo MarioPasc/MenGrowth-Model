@@ -43,12 +43,8 @@ class SDPLitModule(pl.LightningModule):
         # Build SDP model
         partition = LatentPartition.from_config(
             vol_dim=config.partition.vol_dim,
-            loc_dim=config.partition.loc_dim,
-            shape_dim=config.partition.shape_dim,
             residual_dim=config.partition.residual_dim,
             n_vol=config.targets.n_vol,
-            n_loc=config.targets.n_loc,
-            n_shape=config.targets.n_shape,
         )
         sdp = SDP(
             in_dim=config.sdp.in_dim,
@@ -59,10 +55,6 @@ class SDPLitModule(pl.LightningModule):
         heads = SemanticHeads(
             vol_in=config.partition.vol_dim,
             vol_out=config.targets.n_vol,
-            loc_in=config.partition.loc_dim,
-            loc_out=config.targets.n_loc,
-            shape_in=config.partition.shape_dim,
-            shape_out=config.targets.n_shape,
         )
         self.model = SDPWithHeads(sdp=sdp, partition=partition, heads=heads)
 
@@ -70,8 +62,6 @@ class SDPLitModule(pl.LightningModule):
         curriculum_cfg = config.get("curriculum", {})
         self.loss_fn = SDPLoss(
             lambda_vol=config.loss.lambda_vol,
-            lambda_loc=config.loss.lambda_loc,
-            lambda_shape=config.loss.lambda_shape,
             lambda_cov=config.loss.lambda_cov,
             lambda_var=config.loss.lambda_var,
             lambda_dcor=config.loss.lambda_dcor,
@@ -91,7 +81,7 @@ class SDPLitModule(pl.LightningModule):
         # Data holders (set by setup_data)
         self._train_dataset: TensorDataset | None = None
         self._val_dataset: TensorDataset | None = None
-        self._target_keys = ["vol", "loc", "shape"]
+        self._target_keys = ["vol"]
 
         # Per-target normalization stats
         self._target_stats: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
@@ -161,16 +151,14 @@ class SDPLitModule(pl.LightningModule):
         return TensorDataset(
             h,
             targets["vol"],
-            targets["loc"],
-            targets["shape"],
         )
 
     def _unpack_batch(
         self, batch: tuple[torch.Tensor, ...]
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Unpack a batch from TensorDataset into (h, targets_dict)."""
-        h, vol, loc, shape = batch
-        targets = {"vol": vol, "loc": loc, "shape": shape}
+        h, vol = batch
+        targets = {"vol": vol}
         return h, targets
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
@@ -227,26 +215,17 @@ class SDPLitModule(pl.LightningModule):
 
         # --- Inline disentanglement metrics ---
 
-        # R² mean
-        r2_mean = sum(r2_values.values()) / len(r2_values)
-        self.log("val/r2_mean", r2_mean)
+        # dCor between vol and residual
+        dcor_val = dcor_fn(partitions["vol"], partitions["residual"])
+        self.log("val/dcor_vol_residual", dcor_val)
 
-        # dCor between supervised partition pairs
-        pairs = [("vol", "loc"), ("vol", "shape"), ("loc", "shape")]
-        for name_i, name_j in pairs:
-            dcor_val = dcor_fn(partitions[name_i], partitions[name_j])
-            self.log(f"val/dcor_{name_i}_{name_j}", dcor_val)
-
-        # Max cross-partition Pearson correlation
-        max_corr = torch.tensor(0.0, device=z.device)
-        for name_i, name_j in pairs:
-            zi = partitions[name_i]
-            zj = partitions[name_j]
-            corr = torch.corrcoef(torch.cat([zi.T, zj.T], dim=0))
-            di = zi.shape[1]
-            cross_block = corr[:di, di:]
-            pair_max = cross_block.abs().max()
-            max_corr = torch.max(max_corr, pair_max)
+        # Max cross-partition Pearson correlation (vol vs residual)
+        zi = partitions["vol"]
+        zj = partitions["residual"]
+        corr = torch.corrcoef(torch.cat([zi.T, zj.T], dim=0))
+        di = zi.shape[1]
+        cross_block = corr[:di, di:]
+        max_corr = cross_block.abs().max()
         self.log("val/max_cross_partition_corr", max_corr)
 
         # Variance health metrics
@@ -369,8 +348,6 @@ class SDPLitModule(pl.LightningModule):
             },
             "partition_config": {
                 "vol_dim": self.cfg.partition.vol_dim,
-                "loc_dim": self.cfg.partition.loc_dim,
-                "shape_dim": self.cfg.partition.shape_dim,
                 "residual_dim": self.cfg.partition.residual_dim,
             },
             "sdp_config": {
@@ -381,8 +358,6 @@ class SDPLitModule(pl.LightningModule):
             },
             "target_config": {
                 "n_vol": self.cfg.targets.n_vol,
-                "n_loc": self.cfg.targets.n_loc,
-                "n_shape": self.cfg.targets.n_shape,
             },
         }
         torch.save(checkpoint, path)

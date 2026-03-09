@@ -3,10 +3,12 @@
 """UMAP visualization of SDP latent space.
 
 Loads a trained SDP checkpoint and precomputed features, projects through
-the SDP, and generates a UMAP scatter plot colored by semantic properties.
+the SDP, and generates a UMAP scatter plot colored by volume.
+
+Methodology Revision R1: vol + residual partition only (location/shape removed).
 
 Outputs:
-    {output_dir}/latent_umap.png — 3-panel UMAP colored by volume, location, sphericity
+    {output_dir}/latent_umap.png — UMAP colored by whole-tumor volume
 
 Usage:
     python -m experiments.sdp.visualize_latent \
@@ -53,12 +55,8 @@ def load_sdp_from_checkpoint(
 
     partition = LatentPartition.from_config(
         vol_dim=part_cfg["vol_dim"],
-        loc_dim=part_cfg["loc_dim"],
-        shape_dim=part_cfg["shape_dim"],
         residual_dim=part_cfg["residual_dim"],
         n_vol=tgt_cfg["n_vol"],
-        n_loc=tgt_cfg["n_loc"],
-        n_shape=tgt_cfg["n_shape"],
     )
     sdp = SDP(
         in_dim=sdp_cfg["in_dim"],
@@ -69,10 +67,6 @@ def load_sdp_from_checkpoint(
     heads = SemanticHeads(
         vol_in=part_cfg["vol_dim"],
         vol_out=tgt_cfg["n_vol"],
-        loc_in=part_cfg["loc_dim"],
-        loc_out=tgt_cfg["n_loc"],
-        shape_in=part_cfg["shape_dim"],
-        shape_out=tgt_cfg["n_shape"],
     )
 
     model = SDPWithHeads(sdp=sdp, partition=partition, heads=heads)
@@ -128,34 +122,25 @@ def main(
     )
     embedding = reducer.fit_transform(z_np)
 
-    # Semantic coloring targets
-    vol_target = targets["vol"][:, 0].numpy()  # Log-volume (first component = total)
-    loc_target = targets["loc"][:, 0].numpy()  # Centroid z-coordinate
-    shape_target = targets["shape"][:, 0].numpy()  # Sphericity
+    # Semantic coloring: whole-tumor volume
+    vol_target = targets["vol"][:, 0].numpy()  # log(V_WT + 1)
 
-    # Create 3-panel figure
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    # Create single-panel figure
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
-    color_data = [
-        (vol_target, "Log-Volume (total)", "viridis"),
-        (loc_target, "Centroid Z", "coolwarm"),
-        (shape_target, "Sphericity", "plasma"),
-    ]
-
-    for ax, (values, label, cmap) in zip(axes, color_data):
-        sc = ax.scatter(
-            embedding[:, 0],
-            embedding[:, 1],
-            c=values,
-            cmap=cmap,
-            s=12,
-            alpha=0.7,
-            edgecolors="none",
-        )
-        ax.set_title(label, fontsize=13)
-        ax.set_xlabel("UMAP-1")
-        ax.set_ylabel("UMAP-2")
-        plt.colorbar(sc, ax=ax, shrink=0.8)
+    sc = ax.scatter(
+        embedding[:, 0],
+        embedding[:, 1],
+        c=vol_target,
+        cmap="viridis",
+        s=12,
+        alpha=0.7,
+        edgecolors="none",
+    )
+    ax.set_title("Log Whole-Tumor Volume", fontsize=13)
+    ax.set_xlabel("UMAP-1")
+    ax.set_ylabel("UMAP-2")
+    plt.colorbar(sc, ax=ax, shrink=0.8)
 
     fig.suptitle("SDP Latent Space (UMAP)", fontsize=15, y=1.02)
     fig.tight_layout()

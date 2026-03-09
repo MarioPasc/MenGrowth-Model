@@ -3,7 +3,10 @@
 # Phase 2: Supervised Disentangled Projection (SDP) Configuration
 # =============================================================================
 # Maps frozen encoder features (768-dim) to a structured 128-dim latent space
-# with semantic partitions for volume, location, shape, and residual.
+# with volume and residual partitions.
+#
+# Methodology Revision R1: location/shape partitions removed.
+# Volume = log(V_WT + 1) scalar target (clinically relevant growth endpoint).
 #
 # Usage (via experiment script):
 #   python -m experiments.sdp.train_sdp --config experiments/sdp/config/sdp_default.yaml
@@ -22,26 +25,20 @@ sdp:
 # Latent Partition Layout (128 dims total)
 # =============================================================================
 partition:
-  vol_dim: 24          # Volume: dims 0-23
-  loc_dim: 8           # Location: dims 24-31
-  shape_dim: 12        # Shape: dims 32-43
-  residual_dim: 84     # Residual: dims 44-127
+  vol_dim: 32          # Volume: dims 0-31
+  residual_dim: 96     # Residual: dims 32-127
 
 # =============================================================================
 # Semantic Targets
 # =============================================================================
 targets:
-  n_vol: 4             # Log-volumes (total, NCR, ED, ET)
-  n_loc: 3             # Centroid coordinates (cz, cy, cx)
-  n_shape: 3           # Shape features (sphericity, surface_area_log, solidity)
+  n_vol: 1             # log(V_WT + 1) — whole-tumor volume
 
 # =============================================================================
 # Loss Configuration
 # =============================================================================
 loss:
-  lambda_vol: 20.0     # Semantic weight for volume
-  lambda_loc: 12.0     # Semantic weight for location
-  lambda_shape: 15.0   # Semantic weight for shape
+  lambda_vol: 25.0     # Semantic weight for volume (increased for scalar target)
   lambda_cov: 5.0      # Cross-partition covariance weight
   lambda_var: 5.0      # Variance hinge weight
   lambda_dcor: 2.0     # Distance correlation weight
@@ -53,7 +50,7 @@ loss:
 curriculum:
   enabled: true
   warmup_end: 10       # Epochs 0-9: L_var only
-  semantic_end: 40     # Epochs 10-39: + L_sem
+  semantic_end: 40     # Epochs 10-39: + L_vol
   independence_end: 60 # Epochs 40-59: + L_cov, L_dCor; 60+: full
 
 # =============================================================================

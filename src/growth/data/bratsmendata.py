@@ -230,16 +230,14 @@ class BraTSDatasetH5(Dataset):
 
         # Load semantic features from H5
         if self.compute_semantic:
-            volume = f["semantic/volume"][h5_idx]  # [4]
+            volume_all = f["semantic/volume"][h5_idx]  # [4]
+            volume_wt = volume_all[0:1]  # [1] — log(V_WT + 1)
             location = f["semantic/location"][h5_idx]  # [3]
-            shape = f["semantic/shape"][h5_idx]  # [3]
-            all_feats = np.concatenate([volume, location, shape])
 
             output["semantic_features"] = {
-                "volume": torch.from_numpy(volume.astype(np.float32)),
+                "volume": torch.from_numpy(volume_wt.astype(np.float32)),
                 "location": torch.from_numpy(location.astype(np.float32)),
-                "shape": torch.from_numpy(shape.astype(np.float32)),
-                "all": torch.from_numpy(all_feats.astype(np.float32)),
+                "all": torch.from_numpy(volume_wt.astype(np.float32)),
             }
 
         return output

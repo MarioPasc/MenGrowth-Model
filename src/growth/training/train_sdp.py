@@ -24,19 +24,19 @@ logger = logging.getLogger(__name__)
 def load_precomputed_features(
     features_path: str,
     feature_level: str = "encoder10",
-    shape_indices: list[int] | None = None,
+    **kwargs,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Load precomputed features and targets from HDF5 file.
+
+    Methodology Revision R1: only loads volume target (index 0 = log V_WT).
 
     Args:
         features_path: Path to .h5 file containing features and targets.
         feature_level: Feature level to load (e.g., "encoder10").
-        shape_indices: Optional list of shape target column indices to keep.
-            E.g., [0, 2] to keep sphericity and solidity, dropping
-            surface_area_log at index 1.
+        **kwargs: Ignored (backward compat for shape_indices).
 
     Returns:
-        Tuple of (features [N, 768], targets dict with "vol", "loc", "shape").
+        Tuple of (features [N, 768], targets dict with "vol").
     """
     features_path = Path(features_path)
 
@@ -44,19 +44,12 @@ def load_precomputed_features(
         h = torch.from_numpy(np.array(f[f"features/{feature_level}"]))
 
         targets = {}
-        targets["vol"] = torch.from_numpy(np.array(f["targets/volume"]))
-        targets["loc"] = torch.from_numpy(np.array(f["targets/location"]))
-        shape_all = torch.from_numpy(np.array(f["targets/shape"]))
-
-        if shape_indices is not None:
-            targets["shape"] = shape_all[:, shape_indices]
-        else:
-            targets["shape"] = shape_all
+        volume_all = torch.from_numpy(np.array(f["targets/volume"]))
+        targets["vol"] = volume_all[:, 0:1]  # [N, 1] — log(V_WT + 1)
 
     logger.info(
         f"Loaded features from {features_path}: h={h.shape}, "
-        f"vol={targets['vol'].shape}, loc={targets['loc'].shape}, "
-        f"shape={targets['shape'].shape}"
+        f"vol={targets['vol'].shape}"
     )
     return h, targets
 
@@ -65,7 +58,7 @@ def load_and_combine_splits(
     features_dir: str,
     split_names: list[str],
     feature_level: str = "encoder10",
-    shape_indices: list[int] | None = None,
+    **kwargs,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Load and concatenate features from multiple splits.
 
@@ -73,19 +66,17 @@ def load_and_combine_splits(
         features_dir: Directory containing per-split .h5 files.
         split_names: List of split names to combine.
         feature_level: Feature level to load.
-        shape_indices: Optional list of shape target column indices to keep.
+        **kwargs: Ignored (backward compat for shape_indices).
 
     Returns:
         Combined (features, targets) tensors.
     """
     all_h = []
-    all_targets: dict[str, list[torch.Tensor]] = {"vol": [], "loc": [], "shape": []}
+    all_targets: dict[str, list[torch.Tensor]] = {"vol": []}
 
     for split in split_names:
         h5_path = Path(features_dir) / f"{split}.h5"
-        h, targets = load_precomputed_features(
-            str(h5_path), feature_level, shape_indices=shape_indices
-        )
+        h, targets = load_precomputed_features(str(h5_path), feature_level)
         all_h.append(h)
         for key in all_targets:
             all_targets[key].append(targets[key])
@@ -140,8 +131,8 @@ def generate_quality_report(
 
     report: dict[str, Any] = {}
 
-    # R^2 per partition
-    for key in ["vol", "loc", "shape"]:
+    # R^2 per partition (volume only after R1)
+    for key in ["vol"]:
         pred = predictions[key]
         target = targets_norm[key]
         ss_res = ((pred - target) ** 2).sum()
@@ -149,25 +140,17 @@ def generate_quality_report(
         r2 = float(1.0 - ss_res / (ss_tot + 1e-8))
         report[f"r2_{key}"] = r2
 
-    # Distance correlation between partition pairs
-    for name_i, name_j in [("vol", "loc"), ("vol", "shape"), ("loc", "shape")]:
-        dcor = float(distance_correlation(partitions[name_i], partitions[name_j]))
-        report[f"dcor_{name_i}_{name_j}"] = dcor
+    # Distance correlation between vol and residual
+    dcor = float(distance_correlation(partitions["vol"], partitions["residual"]))
+    report["dcor_vol_residual"] = dcor
 
-    # Max cross-partition Pearson correlation
-    supervised_names = ["vol", "loc", "shape"]
-    max_corr = 0.0
-    for i, name_i in enumerate(supervised_names):
-        for name_j in supervised_names[i + 1 :]:
-            zi = partitions[name_i]
-            zj = partitions[name_j]
-            # Flatten and compute correlation matrix
-            corr_matrix = torch.corrcoef(torch.cat([zi.T, zj.T], dim=0))
-            # Cross-partition block
-            di = zi.shape[1]
-            cross_block = corr_matrix[:di, di:]
-            max_corr = max(max_corr, float(cross_block.abs().max()))
-    report["max_cross_partition_corr"] = max_corr
+    # Max cross-partition Pearson correlation (vol vs residual)
+    zi = partitions["vol"]
+    zj = partitions["residual"]
+    corr_matrix = torch.corrcoef(torch.cat([zi.T, zj.T], dim=0))
+    di = zi.shape[1]
+    cross_block = corr_matrix[:di, di:]
+    report["max_cross_partition_corr"] = float(cross_block.abs().max())
 
     # Per-dimension variance stats
     z_std = z.std(dim=0)

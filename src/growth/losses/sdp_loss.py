@@ -4,9 +4,11 @@
 Aggregates: semantic regression + covariance + variance + dCor losses.
 Provides the complete objective for disentangled projection learning.
 
+Methodology Revision R1: volume-only semantic loss (location/shape removed).
+
 4-phase curriculum schedule (D5):
   Phase 0-9 (Warm-up):     L_var only
-  Phase 10-39 (Semantic):   + L_vol, L_loc, L_shape
+  Phase 10-39 (Semantic):   + L_vol
   Phase 40-59 (Independence): + L_cov, L_dCor
   Phase 60+ (Full):         All at full strength
 """
@@ -75,15 +77,12 @@ class SDPLoss(nn.Module):
 
     Args:
         lambda_vol: Semantic weight for volume.
-        lambda_loc: Semantic weight for location.
-        lambda_shape: Semantic weight for shape.
         lambda_cov: Weight for covariance loss.
         lambda_var: Weight for variance hinge loss.
         lambda_dcor: Weight for distance correlation loss.
         gamma_var: Target minimum std for variance hinge.
         cov_partition_names: Partition names to include in covariance penalty.
-            Default: supervised partitions only. Set to
-            ["vol", "loc", "shape", "residual"] to include residual.
+            Default: ("vol", "residual").
         use_curriculum: Whether to use curriculum scheduling.
         warmup_end: Epoch when warm-up ends.
         semantic_end: Epoch when independence losses start.
@@ -97,18 +96,17 @@ class SDPLoss(nn.Module):
 
     def __init__(
         self,
-        lambda_vol: float = 20.0,
-        lambda_loc: float = 12.0,
-        lambda_shape: float = 15.0,
+        lambda_vol: float = 25.0,
         lambda_cov: float = 5.0,
         lambda_var: float = 5.0,
         lambda_dcor: float = 2.0,
         gamma_var: float = 1.0,
-        cov_partition_names: tuple[str, ...] = ("vol", "loc", "shape"),
+        cov_partition_names: tuple[str, ...] = ("vol", "residual"),
         use_curriculum: bool = True,
         warmup_end: int = 10,
         semantic_end: int = 40,
         independence_end: int = 60,
+        **kwargs,
     ) -> None:
         super().__init__()
 
@@ -121,8 +119,6 @@ class SDPLoss(nn.Module):
         # Sub-losses
         self.semantic_loss = SemanticRegressionLoss(
             lambda_vol=lambda_vol,
-            lambda_loc=lambda_loc,
-            lambda_shape=lambda_shape,
         )
         self.cov_loss = CovarianceLoss()
         self.var_loss = VarianceHingeLoss(gamma=gamma_var)

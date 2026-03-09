@@ -189,8 +189,9 @@ def evaluate_feature_quality_single(
     metrics.update(corr_metrics)
     logger.info(f"  Mean |r|: {corr_metrics['mean_abs_corr']:.3f}")
 
-    # 4. Per-target GP-linear probe R²
-    for target_name in ["volume", "location", "shape"]:
+    # 4. Per-target GP-linear probe R² (iterate available targets)
+    available_targets = list(targets.keys())
+    for target_name in available_targets:
         y_train = targets[target_name]
         y_test = test_targets[target_name]
         if y_train.ndim == 1:
@@ -210,11 +211,11 @@ def evaluate_feature_quality_single(
     for k, v in ft_corr.items():
         logger.info(f"  {k}: {v}")
 
-    # 6. DCI disentanglement
+    # 6. DCI disentanglement (use available targets)
     all_targets = np.concatenate(
         [
             targets[k] if targets[k].ndim == 2 else targets[k].reshape(-1, 1)
-            for k in ["volume", "location", "shape"]
+            for k in available_targets
         ],
         axis=1,
     )
@@ -292,11 +293,7 @@ def generate_comparison_table(
         "effective_rank",
         "mean_abs_corr",
         "r2_volume",
-        "r2_location",
-        "r2_shape",
         "n_informative_volume",
-        "n_informative_location",
-        "n_informative_shape",
         "dci_disentanglement",
         "dci_completeness",
         "dci_informativeness",
@@ -316,12 +313,12 @@ def generate_comparison_table(
     # LaTeX table
     latex_path = output_dir / "feature_quality_table.tex"
     with open(latex_path, "w") as f:
-        f.write("\\begin{tabular}{l|ccc|ccc|c}\n")
+        f.write("\\begin{tabular}{l|cc|c|c}\n")
         f.write("\\hline\n")
         f.write(
             "Condition & Eff. Rank & Mean $|r|$ & "
-            "$R^2_{\\text{vol}}$ & $R^2_{\\text{loc}}$ & $R^2_{\\text{shape}}$ & "
-            "DCI-D & Collapsed \\\\\n"
+            "$R^2_{\\text{vol}}$ & "
+            "DCI-D \\\\\n"
         )
         f.write("\\hline\n")
 
@@ -332,10 +329,7 @@ def generate_comparison_table(
                 f"{m.get('effective_rank', 0):.1f} & "
                 f"{m.get('mean_abs_corr', 0):.3f} & "
                 f"{m.get('r2_volume', 0):.3f} & "
-                f"{m.get('r2_location', 0):.3f} & "
-                f"{m.get('r2_shape', 0):.3f} & "
-                f"{m.get('dci_disentanglement', 0):.3f} & "
-                f"{m.get('num_collapsed_dims', 0)} \\\\\n"
+                f"{m.get('dci_disentanglement', 0):.3f} \\\\\n"
             )
 
         f.write("\\hline\n")

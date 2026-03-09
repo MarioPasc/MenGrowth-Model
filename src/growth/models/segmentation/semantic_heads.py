@@ -2,13 +2,16 @@
 """Auxiliary semantic prediction heads for Phase 1 LoRA training.
 
 These heads provide additional supervision during encoder adaptation by
-predicting semantic features (volume, location, shape) from bottleneck
-features. This forces the encoder to learn representations that are
-linearly predictive of clinically meaningful attributes.
+predicting whole-tumor volume from bottleneck features. This forces the
+encoder to learn representations that are linearly predictive of the
+clinically relevant growth endpoint.
 
 The auxiliary loss is:
-    L_aux = λ_vol * MSE(pred_vol, gt_vol) + λ_loc * MSE(pred_loc, gt_loc)
-            + λ_shape * MSE(pred_shape, gt_shape)
+    L_aux = λ_vol * MSE(pred_vol, gt_vol)
+
+Methodology Revision R1: location and shape heads removed — shape R² <= 0.11
+across all conditions (scientifically unjustified), location is temporally
+static for meningiomas (belongs as GP covariate, not temporal latent).
 
 This approach is inspired by:
     - Multi-task learning (Caruana, 1997)
@@ -73,16 +76,16 @@ class SemanticHead(nn.Module):
 
 
 class AuxiliarySemanticHeads(nn.Module):
-    """Collection of auxiliary semantic prediction heads.
+    """Auxiliary semantic prediction head for whole-tumor volume.
 
-    Predicts volume, location, and shape from bottleneck features.
-    Used during Phase 1 LoRA training to provide additional supervision.
+    Predicts log(V_WT + 1) from bottleneck features. Used during Phase 1
+    LoRA training to provide additional supervision.
+
+    Methodology Revision R1: location and shape heads removed.
 
     Args:
         input_dim: Dimension of bottleneck features (768).
-        volume_dim: Number of volume features (4: total, NCR, ED, ET).
-        location_dim: Number of location features (3: x, y, z).
-        shape_dim: Number of shape features (3: sphericity, enhancement_ratio, infiltration_index).
+        volume_dim: Number of volume features (1: log whole-tumor volume).
         hidden_dim: Hidden dimension for MLPs.
         dropout: Dropout rate.
 
@@ -91,49 +94,40 @@ class AuxiliarySemanticHeads(nn.Module):
         >>> features = torch.randn(4, 768)
         >>> preds = heads(features)
         >>> preds['pred_volume'].shape
-        torch.Size([4, 4])
+        torch.Size([4, 1])
     """
 
     def __init__(
         self,
         input_dim: int = 768,
-        volume_dim: int = 4,
-        location_dim: int = 3,
-        shape_dim: int = 3,
+        volume_dim: int = 1,
         hidden_dim: int = 256,
         dropout: float = 0.1,
     ):
         super().__init__()
 
         self.volume_head = SemanticHead(input_dim, volume_dim, hidden_dim, dropout)
-        self.location_head = SemanticHead(input_dim, location_dim, hidden_dim, dropout)
-        self.shape_head = SemanticHead(input_dim, shape_dim, hidden_dim, dropout)
 
         # Store dimensions
         self.dims = {
             'volume': volume_dim,
-            'location': location_dim,
-            'shape': shape_dim,
         }
 
         logger.info(
-            f"AuxiliarySemanticHeads: vol({volume_dim}), loc({location_dim}), "
-            f"shape({shape_dim}), hidden={hidden_dim}"
+            f"AuxiliarySemanticHeads: vol({volume_dim}), hidden={hidden_dim}"
         )
 
     def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Predict all semantic features.
+        """Predict whole-tumor volume.
 
         Args:
             features: Bottleneck features [B, 768].
 
         Returns:
-            Dict with 'pred_volume', 'pred_location', 'pred_shape'.
+            Dict with 'pred_volume'.
         """
         return {
             'pred_volume': self.volume_head(features),
-            'pred_location': self.location_head(features),
-            'pred_shape': self.shape_head(features),
         }
 
     def get_param_count(self) -> int:
@@ -142,68 +136,51 @@ class AuxiliarySemanticHeads(nn.Module):
 
 
 class AuxiliarySemanticLoss(nn.Module):
-    """Loss function for auxiliary semantic prediction.
+    """Loss function for auxiliary semantic prediction (volume only).
 
-    Computes weighted MSE loss for volume, location, and shape predictions.
+    Computes weighted MSE loss for whole-tumor volume prediction.
 
     Args:
         lambda_volume: Weight for volume loss.
-        lambda_location: Weight for location loss.
-        lambda_shape: Weight for shape loss.
         normalize_targets: If True, normalize targets before computing loss.
 
     Example:
         >>> loss_fn = AuxiliarySemanticLoss(lambda_volume=1.0)
-        >>> preds = {'pred_volume': torch.randn(4, 4), ...}
-        >>> targets = {'volume': torch.randn(4, 4), ...}
+        >>> preds = {'pred_volume': torch.randn(4, 1)}
+        >>> targets = {'volume': torch.randn(4, 1)}
         >>> loss, components = loss_fn(preds, targets)
     """
 
     def __init__(
         self,
         lambda_volume: float = 1.0,
-        lambda_location: float = 1.0,
-        lambda_shape: float = 1.0,
         normalize_targets: bool = True,
+        **kwargs,
     ):
         super().__init__()
 
         self.lambda_volume = lambda_volume
-        self.lambda_location = lambda_location
-        self.lambda_shape = lambda_shape
         self.normalize_targets = normalize_targets
 
         # Running statistics for normalization
-        self.register_buffer('volume_mean', torch.zeros(4))
-        self.register_buffer('volume_std', torch.ones(4))
-        self.register_buffer('location_mean', torch.zeros(3))
-        self.register_buffer('location_std', torch.ones(3))
-        self.register_buffer('shape_mean', torch.zeros(3))
-        self.register_buffer('shape_std', torch.ones(3))
+        self.register_buffer('volume_mean', torch.zeros(1))
+        self.register_buffer('volume_std', torch.ones(1))
 
         self._stats_initialized = False
 
     def update_statistics(
         self,
         volume: torch.Tensor,
-        location: torch.Tensor,
-        shape: torch.Tensor,
-    ):
+    ) -> None:
         """Update running statistics for target normalization.
 
         Should be called once with full training set statistics.
 
         Args:
-            volume: Volume targets [N, 4].
-            location: Location targets [N, 3].
-            shape: Shape targets [N, 3].
+            volume: Volume targets [N, 1].
         """
         self.volume_mean.copy_(volume.mean(dim=0))
         self.volume_std.copy_(volume.std(dim=0).clamp(min=1e-6))
-        self.location_mean.copy_(location.mean(dim=0))
-        self.location_std.copy_(location.std(dim=0).clamp(min=1e-6))
-        self.shape_mean.copy_(shape.mean(dim=0))
-        self.shape_std.copy_(shape.std(dim=0).clamp(min=1e-6))
         self._stats_initialized = True
 
         logger.info("Target statistics updated for normalization")
@@ -225,8 +202,8 @@ class AuxiliarySemanticLoss(nn.Module):
         """Compute auxiliary semantic loss.
 
         Args:
-            predictions: Dict with 'pred_volume', 'pred_location', 'pred_shape'.
-            targets: Dict with 'volume', 'location', 'shape'.
+            predictions: Dict with 'pred_volume'.
+            targets: Dict with 'volume'.
 
         Returns:
             Tuple of (total_loss, component_dict).
@@ -241,28 +218,8 @@ class AuxiliarySemanticLoss(nn.Module):
         vol_loss = F.mse_loss(pred_vol, tgt_vol)
         components['vol_loss'] = vol_loss.item()
 
-        # Location loss
-        pred_loc = predictions['pred_location']
-        tgt_loc = targets['location']
-        if self.normalize_targets and self._stats_initialized:
-            tgt_loc = self._normalize(tgt_loc, self.location_mean, self.location_std)
-        loc_loss = F.mse_loss(pred_loc, tgt_loc)
-        components['loc_loss'] = loc_loss.item()
-
-        # Shape loss
-        pred_shape = predictions['pred_shape']
-        tgt_shape = targets['shape']
-        if self.normalize_targets and self._stats_initialized:
-            tgt_shape = self._normalize(tgt_shape, self.shape_mean, self.shape_std)
-        shape_loss = F.mse_loss(pred_shape, tgt_shape)
-        components['shape_loss'] = shape_loss.item()
-
-        # Total weighted loss
-        total_loss = (
-            self.lambda_volume * vol_loss +
-            self.lambda_location * loc_loss +
-            self.lambda_shape * shape_loss
-        )
+        # Total weighted loss (volume only)
+        total_loss = self.lambda_volume * vol_loss
         components['total'] = total_loss.item()
 
         return total_loss, components
@@ -272,21 +229,18 @@ class MultiScaleSemanticHeads(nn.Module):
     """Semantic heads with multi-scale feature input.
 
     Takes features from multiple encoder stages for richer predictions.
+    Volume-only after Methodology Revision R1.
 
     Args:
         stage_dims: Tuple of channel dimensions for each stage.
-        volume_dim: Number of volume outputs.
-        location_dim: Number of location outputs.
-        shape_dim: Number of shape outputs.
+        volume_dim: Number of volume outputs (1: log whole-tumor volume).
         hidden_dim: Hidden dimension.
     """
 
     def __init__(
         self,
         stage_dims: Tuple[int, ...] = (192, 384, 768),  # layers2, 3, 4
-        volume_dim: int = 4,
-        location_dim: int = 3,
-        shape_dim: int = 3,
+        volume_dim: int = 1,
         hidden_dim: int = 256,
     ):
         super().__init__()
@@ -302,8 +256,6 @@ class MultiScaleSemanticHeads(nn.Module):
 
         # Prediction heads
         self.volume_head = nn.Linear(hidden_dim, volume_dim)
-        self.location_head = nn.Linear(hidden_dim, location_dim)
-        self.shape_head = nn.Linear(hidden_dim, shape_dim)
 
     def forward(
         self,
@@ -315,12 +267,10 @@ class MultiScaleSemanticHeads(nn.Module):
             multi_scale_features: Concatenated features [B, sum(stage_dims)].
 
         Returns:
-            Dict with 'pred_volume', 'pred_location', 'pred_shape'.
+            Dict with 'pred_volume'.
         """
         fused = self.fusion(multi_scale_features)
 
         return {
             'pred_volume': self.volume_head(fused),
-            'pred_location': self.location_head(fused),
-            'pred_shape': self.shape_head(fused),
         }

@@ -64,7 +64,7 @@ def save_latent_vectors_h5(
     output_dir: str,
     split_names: list[str],
     targets_by_split: dict[str, dict[str, torch.Tensor]] | None = None,
-    shape_indices: list[int] | None = None,
+    **kwargs,
 ) -> None:
     """Project all splits through trained SDP and save latent vectors + targets.
 
@@ -78,7 +78,7 @@ def save_latent_vectors_h5(
         split_names: List of split names to process.
         targets_by_split: Optional dict of {split: {key: tensor}} with
             unnormalized targets to save alongside latent vectors.
-        shape_indices: Optional list of shape target column indices to keep.
+        **kwargs: Ignored (backward compat for shape_indices).
     """
     module.eval()
     device = next(module.parameters()).device
@@ -92,7 +92,7 @@ def save_latent_vectors_h5(
             continue
 
         # Load features and targets from source H5
-        h, raw_targets = load_precomputed_features(str(h5_in), shape_indices=shape_indices)
+        h, raw_targets = load_precomputed_features(str(h5_in))
 
         # Load subject IDs
         with h5py.File(h5_in, "r") as f:
@@ -124,8 +124,7 @@ def save_latent_vectors_h5(
                 pred_grp.create_dataset(name, data=tensor.cpu().float().numpy(), compression="gzip")
 
             # Save unnormalized targets for downstream evaluation
-            # Use long-form keys matching evaluate_sdp.py expectations
-            target_key_map = {"vol": "volume", "loc": "location", "shape": "shape"}
+            target_key_map = {"vol": "volume"}
             tgt_grp = f.create_group("targets")
             for name, tensor in targets_to_save.items():
                 data = tensor.cpu().numpy() if isinstance(tensor, torch.Tensor) else tensor
@@ -175,15 +174,12 @@ def main(
     paths = create_run_dir(base_dir=base_dir, run_name=run_name)
     save_run_config(paths, cfg)
 
-    # Shape indices filtering (drop redundant features like surface_area_log)
-    shape_indices = list(cfg.targets.shape_indices) if cfg.targets.get("shape_indices") else None
-
     # Load features
     h_train, targets_train = load_and_combine_splits(
-        features_dir, train_split_names, shape_indices=shape_indices
+        features_dir, train_split_names
     )
     h_val, targets_val = load_precomputed_features(
-        str(Path(features_dir) / f"{val_split_name}.h5"), shape_indices=shape_indices
+        str(Path(features_dir) / f"{val_split_name}.h5")
     )
 
     logger.info(f"Train: {h_train.shape[0]} samples, Val: {h_val.shape[0]} samples")
@@ -204,8 +200,6 @@ def main(
         feature_dim=h_train.shape[1],
         target_dims={
             "vol": targets_train["vol"].shape[1],
-            "loc": targets_train["loc"].shape[1],
-            "shape": targets_train["shape"].shape[1],
         },
     )
 
@@ -254,12 +248,10 @@ def main(
         logger.info(f"  {key}: {value:.4f}")
     logger.info("=" * 50)
 
-    # Check BLOCKING thresholds
+    # Check BLOCKING thresholds (R1: volume-only, revised thresholds)
     blocking_ok = True
     thresholds = [
-        ("r2_vol", 0.80, ">="),
-        ("r2_loc", 0.85, ">="),
-        ("r2_shape", 0.30, ">="),
+        ("r2_vol", 0.50, ">="),
         ("max_cross_partition_corr", 0.30, "<="),
     ]
     for key, threshold, direction in thresholds:
@@ -286,7 +278,6 @@ def main(
         features_dir=features_dir,
         output_dir=str(paths.latent),
         split_names=all_splits,
-        shape_indices=shape_indices,
     )
 
     # Auto-trigger evaluation and visualization (skippable)

@@ -36,14 +36,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Partition names for cross-probing (include residual)
-ALL_PARTITIONS = ["vol", "loc", "shape", "residual"]
-SUPERVISED_PARTITIONS = ["vol", "loc", "shape"]
+ALL_PARTITIONS = ["vol", "residual"]
+SUPERVISED_PARTITIONS = ["vol"]
 
 # Target key -> target group mapping
 TARGET_KEYS = {
     "vol": "volume",
-    "loc": "location",
-    "shape": "shape",
 }
 
 
@@ -191,10 +189,10 @@ def compute_dci_scores(
     z_eval = eval_data["z"]
     z_combined = np.concatenate([z_train, z_eval], axis=0)
 
-    # Build combined targets dynamically (shape dims depend on config)
+    # Build combined targets (volume only after R1)
     targets_list = []
     factor_labels = []
-    for tgt_name, tgt_key in [("vol", "volume"), ("loc", "location"), ("shape", "shape")]:
+    for tgt_name, tgt_key in TARGET_KEYS.items():
         t_train = train_data.get(f"targets/{tgt_key}")
         t_eval = eval_data.get(f"targets/{tgt_key}")
         if t_train is not None and t_eval is not None:
@@ -365,17 +363,10 @@ def compute_jacobian_analysis(
 
     # Analyze per partition
     partition_cfg = ckpt["partition_config"]
+    vol_dim = partition_cfg["vol_dim"]
     partition_indices = {
-        "vol": (0, partition_cfg["vol_dim"]),
-        "loc": (partition_cfg["vol_dim"], partition_cfg["vol_dim"] + partition_cfg["loc_dim"]),
-        "shape": (
-            partition_cfg["vol_dim"] + partition_cfg["loc_dim"],
-            partition_cfg["vol_dim"] + partition_cfg["loc_dim"] + partition_cfg["shape_dim"],
-        ),
-        "residual": (
-            partition_cfg["vol_dim"] + partition_cfg["loc_dim"] + partition_cfg["shape_dim"],
-            sdp_cfg["out_dim"],
-        ),
+        "vol": (0, vol_dim),
+        "residual": (vol_dim, sdp_cfg["out_dim"]),
     }
 
     results = {}
@@ -426,14 +417,14 @@ def _compute_partition_indices_from_h5(h5_path: str) -> dict[str, tuple[int, int
     """
     with h5py.File(h5_path, "r") as f:
         part_dims = {}
-        for name in ["vol", "loc", "shape", "residual"]:
+        for name in ["vol", "residual"]:
             if f"partitions/{name}" in f:
                 part_dims[name] = f[f"partitions/{name}"].shape[1]
 
     # Build contiguous indices
     indices = {}
     offset = 0
-    for name in ["vol", "loc", "shape", "residual"]:
+    for name in ["vol", "residual"]:
         if name in part_dims:
             indices[name] = (offset, offset + part_dims[name])
             offset += part_dims[name]

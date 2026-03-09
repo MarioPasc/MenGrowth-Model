@@ -36,24 +36,17 @@ sdp:
   spectral_norm: all
 
 partition:
-  vol_dim: 24
-  loc_dim: 12
-  shape_dim: 12
-  residual_dim: 80
+  vol_dim: 32
+  residual_dim: 96
 
 targets:
-  n_vol: 4
-  n_loc: 3
-  n_shape: 1
-  shape_indices: [0]  # sphericity only (solidity has ceiling R²=0.14, unpredictable)
+  n_vol: 1             # log(V_WT + 1) — whole-tumor volume
 
 # =============================================================================
 # Loss
 # =============================================================================
 loss:
-  lambda_vol: 20.0
-  lambda_loc: 10.0
-  lambda_shape: 30.0
+  lambda_vol: 25.0
   lambda_cov: 15.0
   lambda_var: 5.0
   lambda_dcor: 8.0

@@ -4,6 +4,9 @@
 Implements TEST_3.1 through TEST_3.7 from module_3_sdp spec.
 All tests use synthetic data — no GPU or real data required.
 
+Methodology Revision R1: vol(32) + residual(96) partition layout,
+single supervised target: log(V_WT + 1).
+
 Run fast tests:  pytest tests/growth/test_sdp.py -v -m "not slow"
 Run all tests:   pytest tests/growth/test_sdp.py -v
 """
@@ -60,12 +63,10 @@ def synthetic_features() -> torch.Tensor:
 
 @pytest.fixture
 def synthetic_targets() -> dict[str, torch.Tensor]:
-    """Synthetic semantic targets."""
+    """Synthetic semantic targets (vol only, R1 layout)."""
     torch.manual_seed(42)
     return {
-        "vol": torch.randn(BATCH_SIZE, 4),
-        "loc": torch.randn(BATCH_SIZE, 3),
-        "shape": torch.randn(BATCH_SIZE, 3),
+        "vol": torch.randn(BATCH_SIZE, 1),
     }
 
 
@@ -94,25 +95,23 @@ class TestSDPForwardPass:
     def test_partition_split_shapes(
         self, sdp_model: SDP, partition: LatentPartition, synthetic_features: torch.Tensor
     ) -> None:
-        """Partition split produces correct shapes."""
+        """Partition split produces correct shapes (R1: vol=32, residual=96)."""
         z = sdp_model(synthetic_features)
         parts = partition.split(z)
 
-        assert parts["vol"].shape == (BATCH_SIZE, 24)
-        assert parts["loc"].shape == (BATCH_SIZE, 12)
-        assert parts["shape"].shape == (BATCH_SIZE, 12)
-        assert parts["residual"].shape == (BATCH_SIZE, 80)
+        assert parts["vol"].shape == (BATCH_SIZE, 32)
+        assert parts["residual"].shape == (BATCH_SIZE, 96)
+        assert len(parts) == 2
 
     def test_sdp_with_heads_output_shapes(
         self, sdp_with_heads: SDPWithHeads, synthetic_features: torch.Tensor
     ) -> None:
-        """SDPWithHeads produces correct output shapes."""
+        """SDPWithHeads produces correct output shapes (R1: vol only)."""
         z, parts, preds = sdp_with_heads(synthetic_features)
 
         assert z.shape == (BATCH_SIZE, OUT_DIM)
-        assert preds["vol"].shape == (BATCH_SIZE, 4)
-        assert preds["loc"].shape == (BATCH_SIZE, 3)
-        assert preds["shape"].shape == (BATCH_SIZE, 3)
+        assert preds["vol"].shape == (BATCH_SIZE, 1)
+        assert len(preds) == 1
 
     def test_gradient_flow(
         self, sdp_with_heads: SDPWithHeads, synthetic_features: torch.Tensor
@@ -139,9 +138,20 @@ class TestSDPForwardPass:
             )
 
     def test_partition_from_config(self) -> None:
-        """LatentPartition.from_config creates valid partition."""
-        lp = LatentPartition.from_config(vol_dim=32, loc_dim=16, shape_dim=16, residual_dim=64)
+        """LatentPartition.from_config creates valid partition (R1 layout)."""
+        lp = LatentPartition.from_config(vol_dim=32, residual_dim=96)
         assert lp.total_dim == 128
+        assert len(lp.partitions) == 2
+        assert "vol" in lp.partitions
+        assert "residual" in lp.partitions
+
+    def test_partition_from_config_backward_compat(self) -> None:
+        """from_config ignores old loc_dim/shape_dim kwargs."""
+        lp = LatentPartition.from_config(
+            vol_dim=32, residual_dim=96, loc_dim=8, shape_dim=12
+        )
+        assert lp.total_dim == 128
+        assert len(lp.partitions) == 2
 
 
 # ===========================================================================
@@ -218,9 +228,8 @@ class TestLossComputation:
         """Covariance loss is finite and >= 0."""
         loss_fn = CovarianceLoss()
         partitions = {
-            "vol": torch.randn(100, 24),
-            "loc": torch.randn(100, 8),
-            "shape": torch.randn(100, 12),
+            "vol": torch.randn(100, 32),
+            "residual": torch.randn(100, 96),
         }
         loss = loss_fn(partitions)
         assert torch.isfinite(loss)
@@ -243,8 +252,8 @@ class TestLossComputation:
 
     def test_dcor_in_range(self) -> None:
         """Distance correlation ∈ [0, 1]."""
-        x = torch.randn(100, 24)
-        y = torch.randn(100, 8)
+        x = torch.randn(100, 32)
+        y = torch.randn(100, 96)
         dcor = distance_correlation(x, y)
         assert 0 <= dcor <= 1
 
@@ -259,9 +268,8 @@ class TestLossComputation:
         """Distance correlation loss is finite."""
         loss_fn = DistanceCorrelationLoss()
         partitions = {
-            "vol": torch.randn(100, 24),
-            "loc": torch.randn(100, 8),
-            "shape": torch.randn(100, 12),
+            "vol": torch.randn(100, 32),
+            "residual": torch.randn(100, 96),
         }
         mean_dcor, details = loss_fn(partitions)
         assert torch.isfinite(mean_dcor)
@@ -325,12 +333,9 @@ class TestTrainingConvergence:
         h = torch.randn(n, IN_DIM)
 
         # Create targets that are linearly predictable from h
-        W_true = torch.randn(IN_DIM, 10) * 0.1
-        all_targets = h @ W_true
+        W_true = torch.randn(IN_DIM, 1) * 0.1
         targets = {
-            "vol": all_targets[:, :4],
-            "loc": all_targets[:, 4:7],
-            "shape": all_targets[:, 7:10],
+            "vol": h @ W_true,
         }
 
         # Normalize
@@ -377,22 +382,17 @@ class TestSemanticQuality:
 
     @pytest.mark.slow
     def test_r2_thresholds(self) -> None:
-        """R² meets minimum thresholds on synthetic data.
+        """R² meets minimum threshold on synthetic data (vol only).
 
-        Targets are low-rank linear projections spread across all 768 input dims.
+        Target is a low-rank linear projection spread across all 768 input dims.
         n_train must be well above n_features (768) to avoid overfitting in the
-        underdetermined regime. With n_train=2000, the rank-2 signal generalizes
-        well despite the high-dimensional input.
+        underdetermined regime.
         """
         torch.manual_seed(42)
 
         n_train, n_val = 2000, 500
         h_all = torch.randn(n_train + n_val, IN_DIM)
 
-        # Each target group depends on 2 latent factors spanning all 768 dims.
-        # Low-rank (rank 2) per group makes targets easily learnable through
-        # the SN-constrained bottleneck, while still requiring the network to
-        # learn meaningful projections from high-dimensional input.
         n = n_train + n_val
         noise = 0.02
 
@@ -405,9 +405,7 @@ class TestSemanticQuality:
             return factors @ proj + noise * torch.randn(n, n_targets)
 
         targets_all = {
-            "vol": make_targets(4),
-            "loc": make_targets(3),
-            "shape": make_targets(3),
+            "vol": make_targets(1),
         }
 
         h_train, h_val = h_all[:n_train], h_all[n_train:]
@@ -430,14 +428,11 @@ class TestSemanticQuality:
         model = SDPWithHeads.from_config(dropout=0.0)
 
         # Warm up SN power iteration so weights are properly normalized
-        # from the start (power iteration only runs in training mode).
         model.train()
         for _ in range(50):
             model(torch.randn(4, IN_DIM))
 
         # Semantic-only loss — testing informativeness, not disentanglement
-        # (that's TEST_3.6). Regularization competes with semantic quality
-        # on synthetic data.
         loss_fn = SDPLoss(
             use_curriculum=False,
             lambda_cov=0.0,
@@ -462,7 +457,7 @@ class TestSemanticQuality:
         with torch.no_grad():
             _, _, preds_val = model(h_val)
 
-        for key, threshold in [("vol", 0.80), ("loc", 0.85), ("shape", 0.30)]:
+        for key, threshold in [("vol", 0.80)]:
             pred = preds_val[key]
             target = targets_val[key]
             ss_res = ((pred - target) ** 2).sum()
@@ -483,23 +478,18 @@ class TestDisentanglementQuality:
         torch.manual_seed(42)
         n = 500
         partitions = {
-            "vol": torch.randn(n, 24),
-            "loc": torch.randn(n, 8),
-            "shape": torch.randn(n, 12),
+            "vol": torch.randn(n, 32),
+            "residual": torch.randn(n, 96),
         }
 
-        # Check all pairs
-        for name_i in SUPERVISED_PARTITIONS:
-            for name_j in SUPERVISED_PARTITIONS:
-                if name_i >= name_j:
-                    continue
-                zi = partitions[name_i]
-                zj = partitions[name_j]
-                corr = torch.corrcoef(torch.cat([zi.T, zj.T], dim=0))
-                di = zi.shape[1]
-                cross_block = corr[:di, di:]
-                max_corr = cross_block.abs().max().item()
-                assert max_corr < 0.30, f"Cross-corr({name_i}, {name_j})={max_corr:.4f} >= 0.30"
+        # Check vol vs residual
+        zi = partitions["vol"]
+        zj = partitions["residual"]
+        corr = torch.corrcoef(torch.cat([zi.T, zj.T], dim=0))
+        di = zi.shape[1]
+        cross_block = corr[:di, di:]
+        max_corr = cross_block.abs().max().item()
+        assert max_corr < 0.30, f"Cross-corr(vol, residual)={max_corr:.4f} >= 0.30"
 
     def test_low_dcor_independent(self) -> None:
         """dCor is low for independent random partitions.
@@ -516,12 +506,7 @@ class TestDisentanglementQuality:
         assert dcor < 0.10, f"dCor for independent data = {dcor:.4f} >= 0.10"
 
     def test_per_dim_variance_sufficient(self) -> None:
-        """Per-dimension variance > 0.3 for >= 90% of dims on well-spread data.
-
-        TEST_3.6 spec: checks that standard-normal latent vectors maintain
-        sufficient per-dimension variance. The real threshold is verified
-        in generate_quality_report() on trained embeddings.
-        """
+        """Per-dimension variance > 0.3 for >= 90% of dims on well-spread data."""
         torch.manual_seed(42)
         n = 500
         z = torch.randn(n, 128)  # std=1.0 per dim
@@ -597,18 +582,16 @@ class TestInlineValidationMetrics:
 
     @staticmethod
     def _make_config() -> "DictConfig":
-        """Create minimal SDPLitModule config."""
+        """Create minimal SDPLitModule config (R1 layout)."""
         from omegaconf import OmegaConf
 
         return OmegaConf.create(
             {
                 "sdp": {"in_dim": 768, "hidden_dim": 512, "out_dim": 128, "dropout": 0.1},
-                "partition": {"vol_dim": 24, "loc_dim": 8, "shape_dim": 12, "residual_dim": 84},
-                "targets": {"n_vol": 4, "n_loc": 3, "n_shape": 3},
+                "partition": {"vol_dim": 32, "residual_dim": 96},
+                "targets": {"n_vol": 1},
                 "loss": {
-                    "lambda_vol": 20.0,
-                    "lambda_loc": 12.0,
-                    "lambda_shape": 15.0,
+                    "lambda_vol": 25.0,
                     "lambda_cov": 5.0,
                     "lambda_var": 5.0,
                     "lambda_dcor": 2.0,
@@ -642,9 +625,7 @@ class TestInlineValidationMetrics:
         n = 200
         h_train = torch.randn(n, 768)
         targets_train = {
-            "vol": torch.randn(n, 4),
-            "loc": torch.randn(n, 3),
-            "shape": torch.randn(n, 3),
+            "vol": torch.randn(n, 1),
         }
         module.setup_data(h_train, targets_train)
 
@@ -662,16 +643,11 @@ class TestInlineValidationMetrics:
         module.validation_step(batch, 0)
         module.log = original_log
 
-        # Check expected keys are logged
+        # Check expected keys are logged (R1: vol only, vol-residual pairs)
         expected_keys = [
             "val/loss_total",
             "val/r2_vol",
-            "val/r2_loc",
-            "val/r2_shape",
-            "val/r2_mean",
-            "val/dcor_vol_loc",
-            "val/dcor_vol_shape",
-            "val/dcor_loc_shape",
+            "val/dcor_vol_residual",
             "val/max_cross_partition_corr",
             "val/pct_dims_std_gt_03",
             "val/pct_dims_std_gt_05",

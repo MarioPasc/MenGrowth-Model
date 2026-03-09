@@ -98,11 +98,8 @@ loss:
   lambda_dice: 1.0
   lambda_ce: 1.0
 
-  # Auxiliary semantic loss weights (per-feature)
-  # Note: Shape is harder to predict (R² ~0.25), so reduced weight
+  # Auxiliary semantic loss weight (volume-only after R1)
   lambda_volume: 1.0         # Volume prediction weight
-  lambda_location: 1.0       # Location prediction weight
-  lambda_shape: 0.5          # Shape prediction weight (reduced for harder task)
 
 # Probe evaluation (GP with linear + RBF kernels)
 probe:

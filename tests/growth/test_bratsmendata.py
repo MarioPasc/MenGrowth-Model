@@ -276,10 +276,11 @@ class TestBraTSDatasetH5:
         dataset = BraTSDatasetH5(h5_path=h5_fixture, compute_semantic=True)
         sample = dataset[0]
         features = sample["semantic_features"]
-        assert features["volume"].shape == torch.Size([4])
+        # R1: volume is scalar WT only, location kept for GP covariate, shape removed
+        assert features["volume"].shape == torch.Size([1])
         assert features["location"].shape == torch.Size([3])
-        assert features["shape"].shape == torch.Size([3])
-        assert features["all"].shape == torch.Size([10])
+        assert "shape" not in features
+        assert features["all"].shape == torch.Size([1])  # all = volume_wt
 
     def test_subject_ids_property(self, h5_fixture: Path):
         dataset = BraTSDatasetH5(
@@ -413,7 +414,8 @@ class TestBraTSDatasetH5Longitudinal:
         )
         sample = dataset[0]
         assert "semantic_features" in sample
-        assert sample["semantic_features"]["all"].shape == torch.Size([10])
+        # R1: all = volume_wt (scalar)
+        assert sample["semantic_features"]["all"].shape == torch.Size([1])
 
 
 # =========================================================================

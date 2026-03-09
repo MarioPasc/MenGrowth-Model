@@ -3,9 +3,9 @@
 Trajectory dataset for GP-based growth prediction.
 
 Loads trajectories.json and organizes into PatientTrajectory dataclass objects.
-Supports LOPO-CV splits via lopo_split(held_out_id).
+Trajectories consist of 32-dim volume latent vectors (z_vol) per timepoint,
+with location centroid as static covariate.
 
-Unlike the former Neural ODE TrajectoryDataset (which generated pairwise
-temporal combinations), this operates on observation-level data directly —
-GP models do not require transition pairs.
+Supports LOPO-CV splits via lopo_split(held_out_id).
+GP models operate on observation-level data directly (no transition pairs).
 """

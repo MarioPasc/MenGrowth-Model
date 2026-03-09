@@ -4,6 +4,9 @@
 # =============================================================================
 # Hardware-optimized for Picasso: A100 80GB GPU, 16 CPUs, 64G RAM.
 # Uses H5 backend for fast I/O (single file vs 5000 NIfTIs).
+#
+# Methodology Revision R1: vol(32) + residual(96) partition only.
+# Single supervised target: log(V_WT + 1).
 
 # =============================================================================
 # Paths (Picasso)
@@ -36,23 +39,17 @@ sdp:
   spectral_norm: all
 
 partition:
-  vol_dim: 24
-  loc_dim: 8
-  shape_dim: 12
-  residual_dim: 84
+  vol_dim: 32
+  residual_dim: 96
 
 targets:
-  n_vol: 4
-  n_loc: 3
-  n_shape: 3
+  n_vol: 1    # log(V_WT + 1)
 
 # =============================================================================
 # Loss
 # =============================================================================
 loss:
-  lambda_vol: 20.0
-  lambda_loc: 12.0
-  lambda_shape: 15.0
+  lambda_vol: 25.0
   lambda_cov: 5.0
   lambda_var: 5.0
   lambda_dcor: 2.0

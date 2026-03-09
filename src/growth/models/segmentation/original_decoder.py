@@ -353,9 +353,7 @@ class LoRAOriginalDecoderModel(nn.Module):
 
             self.semantic_heads = AuxiliarySemanticHeads(
                 input_dim=768,
-                volume_dim=4,
-                location_dim=3,
-                shape_dim=3,
+                volume_dim=1,
             )
         else:
             self.semantic_heads = None
@@ -376,7 +374,7 @@ class LoRAOriginalDecoderModel(nn.Module):
 
         Returns:
             If return_semantics=True: Dict with 'logits', 'features', and
-                optionally 'pred_volume', 'pred_location', 'pred_shape'.
+                optionally 'pred_volume' (R1: location/shape heads removed).
             If return_features=True: (logits, features [B, 768]).
             Otherwise: Segmentation logits [B, 3, 128, 128, 128].
         """

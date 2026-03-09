@@ -333,9 +333,7 @@ def _create_original_decoder_model(
 
             model.semantic_heads = AuxiliarySemanticHeads(
                 input_dim=768,
-                volume_dim=4,
-                location_dim=3,
-                shape_dim=3,
+                volume_dim=1,
             )
             logger.info("Baseline model: semantic heads enabled")
 

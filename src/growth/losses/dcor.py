@@ -119,7 +119,7 @@ class DistanceCorrelationLoss(nn.Module):
 
     def __init__(
         self,
-        partition_names: list[str] = ("vol", "loc", "shape"),
+        partition_names: list[str] = ("vol", "residual"),
     ) -> None:
         super().__init__()
         self.partition_names = list(partition_names)

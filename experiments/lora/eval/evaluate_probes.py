@@ -175,11 +175,12 @@ def evaluate_per_domain_probes(
 
         results[domain] = summary
 
-        logger.info(
-            f"{domain.upper()} GP-Linear R²: vol={summary['r2_volume_linear']:.4f}, "
-            f"loc={summary['r2_location_linear']:.4f}, "
-            f"shape={summary['r2_shape_linear']:.4f}"
-        )
+        # Log primary metric (volume)
+        vol_r2_str = f"vol={summary.get('r2_volume_linear', 0):.4f}"
+        logger.info(f"{domain.upper()} GP-Linear R²: {vol_r2_str}")
+        # Location is diagnostic (logged at DEBUG)
+        if 'r2_location_linear' in summary:
+            logger.debug(f"{domain.upper()} GP-Linear R² loc={summary['r2_location_linear']:.4f}")
         logger.info(
             f"{domain.upper()} effective rank: {summary['effective_rank']:.1f}, "
             f"dead dims: {summary['n_dead_dims']}"
@@ -240,9 +241,7 @@ def evaluate_cross_domain_probes(
     results["gli_to_men"] = probes_gli.get_summary(gli_on_men)
 
     logger.info(
-        f"GLI→MEN R²: vol={results['gli_to_men']['r2_volume_linear']:.4f}, "
-        f"loc={results['gli_to_men']['r2_location_linear']:.4f}, "
-        f"shape={results['gli_to_men']['r2_shape_linear']:.4f}"
+        f"GLI→MEN R²: vol={results['gli_to_men'].get('r2_volume_linear', 0):.4f}"
     )
 
     # MEN → GLI
@@ -258,9 +257,7 @@ def evaluate_cross_domain_probes(
     results["men_to_gli"] = probes_men.get_summary(men_on_gli)
 
     logger.info(
-        f"MEN→GLI R²: vol={results['men_to_gli']['r2_volume_linear']:.4f}, "
-        f"loc={results['men_to_gli']['r2_location_linear']:.4f}, "
-        f"shape={results['men_to_gli']['r2_shape_linear']:.4f}"
+        f"MEN→GLI R²: vol={results['men_to_gli'].get('r2_volume_linear', 0):.4f}"
     )
 
     return results
@@ -331,28 +328,27 @@ def evaluate_probes_enhanced(
     summary["num_low_variance_dims"] = int((variance < 0.01).sum())
     summary["num_collapsed_dims"] = int((variance < 1e-6).sum())
 
-    # Per-dimension details
-    summary["r2_volume_per_dim_linear"] = results.linear["volume"].r2_per_dim.tolist()
-    summary["r2_volume_per_dim_rbf"] = results.rbf["volume"].r2_per_dim.tolist()
-    summary["r2_location_per_dim_linear"] = results.linear["location"].r2_per_dim.tolist()
-    summary["r2_location_per_dim_rbf"] = results.rbf["location"].r2_per_dim.tolist()
-    summary["r2_shape_per_dim_linear"] = results.linear["shape"].r2_per_dim.tolist()
-    summary["r2_shape_per_dim_rbf"] = results.rbf["shape"].r2_per_dim.tolist()
+    # Per-dimension details (only for available targets)
+    for target_name in targets_probe:
+        if target_name in results.linear:
+            summary[f"r2_{target_name}_per_dim_linear"] = results.linear[target_name].r2_per_dim.tolist()
+        if target_name in results.rbf:
+            summary[f"r2_{target_name}_per_dim_rbf"] = results.rbf[target_name].r2_per_dim.tolist()
 
     # Log results
     logger.info("\n" + "=" * 60)
     logger.info(f"GP Probe Results for {condition_name}")
     logger.info("=" * 60)
     logger.info("\nGP-Linear Probes:")
-    logger.info(f"  R² Volume:   {summary['r2_volume_linear']:.4f}")
-    logger.info(f"  R² Location: {summary['r2_location_linear']:.4f}")
-    logger.info(f"  R² Shape:    {summary['r2_shape_linear']:.4f}")
-    logger.info(f"  R² Mean:     {summary['r2_mean_linear']:.4f}")
+    logger.info(f"  R² Volume:   {summary.get('r2_volume_linear', 0):.4f}")
+    if "r2_location_linear" in summary:
+        logger.debug(f"  R² Location: {summary['r2_location_linear']:.4f}")
+    logger.info(f"  R² Mean:     {summary.get('r2_mean_linear', 0):.4f}")
     logger.info("\nGP-RBF Probes:")
-    logger.info(f"  R² Volume:   {summary['r2_volume_rbf']:.4f}")
-    logger.info(f"  R² Location: {summary['r2_location_rbf']:.4f}")
-    logger.info(f"  R² Shape:    {summary['r2_shape_rbf']:.4f}")
-    logger.info(f"  R² Mean:     {summary['r2_mean_rbf']:.4f}")
+    logger.info(f"  R² Volume:   {summary.get('r2_volume_rbf', 0):.4f}")
+    if "r2_location_rbf" in summary:
+        logger.debug(f"  R² Location: {summary['r2_location_rbf']:.4f}")
+    logger.info(f"  R² Mean:     {summary.get('r2_mean_rbf', 0):.4f}")
     logger.info("=" * 60 + "\n")
 
     # Save metrics
@@ -361,26 +357,24 @@ def evaluate_probes_enhanced(
         json.dump(summary, f, indent=2)
     logger.info(f"Saved GP metrics to {metrics_path}")
 
-    # Also update the original metrics.json
+    # Also update the original metrics.json (dynamic based on available targets)
     original_metrics = {
-        "r2_volume": summary["r2_volume_linear"],
-        "r2_location": summary["r2_location_linear"],
-        "r2_shape": summary["r2_shape_linear"],
-        "r2_mean": summary["r2_mean_linear"],
-        "r2_volume_rbf": summary["r2_volume_rbf"],
-        "r2_location_rbf": summary["r2_location_rbf"],
-        "r2_shape_rbf": summary["r2_shape_rbf"],
-        "r2_mean_rbf": summary["r2_mean_rbf"],
-        "r2_volume_per_dim": summary["r2_volume_per_dim_linear"],
-        "r2_location_per_dim": summary["r2_location_per_dim_linear"],
-        "r2_shape_per_dim": summary["r2_shape_per_dim_linear"],
-        "mse_volume": summary["mse_volume_linear"],
-        "mse_location": summary["mse_location_linear"],
-        "mse_shape": summary["mse_shape_linear"],
+        "r2_volume": summary.get("r2_volume_linear", 0),
+        "r2_mean": summary.get("r2_mean_linear", 0),
+        "r2_volume_rbf": summary.get("r2_volume_rbf", 0),
+        "r2_mean_rbf": summary.get("r2_mean_rbf", 0),
         "variance_mean": summary["variance_mean"],
         "variance_min": summary["variance_min"],
         "variance_std": summary["variance_std"],
     }
+    # Add per-target metrics if available
+    for target_name in targets_probe:
+        if f"r2_{target_name}_linear" in summary:
+            original_metrics[f"r2_{target_name}"] = summary[f"r2_{target_name}_linear"]
+        if f"r2_{target_name}_per_dim_linear" in summary:
+            original_metrics[f"r2_{target_name}_per_dim"] = summary[f"r2_{target_name}_per_dim_linear"]
+        if f"mse_{target_name}_linear" in summary:
+            original_metrics[f"mse_{target_name}"] = summary[f"mse_{target_name}_linear"]
     with open(condition_dir / "metrics.json", "w") as f:
         json.dump(original_metrics, f, indent=2)
 
@@ -389,30 +383,17 @@ def evaluate_probes_enhanced(
     with open(probes_path, "wb") as f:
         pickle.dump(probes, f)
 
-    # Save predictions for visualization
-    predictions = {
-        "volume": {
-            "linear_mean": results.linear["volume"].predictions.tolist(),
-            "linear_std": results.linear["volume"].predictive_std.tolist(),
-            "rbf_mean": results.rbf["volume"].predictions.tolist(),
-            "rbf_std": results.rbf["volume"].predictive_std.tolist(),
-            "ground_truth": targets_test["volume"].tolist(),
-        },
-        "location": {
-            "linear_mean": results.linear["location"].predictions.tolist(),
-            "linear_std": results.linear["location"].predictive_std.tolist(),
-            "rbf_mean": results.rbf["location"].predictions.tolist(),
-            "rbf_std": results.rbf["location"].predictive_std.tolist(),
-            "ground_truth": targets_test["location"].tolist(),
-        },
-        "shape": {
-            "linear_mean": results.linear["shape"].predictions.tolist(),
-            "linear_std": results.linear["shape"].predictive_std.tolist(),
-            "rbf_mean": results.rbf["shape"].predictions.tolist(),
-            "rbf_std": results.rbf["shape"].predictive_std.tolist(),
-            "ground_truth": targets_test["shape"].tolist(),
-        },
-    }
+    # Save predictions for visualization (dynamic based on available targets)
+    predictions = {}
+    for target_name in targets_test:
+        if target_name in results.linear and target_name in results.rbf:
+            predictions[target_name] = {
+                "linear_mean": results.linear[target_name].predictions.tolist(),
+                "linear_std": results.linear[target_name].predictive_std.tolist(),
+                "rbf_mean": results.rbf[target_name].predictions.tolist(),
+                "rbf_std": results.rbf[target_name].predictive_std.tolist(),
+                "ground_truth": targets_test[target_name].tolist(),
+            }
     with open(condition_dir / "predictions_enhanced.json", "w") as f:
         json.dump(predictions, f)
 

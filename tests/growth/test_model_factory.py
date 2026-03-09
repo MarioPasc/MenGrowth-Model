@@ -140,8 +140,9 @@ class TestBaselineForwardWithSemantics:
         assert "logits" in result
         assert "features" in result
         assert "pred_volume" in result
-        assert "pred_location" in result
-        assert "pred_shape" in result
+        # R1: location and shape heads removed
+        assert "pred_location" not in result
+        assert "pred_shape" not in result
 
     def test_features_shape(self):
         """Features should be [B, 768]."""
