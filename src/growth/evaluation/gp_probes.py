@@ -371,12 +371,6 @@ class GPSemanticProbes:
         r2_ci_samples: Posterior samples for R² credible intervals.
     """
 
-    FEATURE_DIMS = {
-        "volume": 4,
-        "location": 3,
-        "shape": 3,
-    }
-
     def __init__(
         self,
         input_dim: int = 768,
@@ -393,6 +387,7 @@ class GPSemanticProbes:
 
         self._linear_probes: dict[str, GPProbe] = {}
         self._rbf_probes: dict[str, GPProbe] = {}
+        self._target_names: list[str] = []
 
     def fit(
         self,
@@ -404,19 +399,14 @@ class GPSemanticProbes:
         Args:
             X: Encoder features [N, input_dim].
             targets: Dict mapping feature names to target arrays.
-                Must contain 'volume', 'location', and 'shape'.
+                Probes are fitted for every key present in targets.
 
         Returns:
             Self for method chaining.
-
-        Raises:
-            ValueError: If any required target is missing.
         """
-        for name in self.FEATURE_DIMS:
-            if name not in targets:
-                raise ValueError(f"Missing target: {name}")
+        self._target_names = list(targets.keys())
 
-        for name in self.FEATURE_DIMS:
+        for name in self._target_names:
             logger.info(f"Fitting GP probes for {name}...")
 
             self._linear_probes[name] = GPProbe(
@@ -437,7 +427,7 @@ class GPSemanticProbes:
             self._rbf_probes[name].fit(X, targets[name])
 
         logger.info(
-            f"Fitted {len(self.FEATURE_DIMS)} semantic GP probe pairs on {X.shape[0]} samples"
+            f"Fitted {len(self._target_names)} semantic GP probe pairs on {X.shape[0]} samples"
         )
         return self
 
@@ -459,9 +449,10 @@ class GPSemanticProbes:
         rbf_results = {}
         nonlinearity_evidence = {}
 
-        for name in self.FEATURE_DIMS:
+        for name in self._target_names:
             if name not in targets:
-                raise ValueError(f"Missing target: {name}")
+                logger.warning(f"Target '{name}' not found in test data, skipping")
+                continue
 
             linear_results[name] = self._linear_probes[name].evaluate(X, targets[name])
             rbf_results[name] = self._rbf_probes[name].evaluate(X, targets[name])

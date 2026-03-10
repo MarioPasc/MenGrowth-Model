@@ -100,11 +100,23 @@ echo ""
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ========================================================================
-# PIPELINE (per condition)
+# PIPELINE (per condition) — with resume/skip logic
 # ========================================================================
 echo "=========================================="
 echo "PIPELINE: ${COND}"
 echo "=========================================="
+
+# Resolve output directory from config YAML
+OUTPUT_DIR=$(python -c "
+import yaml, sys
+with open('${CONFIG_PATH}') as f:
+    cfg = yaml.safe_load(f)
+print(cfg['experiment']['output_dir'])
+")
+COND_DIR="${OUTPUT_DIR}/conditions/${COND}"
+
+echo "Output dir:  ${OUTPUT_DIR}"
+echo "Cond dir:    ${COND_DIR}"
 
 step_start() { STEP_T0=$(date +%s); }
 step_done() {
@@ -112,23 +124,35 @@ step_done() {
     echo "  [OK] Done in ${elapsed}s"
 }
 
-# Step 1: Train (single GPU)
+# Step 1: Train (single GPU) — skip if best_model.pt exists
 echo "[1/7] Training ${COND}..."
-step_start
-python -m experiments.lora.run \
-    --config "${CONFIG_PATH}" \
-    train --condition "${COND}"
-step_done
+if [ -f "${COND_DIR}/best_model.pt" ]; then
+    echo "  [SKIP] best_model.pt exists, training already complete"
+else
+    step_start
+    python -m experiments.lora.run \
+        --config "${CONFIG_PATH}" \
+        train --condition "${COND}"
+    step_done
+fi
 
-# Step 2: Extract features
+# Step 2: Extract features — skip if feature files exist
+#   Dual-domain: features/<domain>_<split>.pt  (4 files: men_test, men_probe, gli_test, gli_probe)
+#   Single-domain: features_probe.pt, features_test.pt
 echo "[2/7] Extracting features for ${COND}..."
-step_start
-python -m experiments.lora.run \
-    --config "${CONFIG_PATH}" \
-    extract --condition "${COND}"
-step_done
+FEATURES_DIR="${COND_DIR}/features"
+if ([ -f "${FEATURES_DIR}/features_men_test.pt" ] && [ -f "${FEATURES_DIR}/features_gli_test.pt" ]) || \
+   ([ -f "${COND_DIR}/features_probe.pt" ] && [ -f "${COND_DIR}/features_test.pt" ]); then
+    echo "  [SKIP] Feature files exist, extraction already complete"
+else
+    step_start
+    python -m experiments.lora.run \
+        --config "${CONFIG_PATH}" \
+        extract --condition "${COND}"
+    step_done
+fi
 
-# Step 3: Domain gap
+# Step 3: Domain gap — always re-run (cheap, non-fatal)
 echo "[3/7] Domain gap analysis for ${COND}..."
 step_start
 python -m experiments.lora.run \
@@ -136,21 +160,31 @@ python -m experiments.lora.run \
     domain-gap --condition "${COND}" || echo "  [WARN] Domain gap failed (non-fatal)"
 step_done
 
-# Step 4: Evaluate probes
+# Step 4: Evaluate probes — skip if probe results exist
+#   Dual-domain: probes/all_probes.json
+#   Single-domain: metrics_enhanced.json
 echo "[4/7] Evaluating probes for ${COND}..."
-step_start
-python -m experiments.lora.run \
-    --config "${CONFIG_PATH}" \
-    probes --condition "${COND}"
-step_done
+if [ -f "${COND_DIR}/probes/all_probes.json" ] || [ -f "${COND_DIR}/metrics_enhanced.json" ]; then
+    echo "  [SKIP] Probe results exist, evaluation already complete"
+else
+    step_start
+    python -m experiments.lora.run \
+        --config "${CONFIG_PATH}" \
+        probes --condition "${COND}"
+    step_done
+fi
 
-# Step 5: Test Dice
+# Step 5: Test Dice — skip if dice results exist
 echo "[5/7] Computing test Dice for ${COND}..."
-step_start
-python -m experiments.lora.run \
-    --config "${CONFIG_PATH}" \
-    dice --condition "${COND}"
-step_done
+if [ -f "${COND_DIR}/dice/dice_summary.json" ]; then
+    echo "  [SKIP] dice_summary.json exists, Dice already computed"
+else
+    step_start
+    python -m experiments.lora.run \
+        --config "${CONFIG_PATH}" \
+        dice --condition "${COND}"
+    step_done
+fi
 
 # Step 6: Feature quality (CPU, reads cached features)
 echo "[6/7] Feature quality evaluation for ${COND}..."

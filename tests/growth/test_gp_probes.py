@@ -182,14 +182,20 @@ def test_high_r2_for_linear_data():
     assert results.r2 > 0.90, f"R²={results.r2:.4f} < 0.90 on clean linear data"
 
 
-def test_missing_target_raises():
-    """GPSemanticProbes raises ValueError for missing targets."""
-    probes = GPSemanticProbes(input_dim=768)
-    X = np.random.randn(100, 768)
-    targets = {"volume": np.random.randn(100, 4)}
+def test_partial_targets_accepted():
+    """GPSemanticProbes fits on any subset of targets (R1: dynamic)."""
+    np.random.seed(42)
+    probes = GPSemanticProbes(input_dim=64, n_restarts=1, r2_ci_samples=0)
+    X = np.random.randn(100, 64)
+    targets = {"volume": np.random.randn(100, 1)}
 
-    with pytest.raises(ValueError, match="Missing target"):
-        probes.fit(X, targets)
+    probes.fit(X[:80], targets={k: v[:80] for k, v in targets.items()})
+    results = probes.evaluate(X[80:], targets={k: v[80:] for k, v in targets.items()})
+    summary = probes.get_summary(results)
+
+    assert "r2_volume_linear" in summary
+    assert "r2_mean_linear" in summary
+    assert "r2_shape_linear" not in summary
 
 
 def test_get_summary_keys():
