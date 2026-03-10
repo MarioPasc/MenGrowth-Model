@@ -1225,8 +1225,6 @@ def train_condition(
         "lambda_aux_eff",
         "variance_hinge",
         "probe_vol_r2",
-        "probe_loc_r2",
-        "probe_shape_r2",
         "probe_mean_r2",
         # Per-N-epoch diagnostics (empty on non-diagnostic epochs)
         "diag_mmd_squared",
@@ -1324,11 +1322,7 @@ def train_condition(
                 probe_metrics = evaluate_feature_quality_inline(model, men_val, device, use_amp)
                 model.train()
                 if probe_metrics:
-                    logger.info(
-                        f"  Probe R²: vol={probe_metrics['probe_vol_r2']:.3f}, "
-                        f"loc={probe_metrics['probe_loc_r2']:.3f}, "
-                        f"shape={probe_metrics['probe_shape_r2']:.3f}"
-                    )
+                    logger.info(f"  Probe R²: vol={probe_metrics['probe_vol_r2']:.3f}")
 
         # Per-N-epoch diagnostics (domain gap, effective rank)
         diag_metrics: dict[str, float] = {}
@@ -1377,8 +1371,6 @@ def train_condition(
             lambda_aux_eff,
             train_metrics.get("variance_hinge", ""),
             probe_metrics.get("probe_vol_r2", ""),
-            probe_metrics.get("probe_loc_r2", ""),
-            probe_metrics.get("probe_shape_r2", ""),
             probe_metrics.get("probe_mean_r2", ""),
             # Diagnostic columns (empty on non-diagnostic epochs)
             diag_metrics.get("diag_mmd_squared", ""),
