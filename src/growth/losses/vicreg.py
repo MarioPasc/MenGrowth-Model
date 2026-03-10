@@ -29,9 +29,8 @@ class CovarianceLoss(nn.Module):
 
     Example:
         >>> loss_fn = CovarianceLoss()
-        >>> partitions = {"vol": torch.randn(100, 24),
-        ...               "loc": torch.randn(100, 8),
-        ...               "shape": torch.randn(100, 12)}
+        >>> partitions = {"vol": torch.randn(100, 32),
+        ...               "residual": torch.randn(100, 96)}
         >>> loss = loss_fn(partitions)
     """
 

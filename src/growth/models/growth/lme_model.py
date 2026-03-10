@@ -2,7 +2,7 @@
 """
 Linear Mixed-Effects (LME) baseline growth model (Model A).
 
-Per-dimension LME on z_vol ∈ ℝ²⁴:
+Per-dimension LME on z_vol ∈ ℝ³²:
   z_d(t) = (β₀ + b₀ᵢ) + (β₁ + b₁ᵢ) · t + ε
 
 Fitted via REML (statsmodels.MixedLM). Patient-specific predictions via BLUP.

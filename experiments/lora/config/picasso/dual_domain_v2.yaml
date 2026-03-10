@@ -1,7 +1,17 @@
+# Dual-domain LoRA experiment v2 (Methodology Revision R1)
+#
+# Changes from v1:
+#   - Auxiliary semantic heads predict whole-tumor volume only (was vol+loc+shape)
+#   - Feature extraction saves volume + location targets (shape removed)
+#   - Probe evaluation: volume R² primary, location diagnostic
+#   - lambda_aux kept at 0.3 (single clean volume signal replaces noisy 3-target sum)
+#
+# See: docs/growth-related/domain-gli-men/METHODOLOGY_REVISION_R1.md
+
 experiment:
-  name: dual_domain_v1
+  name: dual_domain_v2
   seed: 42
-  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/lora_dual_domain_v1
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/lora_dual_domain_v2
 
 paths:
   checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
@@ -21,7 +31,7 @@ conditions:
     use_semantic_heads: false
     description: "Frozen encoder baseline (original decoder)"
 
-  # LoRA r8 + VICReg + dual-domain MEN+GLI
+  # LoRA r8 + VICReg + dual-domain MEN+GLI (volume-only aux heads)
   - name: dual_r8
     lora_rank: 8
     dual_domain: true
@@ -29,9 +39,9 @@ conditions:
     target_stages: [3, 4]
     use_vicreg: true
     use_semantic_heads: true
-    description: "LoRA r8 + VICReg + semantic heads + dual-domain"
+    description: "LoRA r8 + VICReg + vol-only semantic heads + dual-domain (R1)"
 
-  # LoRA r8 + VICReg + single-domain MEN only
+  # LoRA r8 + VICReg + single-domain MEN only (volume-only aux heads)
   - name: men_r8
     lora_rank: 8
     dual_domain: false
@@ -39,7 +49,7 @@ conditions:
     target_stages: [3, 4]
     use_vicreg: true
     use_semantic_heads: true
-    description: "LoRA r8 + VICReg + semantic heads + MEN only"
+    description: "LoRA r8 + VICReg + vol-only semantic heads + MEN only (R1)"
 
 training:
   max_epochs: 100
@@ -53,7 +63,7 @@ training:
   use_amp: true
   decoder_type: original
   use_semantic_heads: true
-  lambda_aux: 0.3
+  lambda_aux: 0.3            # Kept at 0.3 — removing noisy shape/loc gradients is itself beneficial
   aux_warmup_epochs: 5
   aux_warmup_duration: 10
   gradient_clip: 1.0
@@ -67,7 +77,7 @@ training:
 loss:
   lambda_dice: 1.0
   lambda_ce: 1.0
-  lambda_volume: 1.0
+  lambda_volume: 1.0          # Volume target: log(V_WT + 1), scalar
 
 feature_extraction:
   batch_size: 2

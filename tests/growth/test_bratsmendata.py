@@ -199,9 +199,7 @@ class TestSplitSubjectsMulti:
 
     def test_basic_split(self):
         subjects = [f"BraTS-MEN-{i:05d}-000" for i in range(100)]
-        splits = split_subjects_multi(
-            subjects, {"train": 60, "val": 20, "test": 20}, seed=42
-        )
+        splits = split_subjects_multi(subjects, {"train": 60, "val": 20, "test": 20}, seed=42)
         assert len(splits["train"]) == 60
         assert len(splits["val"]) == 20
         assert len(splits["test"]) == 20
@@ -236,9 +234,7 @@ class TestBraTSDatasetH5:
         assert len(dataset) == 10
 
     def test_init_with_split(self, h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=h5_fixture, split="lora_train", compute_semantic=False
-        )
+        dataset = BraTSDatasetH5(h5_path=h5_fixture, split="lora_train", compute_semantic=False)
         assert len(dataset) == 7
 
     def test_init_invalid_split(self, h5_fixture: Path):
@@ -280,12 +276,10 @@ class TestBraTSDatasetH5:
         assert features["volume"].shape == torch.Size([1])
         assert features["location"].shape == torch.Size([3])
         assert "shape" not in features
-        assert features["all"].shape == torch.Size([1])  # all = volume_wt
+        assert "all" not in features
 
     def test_subject_ids_property(self, h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=h5_fixture, split="lora_train", compute_semantic=False
-        )
+        dataset = BraTSDatasetH5(h5_path=h5_fixture, split="lora_train", compute_semantic=False)
         ids = dataset.subject_ids
         assert len(ids) == 7
         assert all(isinstance(s, str) for s in ids)
@@ -341,22 +335,16 @@ class TestBraTSDatasetH5Longitudinal:
     """Tests for the HDF5-backed dataset (longitudinal schema)."""
 
     def test_init_all_scans(self, longitudinal_h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=longitudinal_h5_fixture, compute_semantic=False
-        )
+        dataset = BraTSDatasetH5(h5_path=longitudinal_h5_fixture, compute_semantic=False)
         # 5 patients: 1 + 2 + 3 + 1 + 2 = 9 scans
         assert len(dataset) == 9
 
     def test_is_longitudinal(self, longitudinal_h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=longitudinal_h5_fixture, compute_semantic=False
-        )
+        dataset = BraTSDatasetH5(h5_path=longitudinal_h5_fixture, compute_semantic=False)
         assert dataset.is_longitudinal
 
     def test_domain(self, longitudinal_h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=longitudinal_h5_fixture, compute_semantic=False
-        )
+        dataset = BraTSDatasetH5(h5_path=longitudinal_h5_fixture, compute_semantic=False)
         assert dataset.domain == "GLI"
 
     def test_split_expands_to_scans(self, longitudinal_h5_fixture: Path):
@@ -380,24 +368,18 @@ class TestBraTSDatasetH5Longitudinal:
         assert len(dataset) == 2
 
     def test_getitem_has_patient_id(self, longitudinal_h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=longitudinal_h5_fixture, compute_semantic=False
-        )
+        dataset = BraTSDatasetH5(h5_path=longitudinal_h5_fixture, compute_semantic=False)
         sample = dataset[0]
         assert "patient_id" in sample
         assert sample["patient_id"].startswith("BraTS-GLI-")
 
     def test_getitem_has_domain(self, longitudinal_h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=longitudinal_h5_fixture, compute_semantic=False
-        )
+        dataset = BraTSDatasetH5(h5_path=longitudinal_h5_fixture, compute_semantic=False)
         sample = dataset[0]
         assert sample["domain"] == "GLI"
 
     def test_subject_ids_are_scan_ids(self, longitudinal_h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=longitudinal_h5_fixture, compute_semantic=False
-        )
+        dataset = BraTSDatasetH5(h5_path=longitudinal_h5_fixture, compute_semantic=False)
         ids = dataset.subject_ids
         assert len(ids) == 9
         # Should be scan IDs like "BraTS-GLI-00000-100"
@@ -409,13 +391,12 @@ class TestBraTSDatasetH5Longitudinal:
         assert ids[0] == "BraTS-GLI-00000-100"
 
     def test_semantic_features(self, longitudinal_h5_fixture: Path):
-        dataset = BraTSDatasetH5(
-            h5_path=longitudinal_h5_fixture, compute_semantic=True
-        )
+        dataset = BraTSDatasetH5(h5_path=longitudinal_h5_fixture, compute_semantic=True)
         sample = dataset[0]
         assert "semantic_features" in sample
-        # R1: all = volume_wt (scalar)
-        assert sample["semantic_features"]["all"].shape == torch.Size([1])
+        # R1: volume is scalar WT only
+        assert sample["semantic_features"]["volume"].shape == torch.Size([1])
+        assert "all" not in sample["semantic_features"]
 
 
 # =========================================================================

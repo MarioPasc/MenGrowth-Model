@@ -60,7 +60,7 @@ class LatentPartition:
         >>> z = torch.randn(8, 128)
         >>> parts = lp.split(z)
         >>> parts["vol"].shape
-        torch.Size([8, 24])
+        torch.Size([8, 32])
     """
 
     def __init__(self, partitions: dict[str, PartitionSpec] | None = None) -> None:

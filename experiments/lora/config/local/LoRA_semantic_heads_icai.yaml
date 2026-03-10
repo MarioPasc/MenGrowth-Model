@@ -145,15 +145,11 @@ model_card:
 #    The auxiliary loss starts at epoch 5 and ramps over 10 epochs.
 #    This allows the encoder to learn basic features before semantic pressure.
 #
-# 3. PER-FEATURE WEIGHTING
-#    Shape features are harder to predict (R² ~0.25 vs ~0.70 for volume).
-#    Reduced lambda_shape to 0.5 prevents the harder task from dominating.
-#
-# 4. GRADIENT MONITORING
+# 3. GRADIENT MONITORING
 #    Gradient norms are logged per parameter group to detect imbalances.
 #    Check training_log.csv for encoder/decoder/semantic gradient norms.
 #
-# 5. EARLY STOPPING ON DICE
+# 4. EARLY STOPPING ON DICE
 #    Early stopping uses validation Dice (primary metric), not total loss.
 #    This prevents auxiliary loss improvements from masking segmentation degradation.
 #

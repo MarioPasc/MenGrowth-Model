@@ -31,7 +31,7 @@ echo ""
 # ========================================================================
 export REPO_SRC="/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model"
 export CONDA_ENV_NAME="growth"
-export CONFIG_PATH="${REPO_SRC}/experiments/lora/config/picasso/dual_domain_v1.yaml"
+export CONFIG_PATH="${REPO_SRC}/experiments/lora/config/picasso/dual_domain_v2.yaml"
 
 echo "Activating conda environment: ${CONDA_ENV_NAME}"
 if command -v conda >/dev/null 2>&1; then
@@ -177,5 +177,5 @@ echo "  Per condition:  ~6-12h (train + per-10-epoch diagnostics) + ~1h (extract
 echo "  All parallel:   ~13h total (${N_CONDITIONS} conditions run concurrently)"
 echo ""
 echo "After completion, sync results locally for plotting/analysis:"
-echo "  rsync -avz picasso:${OUTPUT_DIR}/ results/dual_domain_v1/"
+echo "  rsync -avz picasso:${OUTPUT_DIR}/ results/dual_domain_v2/"
 echo "  python -m experiments.lora.run --config <local_config> visualize"

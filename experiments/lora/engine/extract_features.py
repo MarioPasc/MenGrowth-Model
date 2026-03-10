@@ -31,7 +31,7 @@ from growth.models.encoder.lora_adapter import LoRASwinViT
 from growth.models.encoder.swin_loader import load_swin_encoder
 from growth.utils.seed import set_seed
 
-from .data_splits import load_splits, load_splits_h5
+from .data_splits import load_splits_h5
 
 logging.basicConfig(
     level=logging.INFO,
@@ -365,7 +365,6 @@ def extract_features_for_domain(
 
     all_volumes: list[np.ndarray] = []
     all_locations: list[np.ndarray] = []
-    all_shapes: list[np.ndarray] = []
     all_ids: list[str] = []
 
     amp_ctx = torch.amp.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
@@ -395,10 +394,9 @@ def extract_features_for_domain(
                 all_features.pop("encoder10_tap", None)
                 tap_extractor = None
 
-        # Semantic targets
+        # Semantic targets (R1: volume + location only, shape removed)
         all_volumes.append(batch["semantic_features"]["volume"].numpy())
         all_locations.append(batch["semantic_features"]["location"].numpy())
-        all_shapes.append(batch["semantic_features"]["shape"].numpy())
 
         ids = batch["subject_id"]
         if isinstance(ids, torch.Tensor):
@@ -411,7 +409,6 @@ def extract_features_for_domain(
     targets_dict = {
         "volume": np.concatenate(all_volumes, axis=0),
         "location": np.concatenate(all_locations, axis=0),
-        "shape": np.concatenate(all_shapes, axis=0),
     }
 
     logger.info(f"  Features: {', '.join(f'{k}={v.shape}' for k, v in features_dict.items())}")

@@ -237,7 +237,6 @@ class BraTSDatasetH5(Dataset):
             output["semantic_features"] = {
                 "volume": torch.from_numpy(volume_wt.astype(np.float32)),
                 "location": torch.from_numpy(location.astype(np.float32)),
-                "all": torch.from_numpy(volume_wt.astype(np.float32)),
             }
 
         return output

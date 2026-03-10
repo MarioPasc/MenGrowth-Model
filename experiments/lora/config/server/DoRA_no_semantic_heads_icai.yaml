@@ -104,8 +104,6 @@ loss:
 
   # These are not used when use_semantic_heads: false
   lambda_volume: 1.0
-  lambda_location: 1.0
-  lambda_shape: 0.5
 
 # Probe evaluation
 probe:

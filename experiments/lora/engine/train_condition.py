@@ -377,7 +377,7 @@ def evaluate_feature_quality_inline(
         use_amp: Whether to use bf16 autocast.
 
     Returns:
-        Dict with probe_vol_r2, probe_loc_r2, probe_shape_r2, probe_mean_r2.
+        Dict with probe_vol_r2, probe_mean_r2.
         Empty dict if insufficient data.
     """
     model.eval()

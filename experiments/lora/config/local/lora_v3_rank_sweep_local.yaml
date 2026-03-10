@@ -99,8 +99,6 @@ loss:
   lambda_dice: 1.0
   lambda_ce: 1.0
   lambda_volume: 1.0
-  lambda_location: 0.3
-  lambda_shape: 1.0
 
 probe:
   n_restarts: 3               # Random restarts for GP-RBF optimization
