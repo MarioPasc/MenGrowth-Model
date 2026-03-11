@@ -37,6 +37,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Canonical ordered list of all possible semantic features.
+_ALL_SEMANTIC_FEATURES = ["volume", "location", "shape"]
+
+# Short labels used in LaTeX / Markdown column headers.
+_FEATURE_SHORT = {"volume": "Vol", "location": "Loc", "shape": "Shape"}
+
+
+def _discover_available_features(metrics: dict[str, dict], suffix: str = "") -> list[str]:
+    """Return the subset of semantic features present in *any* condition's metrics.
+
+    A feature is considered available if at least one condition has a non-None,
+    non-zero value for the key ``r2_{feature}{suffix}``.
+
+    Args:
+        metrics: Mapping of condition name to its metrics dict.
+        suffix: Optional key suffix, e.g. ``"_rbf"`` for GP-RBF probe keys.
+
+    Returns:
+        Ordered list of available feature names (subset of ``_ALL_SEMANTIC_FEATURES``).
+    """
+    available: list[str] = []
+    for feat in _ALL_SEMANTIC_FEATURES:
+        key = f"r2_{feat}{suffix}"
+        if any(m.get(key) not in (None, 0) for m in metrics.values()):
+            available.append(feat)
+    return available
+
 
 def validate_experiment_outputs(config: dict) -> dict[str, dict[str, bool]]:
     """Pre-flight check: validate which experiment outputs exist.
@@ -159,11 +186,21 @@ def generate_latex_table(
     Returns:
         Publication-ready LaTeX code.
     """
-    # Check if GP-RBF data is available
+    # Discover which semantic features are present in the metrics
+    lin_features = _discover_available_features(metrics)
     has_rbf_data = include_rbf and any("r2_mean_rbf" in m for m in metrics.values())
+    rbf_features = _discover_available_features(metrics, suffix="_rbf") if has_rbf_data else []
 
-    if has_rbf_data:
+    n_lin = len(lin_features)
+    n_rbf = len(rbf_features)
+
+    if has_rbf_data and rbf_features:
         # Extended table with both Linear and GP-RBF probes
+        lin_col_spec = "c" * n_lin
+        rbf_col_spec = "c" * n_rbf
+        lin_header_cells = " & ".join(_FEATURE_SHORT[f] for f in lin_features)
+        rbf_header_cells = " & ".join(_FEATURE_SHORT[f] for f in rbf_features)
+
         lines = [
             r"\begin{table}[htbp]",
             r"\centering",
@@ -172,14 +209,18 @@ def generate_latex_table(
             r"$\Delta$ indicates improvement over baseline.}",
             r"\label{tab:lora_ablation}",
             r"\resizebox{\textwidth}{!}{%",
-            r"\begin{tabular}{lccc|ccc|cc}",
+            rf"\begin{{tabular}}{{l{lin_col_spec}|{rbf_col_spec}|cc}}",
             r"\toprule",
-            r" & \multicolumn{3}{c|}{Linear Probe $R^2$} & \multicolumn{3}{c|}{GP-RBF Probe $R^2$} & & \\",
-            r"Condition & Vol & Loc & Shape & Vol & Loc & Shape & $R^2_\mathrm{mean}$ (Lin) & Params \\",
+            rf" & \multicolumn{{{n_lin}}}{{c|}}{{Linear Probe $R^2$}} & \multicolumn{{{n_rbf}}}{{c|}}{{GP-RBF Probe $R^2$}} & & \\",
+            rf"Condition & {lin_header_cells} & {rbf_header_cells} & $R^2_\mathrm{{mean}}$ (Lin) & Params \\",
             r"\midrule",
         ]
     else:
-        # Original table without GP-RBF
+        # Table without GP-RBF
+        feat_col_spec = "c" * n_lin
+        feat_header = " & ".join(
+            rf"$R^2_\mathrm{{{_FEATURE_SHORT[f].lower()}}}$" for f in lin_features
+        )
         lines = [
             r"\begin{table}[htbp]",
             r"\centering",
@@ -188,9 +229,9 @@ def generate_latex_table(
             r"$\Delta$ indicates improvement over baseline. Statistical significance tested with "
             r"Wilcoxon signed-rank test (Holm-Bonferroni corrected).}",
             r"\label{tab:lora_ablation}",
-            r"\begin{tabular}{lcccccc}",
+            rf"\begin{{tabular}}{{l{feat_col_spec}ccc}}",
             r"\toprule",
-            r"Condition & $R^2_\mathrm{vol}$ & $R^2_\mathrm{loc}$ & $R^2_\mathrm{shape}$ & "
+            rf"Condition & {feat_header} & "
             r"$R^2_\mathrm{mean}$ & Test Dice & Params \\",
             r"\midrule",
         ]
@@ -204,10 +245,8 @@ def generate_latex_table(
 
         m = metrics[name]
 
-        # Format linear R² values
-        r2_vol = f"{m.get('r2_volume', 0):.3f}"
-        r2_loc = f"{m.get('r2_location', 0):.3f}"
-        r2_shape = f"{m.get('r2_shape', 0):.3f}"
+        # Format linear R² values for available features
+        lin_cells = [f"{m.get(f'r2_{feat}', 0):.3f}" for feat in lin_features]
         r2_mean = f"{m.get('r2_mean', 0):.3f}"
 
         # Prefer test Dice, fall back to validation Dice
@@ -238,23 +277,16 @@ def generate_latex_table(
             rank = cond.get("lora_rank", "?")
             label = f"LoRA $r={rank}$"
 
-        if has_rbf_data:
-            # Format GP-RBF R² values
-            r2_vol_rbf = f"{m.get('r2_volume_rbf', 0):.3f}"
-            r2_loc_rbf = f"{m.get('r2_location_rbf', 0):.3f}"
-            r2_shape_rbf = f"{m.get('r2_shape_rbf', 0):.3f}"
+        lin_str = " & ".join(lin_cells)
 
-            lines.append(
-                f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & "
-                f"{r2_vol_rbf} & {r2_loc_rbf} & {r2_shape_rbf} & "
-                f"{r2_mean} & {params_str} \\\\"
-            )
+        if has_rbf_data and rbf_features:
+            rbf_cells = [f"{m.get(f'r2_{feat}_rbf', 0):.3f}" for feat in rbf_features]
+            rbf_str = " & ".join(rbf_cells)
+            lines.append(f"{label} & {lin_str} & {rbf_str} & {r2_mean} & {params_str} \\\\")
         else:
-            lines.append(
-                f"{label} & {r2_vol} & {r2_loc} & {r2_shape} & {r2_mean} & {dice_str} & {params_str} \\\\"
-            )
+            lines.append(f"{label} & {lin_str} & {r2_mean} & {dice_str} & {params_str} \\\\")
 
-    if has_rbf_data:
+    if has_rbf_data and rbf_features:
         lines.extend(
             [
                 r"\bottomrule",
@@ -311,6 +343,15 @@ def generate_markdown_report(
         desc = cond.get("description", "")
         lines.append(f"| {name} | {rank} | {alpha} | {desc} |")
 
+    lin_features = _discover_available_features(metrics)
+    feat_names_str = ", ".join(lin_features)
+
+    # Build dynamic table header
+    feat_header_cells = " | ".join(f"R²_{_FEATURE_SHORT[f].lower()}" for f in lin_features)
+    feat_separator = " | ".join("--------" for _ in lin_features)
+    header_row = f"| Condition | {feat_header_cells} | R²_mean | ΔR²_mean |"
+    sep_row = f"|-----------|{feat_separator}|---------|----------|"
+
     lines.extend(
         [
             "",
@@ -319,10 +360,10 @@ def generate_markdown_report(
             "## 2. Primary Results: Linear Probe R²",
             "",
             "The primary evaluation metric is R² from linear probes trained to predict ",
-            "semantic features (volume, location, shape) from encoder features.",
+            f"semantic features ({feat_names_str}) from encoder features.",
             "",
-            "| Condition | R²_vol | R²_loc | R²_shape | R²_mean | ΔR²_mean |",
-            "|-----------|--------|--------|----------|---------|----------|",
+            header_row,
+            sep_row,
         ]
     )
 
@@ -334,9 +375,7 @@ def generate_markdown_report(
             continue
 
         m = metrics[name]
-        r2_vol = f"{m.get('r2_volume', 0):.4f}"
-        r2_loc = f"{m.get('r2_location', 0):.4f}"
-        r2_shape = f"{m.get('r2_shape', 0):.4f}"
+        feat_cells = " | ".join(f"{m.get(f'r2_{feat}', 0):.4f}" for feat in lin_features)
         r2_mean = f"{m.get('r2_mean', 0):.4f}"
 
         if name == "baseline":
@@ -350,38 +389,45 @@ def generate_markdown_report(
                 else f"{sign}{d:.4f}"
             )
 
-        lines.append(f"| {name} | {r2_vol} | {r2_loc} | {r2_shape} | {r2_mean} | {delta} |")
+        lines.append(f"| {name} | {feat_cells} | {r2_mean} | {delta} |")
 
     # Check if GP-RBF probe data is available
     has_rbf_data = any("r2_mean_rbf" in m for m in metrics.values())
 
     if has_rbf_data:
-        lines.extend(
-            [
-                "",
-                "### GP-RBF Probe R² (Nonlinear)",
-                "",
-                "GP-RBF probes capture nonlinear relationships in the feature space.",
-                "",
-                "| Condition | R²_vol (GP-RBF) | R²_loc (GP-RBF) | R²_shape (GP-RBF) | R²_mean (GP-RBF) |",
-                "|-----------|-----------------|-----------------|-------------------|------------------|",
-            ]
-        )
-
-        for cond in config["conditions"]:
-            name = cond["name"]
-            if name not in metrics:
-                continue
-
-            m = metrics[name]
-            r2_vol_rbf = f"{m.get('r2_volume_rbf', 0):.4f}"
-            r2_loc_rbf = f"{m.get('r2_location_rbf', 0):.4f}"
-            r2_shape_rbf = f"{m.get('r2_shape_rbf', 0):.4f}"
-            r2_mean_rbf = f"{m.get('r2_mean_rbf', 0):.4f}"
-
-            lines.append(
-                f"| {name} | {r2_vol_rbf} | {r2_loc_rbf} | {r2_shape_rbf} | {r2_mean_rbf} |"
+        rbf_features = _discover_available_features(metrics, suffix="_rbf")
+        if rbf_features:
+            rbf_header_cells = " | ".join(
+                f"R²_{_FEATURE_SHORT[f].lower()} (GP-RBF)" for f in rbf_features
             )
+            rbf_sep = " | ".join(
+                "-" * len(f"R²_{_FEATURE_SHORT[f].lower()} (GP-RBF)") for f in rbf_features
+            )
+            header_row = f"| Condition | {rbf_header_cells} | R²_mean (GP-RBF) |"
+            sep_row = f"|-----------|{rbf_sep}|------------------|"
+
+            lines.extend(
+                [
+                    "",
+                    "### GP-RBF Probe R² (Nonlinear)",
+                    "",
+                    "GP-RBF probes capture nonlinear relationships in the feature space.",
+                    "",
+                    header_row,
+                    sep_row,
+                ]
+            )
+
+            for cond in config["conditions"]:
+                name = cond["name"]
+                if name not in metrics:
+                    continue
+
+                m = metrics[name]
+                rbf_cells = " | ".join(f"{m.get(f'r2_{feat}_rbf', 0):.4f}" for feat in rbf_features)
+                r2_mean_rbf = f"{m.get('r2_mean_rbf', 0):.4f}"
+
+                lines.append(f"| {name} | {rbf_cells} | {r2_mean_rbf} |")
 
     lines.extend(
         [
@@ -448,7 +494,7 @@ def generate_markdown_report(
         m = metrics[name]
         lines.append(f"**{name}:**")
 
-        for feat in ["volume", "location", "shape"]:
+        for feat in _ALL_SEMANTIC_FEATURES:
             per_dim = m.get(f"r2_{feat}_per_dim", [])
             if per_dim:
                 formatted = ", ".join([f"{x:.4f}" for x in per_dim])
@@ -623,34 +669,33 @@ def analyze_results(
         f.write(latex_table)
     logger.info(f"Saved LaTeX table to {latex_path}")
 
-    # Summary CSV
+    # Summary CSV — include only features that are present in the data
+    csv_lin_features = _discover_available_features(metrics)
+    csv_rbf_features = _discover_available_features(metrics, suffix="_rbf")
+
     rows = []
     for cond in config["conditions"]:
         name = cond["name"]
         if name in metrics:
             m = metrics[name]
-            rows.append(
-                {
-                    "condition": name,
-                    # Linear probe R²
-                    "r2_volume": m.get("r2_volume"),
-                    "r2_location": m.get("r2_location"),
-                    "r2_shape": m.get("r2_shape"),
-                    "r2_mean": m.get("r2_mean"),
-                    # GP-RBF probe R² (if available)
-                    "r2_volume_rbf": m.get("r2_volume_rbf"),
-                    "r2_location_rbf": m.get("r2_location_rbf"),
-                    "r2_shape_rbf": m.get("r2_shape_rbf"),
-                    "r2_mean_rbf": m.get("r2_mean_rbf"),
-                    # Test Dice
-                    "test_dice_mean": m.get("test_dice_mean"),
-                    "test_dice_TC": m.get("test_dice_TC"),
-                    "test_dice_WT": m.get("test_dice_WT"),
-                    "test_dice_ET": m.get("test_dice_ET"),
-                    "val_dice": m.get("val_dice"),  # Keep for reference
-                    "variance_mean": m.get("variance_mean"),
-                }
-            )
+            row: dict = {"condition": name}
+            # Linear probe R² (dynamic)
+            for feat in csv_lin_features:
+                row[f"r2_{feat}"] = m.get(f"r2_{feat}")
+            row["r2_mean"] = m.get("r2_mean")
+            # GP-RBF probe R² (dynamic, only if available)
+            for feat in csv_rbf_features:
+                row[f"r2_{feat}_rbf"] = m.get(f"r2_{feat}_rbf")
+            if csv_rbf_features:
+                row["r2_mean_rbf"] = m.get("r2_mean_rbf")
+            # Test Dice
+            row["test_dice_mean"] = m.get("test_dice_mean")
+            row["test_dice_TC"] = m.get("test_dice_TC")
+            row["test_dice_WT"] = m.get("test_dice_WT")
+            row["test_dice_ET"] = m.get("test_dice_ET")
+            row["val_dice"] = m.get("val_dice")
+            row["variance_mean"] = m.get("variance_mean")
+            rows.append(row)
 
     df = pd.DataFrame(rows)
     csv_path = output_dir / "comparison_table.csv"

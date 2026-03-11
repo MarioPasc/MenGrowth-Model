@@ -393,7 +393,7 @@ def get_metric(metrics_dict: dict, key: str) -> float:
 
 
 def plot_r2_comparison(metrics: dict, output_dir: Path, title_suffix: str = "") -> None:
-    """Plot R² comparison bar chart."""
+    """Plot R² comparison bar chart (dynamic panels for available features)."""
     if not HAS_PLOTTING:
         return
 
@@ -401,17 +401,25 @@ def plot_r2_comparison(metrics: dict, output_dir: Path, title_suffix: str = "") 
     order = ["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"]
     conditions = [c for c in order if c in metrics]
 
-    fig, axes = plt.subplots(1, 4, figsize=(14, 4))
+    # Discover available features dynamically
+    all_feats = [
+        ("r2_volume", "Volume R²"),
+        ("r2_location", "Location R²"),
+        ("r2_shape", "Shape R²"),
+        ("r2_mean", "Mean R²"),
+    ]
+    avail_feats = []
+    for feat_key, feat_title in all_feats:
+        if any(get_metric(metrics.get(c, {}), feat_key) != 0 for c in conditions):
+            avail_feats.append((feat_key, feat_title))
+    if not avail_feats:
+        avail_feats = [("r2_volume", "Volume R²")]
 
-    for ax, (feat, title) in zip(
-        axes,
-        [
-            ("r2_volume", "Volume R²"),
-            ("r2_location", "Location R²"),
-            ("r2_shape", "Shape R²"),
-            ("r2_mean", "Mean R²"),
-        ],
-    ):
+    fig, axes = plt.subplots(1, len(avail_feats), figsize=(3.5 * len(avail_feats), 4))
+    if len(avail_feats) == 1:
+        axes = [axes]
+
+    for ax, (feat, title) in zip(axes, avail_feats):
         values = [get_metric(metrics[c], feat) for c in conditions]
         colors = [CONDITION_COLORS.get(c, "gray") for c in conditions]
 
@@ -448,16 +456,26 @@ def plot_r2_comparison(metrics: dict, output_dir: Path, title_suffix: str = "") 
 
 
 def plot_linear_vs_rbf(metrics: dict, output_dir: Path, title_suffix: str = "") -> None:
-    """Plot linear vs GP-RBF probe comparison."""
+    """Plot linear vs GP-RBF probe comparison (dynamic features)."""
     if not HAS_PLOTTING:
         return
 
     order = ["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"]
     conditions = [c for c in order if c in metrics]
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    # Discover available features
+    avail_feats = []
+    for feat in ["volume", "location", "shape"]:
+        if any(get_metric(metrics.get(c, {}), f"r2_{feat}") != 0 for c in conditions):
+            avail_feats.append(feat)
+    if not avail_feats:
+        avail_feats = ["volume"]
 
-    for ax, feat in zip(axes, ["volume", "location", "shape"]):
+    fig, axes = plt.subplots(1, len(avail_feats), figsize=(4 * len(avail_feats), 4))
+    if len(avail_feats) == 1:
+        axes = [axes]
+
+    for ax, feat in zip(axes, avail_feats):
         linear_r2 = [get_metric(metrics[c], f"r2_{feat}") for c in conditions]
         rbf_r2 = [metrics[c].get(f"r2_{feat}_rbf", 0) for c in conditions]
 
@@ -504,12 +522,25 @@ def plot_rank_vs_r2(metrics: dict, output_dir: Path, title_suffix: str = "") -> 
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    for feat, color, marker in [
+    # Discover available features dynamically
+    all_lines = [
         ("r2_volume", "blue", "o"),
         ("r2_location", "green", "s"),
         ("r2_shape", "red", "^"),
         ("r2_mean", "black", "D"),
-    ]:
+    ]
+    avail_lines = []
+    for feat_key, color, marker in all_lines:
+        if any(
+            get_metric(metrics.get(cond_map.get(r, ""), {}), feat_key) != 0
+            for r in ranks
+            if cond_map.get(r, "") in metrics
+        ):
+            avail_lines.append((feat_key, color, marker))
+    if not avail_lines:
+        avail_lines = [("r2_volume", "blue", "o")]
+
+    for feat, color, marker in avail_lines:
         values = []
         valid_ranks = []
         for r in ranks:
@@ -552,17 +583,29 @@ def plot_semantic_vs_nosemantic(
     order = ["baseline", "lora_r2", "lora_r4", "lora_r8", "lora_r16", "lora_r32"]
     conditions = [c for c in order if c in semantic_metrics and c in nosemantic_metrics]
 
-    fig, axes = plt.subplots(1, 4, figsize=(14, 4))
+    # Discover available features dynamically
+    all_feats = [
+        ("r2_volume", "Volume R²"),
+        ("r2_location", "Location R²"),
+        ("r2_shape", "Shape R²"),
+        ("r2_mean", "Mean R²"),
+    ]
+    avail_feats = []
+    for feat_key, feat_title in all_feats:
+        if any(
+            get_metric(semantic_metrics.get(c, {}), feat_key) != 0
+            or get_metric(nosemantic_metrics.get(c, {}), feat_key) != 0
+            for c in conditions
+        ):
+            avail_feats.append((feat_key, feat_title))
+    if not avail_feats:
+        avail_feats = [("r2_volume", "Volume R²")]
 
-    for ax, (feat, title) in zip(
-        axes,
-        [
-            ("r2_volume", "Volume R²"),
-            ("r2_location", "Location R²"),
-            ("r2_shape", "Shape R²"),
-            ("r2_mean", "Mean R²"),
-        ],
-    ):
+    fig, axes = plt.subplots(1, len(avail_feats), figsize=(3.5 * len(avail_feats), 4))
+    if len(avail_feats) == 1:
+        axes = [axes]
+
+    for ax, (feat, title) in zip(axes, avail_feats):
         sem_values = [get_metric(semantic_metrics[c], feat) for c in conditions]
         nosem_values = [get_metric(nosemantic_metrics[c], feat) for c in conditions]
 
@@ -649,14 +692,19 @@ def detect_anomalies(results_dir: Path) -> list[str]:
         # Check metrics
         metrics = load_metrics(cond_dir)
         if metrics:
+            # Discover available features from metrics keys
+            avail_feats = [
+                f for f in ["volume", "location", "shape"] if metrics.get(f"r2_{f}") is not None
+            ]
+
             # Check for extremely negative R²
-            for feat in ["volume", "location", "shape"]:
+            for feat in avail_feats:
                 r2 = metrics.get(f"r2_{feat}", 0)
                 if r2 < -1.0:
                     anomalies.append(f"WARNING [{cond}]: Very negative R²_{feat} = {r2:.3f}")
 
             # Check GP-RBF vs Linear gap
-            for feat in ["volume", "location", "shape"]:
+            for feat in avail_feats:
                 linear = metrics.get(f"r2_{feat}", 0)
                 rbf = metrics.get(f"r2_{feat}_rbf", 0)
                 gap = rbf - linear

@@ -226,10 +226,25 @@ def fig_probe_r2(
     if not conditions:
         return None
 
-    feature_types = ["volume", "location", "shape"]
-    titles = ["Volume R²", "Location R²", "Shape R²"]
+    # Discover available feature types from metrics keys
+    sample_metrics = exp.conditions[conditions[0]].metrics_enhanced
+    feature_types = []
+    for key in sample_metrics:
+        if key.startswith("r2_") and not any(
+            key.endswith(s)
+            for s in ["_rbf", "_linear", "_per_dim", "_mean", "_mean_rbf", "_mean_linear"]
+        ):
+            feat = key[len("r2_") :]
+            if feat not in feature_types and sample_metrics[key] is not None:
+                feature_types.append(feat)
+    if not feature_types:
+        return None
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+    titles = [f"{feat.capitalize()} R²" for feat in feature_types]
+    n_feats = len(feature_types)
+
+    fig, axes = plt.subplots(1, n_feats, figsize=(4.5 * n_feats, 4.5), squeeze=False)
+    axes = axes[0]
 
     for ax, feat, title in zip(axes, feature_types, titles):
         linear_r2 = []
@@ -269,11 +284,12 @@ def fig_probe_r2(
     fig.suptitle("Semantic Feature Decodability", fontsize=12, fontweight="bold", y=1.02)
     fig.tight_layout()
 
+    feat_list = ", ".join(f.capitalize() for f in feature_types)
     return _save_and_encode(
         fig,
         "probe_r2",
         output_dir,
-        "Linear vs GP-RBF probe R² for volume, location, and shape predictions.",
+        f"Linear vs GP-RBF probe R² for {feat_list} predictions.",
     )
 
 
@@ -303,7 +319,20 @@ def fig_nonlinearity_evidence(
     if not conditions:
         return None
 
-    feature_types = ["volume", "location", "shape"]
+    # Discover available feature types from metrics keys
+    sample_metrics = exp.conditions[conditions[0]].metrics_enhanced
+    feature_types = []
+    for key in sample_metrics:
+        if key.startswith("r2_") and not any(
+            key.endswith(s)
+            for s in ["_rbf", "_linear", "_per_dim", "_mean", "_mean_rbf", "_mean_linear"]
+        ):
+            feat = key[len("r2_") :]
+            if feat not in feature_types and sample_metrics[key] is not None:
+                feature_types.append(feat)
+    if not feature_types:
+        return None
+
     gaps: dict[str, list[float]] = {feat: [] for feat in feature_types}
 
     for c in conditions:
@@ -316,8 +345,10 @@ def fig_nonlinearity_evidence(
     fig, ax = plt.subplots(figsize=(10, 5))
 
     x = np.arange(len(conditions))
-    width = 0.25
-    feat_colors = ["steelblue", "seagreen", "coral"]
+    n_feats = len(feature_types)
+    width = 0.8 / max(n_feats, 1)
+    default_colors = ["steelblue", "seagreen", "coral", "mediumpurple", "goldenrod"]
+    feat_colors = default_colors[:n_feats]
 
     for i, (feat, color) in enumerate(zip(feature_types, feat_colors)):
         ax.bar(x + i * width, gaps[feat], width, label=feat.capitalize(), color=color, alpha=0.8)
@@ -326,17 +357,18 @@ def fig_nonlinearity_evidence(
     ax.set_ylabel("Nonlinearity Evidence (GP-RBF R² − Linear R²)")
     ax.set_xlabel("Condition")
     ax.set_title("Nonlinearly Encoded Information", fontweight="bold")
-    ax.set_xticks(x + width)
+    ax.set_xticks(x + width * (n_feats - 1) / 2)
     ax.set_xticklabels([short_label(c) for c in conditions], rotation=45, ha="right")
     ax.legend(fontsize=9)
 
     fig.tight_layout()
 
+    feat_list = ", ".join(f.capitalize() for f in feature_types)
     return _save_and_encode(
         fig,
         "nonlinearity_evidence",
         output_dir,
-        "Nonlinearity Evidence: GP-RBF R² minus Linear R² per semantic feature type.",
+        f"Nonlinearity Evidence: GP-RBF R² minus Linear R² for {feat_list}.",
     )
 
 
@@ -442,13 +474,9 @@ def fig_statistical_heatmap(
     first_cond = cond_names[0]
     metric_keys = list(stats[first_cond].keys())
 
-    # Filter to key metrics for readability
-    priority_metrics = [
-        "volume_neg_mse",
-        "location_neg_mse",
-        "shape_neg_mse",
-        "dice_men_mean",
-    ]
+    # Filter to key metrics for readability — discover available *_neg_mse dynamically
+    neg_mse_metrics = [m for m in metric_keys if m.endswith("_neg_mse")]
+    priority_metrics = neg_mse_metrics + ["dice_men_mean"]
     metric_keys = [m for m in priority_metrics if m in metric_keys]
     if not metric_keys:
         metric_keys = list(stats[first_cond].keys())[:8]

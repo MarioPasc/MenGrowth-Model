@@ -226,9 +226,12 @@ def run_statistical_analysis(config_path: str) -> AblationStatistics:
     baseline_data = all_data["baseline"]
     baseline_metrics = per_subject_metrics.get("baseline", {})
 
-    # Metrics to compare
-    metric_names = ["volume_neg_mse", "location_neg_mse", "shape_neg_mse"]
-    r2_names = ["r2_volume", "r2_location", "r2_shape", "r2_mean"]
+    # Discover available metrics from baseline data
+    metric_names = [k for k in baseline_metrics if k.endswith("_neg_mse")]
+    baseline_r2_keys = {k for k in baseline_data.get("metrics", {}) if k.startswith("r2_")}
+    r2_names = [
+        k for k in ["r2_volume", "r2_location", "r2_shape", "r2_mean"] if k in baseline_r2_keys
+    ]
 
     for cond in conditions:
         if cond == "baseline":
@@ -315,15 +318,25 @@ def create_summary_table(
 
     conditions = ["baseline"] + list(results.comparisons.keys())
 
+    r2_column_map = [
+        ("R²_vol", "r2_volume"),
+        ("R²_loc", "r2_location"),
+        ("R²_shape", "r2_shape"),
+        ("R²_mean", "r2_mean"),
+    ]
+    available_r2_keys = set()
+    for cond in conditions:
+        if cond in all_data:
+            available_r2_keys.update(all_data[cond].get("metrics", {}).keys())
+    r2_columns = [(col, key) for col, key in r2_column_map if key in available_r2_keys]
+
     for cond in conditions:
         row = {"Condition": cond}
 
         if cond in all_data:
             metrics = all_data[cond].get("metrics", {})
-            row["R²_vol"] = metrics.get("r2_volume", None)
-            row["R²_loc"] = metrics.get("r2_location", None)
-            row["R²_shape"] = metrics.get("r2_shape", None)
-            row["R²_mean"] = metrics.get("r2_mean", None)
+            for col_name, metric_key in r2_columns:
+                row[col_name] = metrics.get(metric_key, None)
 
             # Use TEST Dice from metrics.json (not validation from training_summary)
             row["Test_Dice"] = metrics.get("test_dice_mean", None)

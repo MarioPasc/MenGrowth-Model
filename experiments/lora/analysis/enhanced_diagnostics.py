@@ -163,23 +163,25 @@ def analyze_loss_dynamics(
         else:
             results["convergence_epoch"] = len(val_dice)
 
-    # Auxiliary losses (if present)
-    for loss_name in ["train_vol_loss", "train_loc_loss", "train_shape_loss"]:
-        if loss_name in training_log.columns:
-            loss_vals = training_log[loss_name].values
-            # Skip zeros at the start (before warmup)
-            nonzero_start = np.argmax(loss_vals > 0)
-            if nonzero_start < len(loss_vals):
-                loss_vals = loss_vals[nonzero_start:]
-                short_name = loss_name.replace("train_", "").replace("_loss", "")
-                results[f"{short_name}_loss_final"] = (
-                    float(loss_vals[-1]) if len(loss_vals) > 0 else 0
-                )
-                results[f"{short_name}_loss_reduction"] = (
-                    float((loss_vals[0] - loss_vals[-1]) / (loss_vals[0] + 1e-8))
-                    if len(loss_vals) > 1
-                    else 0
-                )
+    # Auxiliary losses (if present) — discover dynamically from columns
+    aux_loss_cols = [
+        c
+        for c in training_log.columns
+        if c.startswith("train_") and c.endswith("_loss") and c != "train_loss"
+    ]
+    for loss_name in aux_loss_cols:
+        loss_vals = training_log[loss_name].values
+        # Skip zeros at the start (before warmup)
+        nonzero_start = np.argmax(loss_vals > 0)
+        if nonzero_start < len(loss_vals):
+            loss_vals = loss_vals[nonzero_start:]
+            short_name = loss_name.replace("train_", "").replace("_loss", "")
+            results[f"{short_name}_loss_final"] = float(loss_vals[-1]) if len(loss_vals) > 0 else 0
+            results[f"{short_name}_loss_reduction"] = (
+                float((loss_vals[0] - loss_vals[-1]) / (loss_vals[0] + 1e-8))
+                if len(loss_vals) > 1
+                else 0
+            )
 
     return results
 
@@ -303,25 +305,28 @@ def analyze_probe_quality(
     with open(metrics_path) as f:
         metrics = json.load(f)
 
-    # R² scores
-    results["r2_volume"] = metrics.get("r2_volume", 0)
-    results["r2_location"] = metrics.get("r2_location", 0)
-    results["r2_shape"] = metrics.get("r2_shape", 0)
-    results["r2_mean"] = metrics.get("r2_mean", 0)
+    # Discover available feature types from metrics keys (e.g. r2_volume, r2_location, r2_shape)
+    all_feature_types = []
+    for key in metrics:
+        if key.startswith("r2_") and not any(
+            key.endswith(s)
+            for s in ["_rbf", "_linear", "_per_dim", "_mean", "_mean_rbf", "_mean_linear"]
+        ):
+            feat = key[len("r2_") :]
+            if feat not in all_feature_types and metrics[key] is not None:
+                all_feature_types.append(feat)
 
-    # GP-RBF R² scores
-    results["r2_volume_rbf"] = metrics.get("r2_volume_rbf", 0)
-    results["r2_location_rbf"] = metrics.get("r2_location_rbf", 0)
-    results["r2_shape_rbf"] = metrics.get("r2_shape_rbf", 0)
+    # R² scores (linear and RBF) — dynamic per available feature
+    for feat in all_feature_types:
+        results[f"r2_{feat}"] = metrics.get(f"r2_{feat}", 0)
+        results[f"r2_{feat}_rbf"] = metrics.get(f"r2_{feat}_rbf", 0)
+        results[f"nonlinearity_evidence_{feat}"] = results[f"r2_{feat}_rbf"] - results[f"r2_{feat}"]
+
+    results["r2_mean"] = metrics.get("r2_mean", 0)
     results["r2_mean_rbf"] = metrics.get("r2_mean_rbf", 0)
 
-    # Nonlinearity evidence (delta LML: GP-RBF vs Linear)
-    results["nonlinearity_evidence_volume"] = results["r2_volume_rbf"] - results["r2_volume"]
-    results["nonlinearity_evidence_location"] = results["r2_location_rbf"] - results["r2_location"]
-    results["nonlinearity_evidence_shape"] = results["r2_shape_rbf"] - results["r2_shape"]
-
     # Per-dimension R² (if available)
-    for feat in ["volume", "location", "shape"]:
+    for feat in all_feature_types:
         per_dim = metrics.get(f"r2_{feat}_per_dim", [])
         if per_dim:
             results[f"{feat}_n_negative_r2"] = sum(1 for r in per_dim if r < 0)
@@ -335,13 +340,17 @@ def analyze_probe_quality(
             f"NEGATIVE_R2: Mean R² is negative ({results['r2_mean']:.3f}), worse than mean predictor"
         )
 
-    if results["r2_volume"] < 0.3 and results["r2_location"] < 0.3:
-        issues.append("POOR_SEMANTIC_ENCODING: Both volume and location R² < 0.3")
+    low_r2_feats = [f for f in all_feature_types if results.get(f"r2_{f}", 0) < 0.3]
+    if len(low_r2_feats) == len(all_feature_types) and all_feature_types:
+        issues.append(f"POOR_SEMANTIC_ENCODING: All feature R² < 0.3 ({', '.join(low_r2_feats)})")
 
     # Check if GP-RBF significantly outperforms linear (suggests nonlinear encoding)
-    avg_evidence = (
-        results["nonlinearity_evidence_volume"] + results["nonlinearity_evidence_location"]
-    ) / 2
+    evidence_vals = [
+        results[f"nonlinearity_evidence_{f}"]
+        for f in all_feature_types
+        if f"nonlinearity_evidence_{f}" in results
+    ]
+    avg_evidence = np.mean(evidence_vals) if evidence_vals else 0.0
     if avg_evidence > 0.2:
         issues.append(
             f"NONLINEAR_ENCODING: GP-RBF outperforms linear by {avg_evidence:.2f} avg (features may be nonlinearly encoded)"
@@ -440,12 +449,12 @@ def run_comprehensive_diagnostics(config_path: str) -> dict[str, pd.DataFrame]:
             probe_analysis = analyze_probe_quality(metrics_path, name)
             probe_results.append(probe_analysis)
 
-            logger.info(
-                f"  Probes: R²_mean={probe_analysis['r2_mean']:.4f} "
-                f"(vol={probe_analysis['r2_volume']:.3f}, "
-                f"loc={probe_analysis['r2_location']:.3f}, "
-                f"shape={probe_analysis['r2_shape']:.3f})"
-            )
+            feat_strs = []
+            for k, v in probe_analysis.items():
+                if k.startswith("r2_") and not k.startswith("r2_mean") and not k.endswith("_rbf"):
+                    feat_strs.append(f"{k}={v:.3f}")
+            detail = ", ".join(feat_strs) if feat_strs else "no features"
+            logger.info(f"  Probes: R²_mean={probe_analysis['r2_mean']:.4f} ({detail})")
 
             if probe_analysis.get("issues"):
                 for issue in probe_analysis["issues"]:

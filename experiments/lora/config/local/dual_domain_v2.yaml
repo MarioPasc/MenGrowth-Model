@@ -1,0 +1,79 @@
+# Local config for dual-domain LoRA v2 analysis
+# Mirrors picasso/dual_domain_v2.yaml with local paths
+
+experiment:
+  name: dual_domain_v2
+  seed: 42
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/LORA_Module/lora_dual_domain_v2
+
+paths:
+  checkpoint: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+  men_h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_MEN.h5
+  gli_h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_GLI.h5
+
+data:
+  roi_size: [128, 128, 128]
+  feature_roi_size: [192, 192, 192]
+  domain_ratio: 0.5
+
+conditions:
+  - name: baseline
+    lora_rank: null
+    dual_domain: false
+    use_semantic_heads: false
+    description: "Frozen encoder baseline (original decoder)"
+
+  - name: dual_r8
+    lora_rank: 8
+    dual_domain: true
+    lora_alpha: 16
+    target_stages: [3, 4]
+    use_vicreg: true
+    use_semantic_heads: true
+    description: "LoRA r8 + VICReg + vol-only semantic heads + dual-domain (R1)"
+
+  - name: men_r8
+    lora_rank: 8
+    dual_domain: false
+    lora_alpha: 16
+    target_stages: [3, 4]
+    use_vicreg: true
+    use_semantic_heads: true
+    description: "LoRA r8 + VICReg + vol-only semantic heads + MEN only (R1)"
+
+training:
+  max_epochs: 100
+  early_stopping_patience: 20
+  batch_size: 2
+  grad_accum_steps: 2
+  lr_encoder: 1.0e-4
+  lr_decoder: 5.0e-4
+  weight_decay: 1.0e-5
+  num_workers: 8
+  use_amp: true
+  decoder_type: original
+  use_semantic_heads: true
+  lambda_aux: 0.3
+  aux_warmup_epochs: 5
+  aux_warmup_duration: 10
+  gradient_clip: 1.0
+  lr_warmup_epochs: 5
+  lr_reduce_factor: 0.5
+  lr_reduce_patience: 10
+  enable_gradient_monitoring: true
+  gradient_monitor_freq: 50
+  diagnostic_interval: 10
+
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+  lambda_volume: 1.0
+
+feature_extraction:
+  batch_size: 2
+  levels: [encoder10]
+
+probe:
+  normalize_targets: true
+  n_restarts: 3
+  r2_ci_samples: 100

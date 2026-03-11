@@ -21,7 +21,6 @@ import base64
 import json
 import logging
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 
 import matplotlib
@@ -41,7 +40,6 @@ from experiments.utils.settings import (
     DOMAIN_COLORS,
     PLOT_SETTINGS,
     PROBE_COLORS,
-    SEMANTIC_COLORS,
     apply_ieee_style,
     get_figure_size,
 )
@@ -200,7 +198,9 @@ def fig_f1_segmentation(config: dict, metrics: dict, out: Path) -> None:
             vals = [m.get(f"dice_{domain}_{dk}", 0) for dk in dice_keys]
             offset = (ci - 1) * bar_w
             bars = ax.bar(
-                x + offset, vals, bar_w * 0.9,
+                x + offset,
+                vals,
+                bar_w * 0.9,
                 label=_get_label(cond),
                 color=_get_color(cond),
                 edgecolor="black",
@@ -210,8 +210,11 @@ def fig_f1_segmentation(config: dict, metrics: dict, out: Path) -> None:
             # Value labels on bars
             for bar, v in zip(bars, vals):
                 ax.text(
-                    bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                    f"{v:.2f}", ha="center", va="bottom",
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.01,
+                    f"{v:.2f}",
+                    ha="center",
+                    va="bottom",
                     fontsize=PLOT_SETTINGS["annotation_fontsize"] - 1,
                 )
 
@@ -228,10 +231,27 @@ def fig_f1_segmentation(config: dict, metrics: dict, out: Path) -> None:
 
 
 def fig_f2_probes(config: dict, metrics: dict, out: Path) -> None:
-    """F2: Probe R^2 comparison — 3-panel (vol/loc/shape) grouped bars."""
-    fig, axes = plt.subplots(1, 3, figsize=get_figure_size("double", 0.4))
-    semantics = ["volume", "location", "shape"]
-    sem_titles = [r"Volume $R^2$", r"Location $R^2$", r"Shape $R^2$"]
+    """F2: Probe R^2 comparison — dynamic panels for available semantics."""
+    # Discover available semantic targets from metrics
+    semantics = []
+    sem_titles = []
+    for sem, title in [
+        ("volume", r"Volume $R^2$"),
+        ("location", r"Location $R^2$"),
+    ]:
+        key = f"probe_men_r2_{sem}_linear"
+        if any(m.get(key) is not None for m in metrics.values()):
+            semantics.append(sem)
+            sem_titles.append(title)
+
+    if not semantics:
+        logger.warning("No probe metrics found, skipping F2")
+        return
+
+    n_panels = len(semantics)
+    fig, axes = plt.subplots(1, n_panels, figsize=get_figure_size("double", 0.4))
+    if n_panels == 1:
+        axes = [axes]
     probe_types = ["linear", "rbf"]
     bar_w = 0.12
 
@@ -248,10 +268,13 @@ def fig_f2_probes(config: dict, metrics: dict, out: Path) -> None:
 
             offset = (pi - 0.5) * bar_w
             ax.bar(
-                x + offset, vals, bar_w * 0.9,
+                x + offset,
+                vals,
+                bar_w * 0.9,
                 label=ptype.upper(),
                 color=PROBE_COLORS.get(ptype, "#808080"),
-                edgecolor="black", linewidth=0.4,
+                edgecolor="black",
+                linewidth=0.4,
                 alpha=PLOT_SETTINGS["bar_alpha"],
             )
 
@@ -263,7 +286,9 @@ def fig_f2_probes(config: dict, metrics: dict, out: Path) -> None:
         if si == 0:
             ax.legend(fontsize=PLOT_SETTINGS["legend_fontsize"] - 1)
 
-    fig.suptitle("Semantic Probe Performance (MEN Domain)", fontsize=PLOT_SETTINGS["axes_titlesize"])
+    fig.suptitle(
+        "Semantic Probe Performance (MEN Domain)", fontsize=PLOT_SETTINGS["axes_titlesize"]
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     _save_fig(fig, out / "F2_probes")
 
@@ -283,15 +308,20 @@ def fig_f3_domain_gap(config: dict, metrics: dict, out: Path) -> None:
         vals = [metrics[c].get(key, 0) for c in CONDITION_ORDER_DUAL]
         colors = [_get_color(c) for c in CONDITION_ORDER_DUAL]
         bars = ax.bar(
-            range(len(vals)), vals,
-            color=colors, edgecolor="black", linewidth=0.4,
+            range(len(vals)),
+            vals,
+            color=colors,
+            edgecolor="black",
+            linewidth=0.4,
             alpha=PLOT_SETTINGS["bar_alpha"],
         )
         for bar, v in zip(bars, vals):
             ax.text(
-                bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.002,
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.002,
                 f"{v:.3f}" if v < 1 else f"{v:.1f}",
-                ha="center", va="bottom",
+                ha="center",
+                va="bottom",
                 fontsize=PLOT_SETTINGS["annotation_fontsize"] - 1,
             )
         ax.set_xticks(range(len(CONDITION_ORDER_DUAL)))
@@ -319,7 +349,8 @@ def fig_f4_variance_spectrum(config: dict, out: Path) -> None:
             var = compute_variance_per_dim(feat)
             sorted_var = np.sort(var)[::-1]
             ax.plot(
-                sorted_var, label=_get_label(cond),
+                sorted_var,
+                label=_get_label(cond),
                 color=_get_color(cond),
                 linewidth=PLOT_SETTINGS["line_width"],
             )
@@ -335,17 +366,38 @@ def fig_f4_variance_spectrum(config: dict, out: Path) -> None:
 
 
 def fig_f5_umap(config: dict, out: Path) -> None:
-    """F5: UMAP embeddings — 3x4 grid (conditions x semantic overlays)."""
+    """F5: UMAP embeddings — dynamic grid (conditions x available semantic overlays)."""
     try:
         from umap import UMAP
     except ImportError:
         logger.warning("umap-learn not installed, skipping F5")
         return
 
+    # Discover available semantic overlays from first condition with targets
+    overlay_defs = [
+        ("volume", 0, "log(Volume)", "viridis", lambda v: np.log1p(np.abs(v))),
+        ("location", 2, "Centroid Z", "coolwarm", None),
+        ("shape", 0, "Sphericity", "plasma", None),
+    ]
+
+    # Check which targets exist in any condition
+    available_overlays = []
+    for sem_key, col_idx, label, cmap, transform_fn in overlay_defs:
+        for cond in CONDITION_ORDER_DUAL:
+            feat_dir = _cond_dir(config, cond) / "features"
+            tgt = _load_targets(feat_dir, "men", "test")
+            if tgt is not None and sem_key in tgt:
+                available_overlays.append((sem_key, col_idx, label, cmap, transform_fn))
+                break
+
+    # Always include domain panel + available overlays
+    n_panels = 1 + len(available_overlays)
     n_conds = len(CONDITION_ORDER_DUAL)
-    fig, axes = plt.subplots(n_conds, 4, figsize=(14, 3.5 * n_conds))
+    fig, axes = plt.subplots(n_conds, n_panels, figsize=(3.5 * n_panels, 3.5 * n_conds))
     if n_conds == 1:
         axes = axes[np.newaxis, :]
+    if n_panels == 1:
+        axes = axes[:, np.newaxis]
 
     for ci, cond in enumerate(CONDITION_ORDER_DUAL):
         feat_dir = _cond_dir(config, cond) / "features"
@@ -355,9 +407,10 @@ def fig_f5_umap(config: dict, out: Path) -> None:
         gli_tgt = _load_targets(feat_dir, "gli", "test")
 
         if men_feat is None or gli_feat is None:
-            for j in range(4):
-                axes[ci, j].text(0.5, 0.5, "No data", ha="center", va="center",
-                                 transform=axes[ci, j].transAxes)
+            for j in range(n_panels):
+                axes[ci, j].text(
+                    0.5, 0.5, "No data", ha="center", va="center", transform=axes[ci, j].transAxes
+                )
             continue
 
         all_feat = np.vstack([men_feat, gli_feat])
@@ -368,50 +421,37 @@ def fig_f5_umap(config: dict, out: Path) -> None:
         ss = PLOT_SETTINGS["scatter_size"]
         sa = PLOT_SETTINGS["scatter_alpha"]
 
-        # Panel 0: Domain coloring
+        # Panel 0: Domain coloring (always present)
         ax = axes[ci, 0]
-        dom_colors = [DOMAIN_COLORS["meningioma"]] * n_men + [DOMAIN_COLORS["glioma"]] * (len(all_feat) - n_men)
+        dom_colors = [DOMAIN_COLORS["meningioma"]] * n_men + [DOMAIN_COLORS["glioma"]] * (
+            len(all_feat) - n_men
+        )
         ax.scatter(emb[:, 0], emb[:, 1], c=dom_colors, s=ss, alpha=sa, edgecolors="none")
         ax.set_title(f"{_get_label(cond)} — Domain")
         ax.set_xticks([])
         ax.set_yticks([])
 
-        # Panel 1: Volume
-        ax = axes[ci, 1]
-        vols = np.concatenate([
-            men_tgt["volume"][:, 0] if men_tgt else np.array([]),
-            gli_tgt["volume"][:, 0] if gli_tgt else np.array([]),
-        ])
-        log_vol = np.log1p(np.abs(vols)) if len(vols) else np.zeros(len(emb))
-        sc = ax.scatter(emb[:, 0], emb[:, 1], c=log_vol, s=ss, alpha=sa, cmap="viridis", edgecolors="none")
-        plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title(f"{_get_short(cond)} — log(Volume)")
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-        # Panel 2: Centroid Z
-        ax = axes[ci, 2]
-        locs_z = np.concatenate([
-            men_tgt["location"][:, 2] if men_tgt else np.array([]),
-            gli_tgt["location"][:, 2] if gli_tgt else np.array([]),
-        ])
-        sc = ax.scatter(emb[:, 0], emb[:, 1], c=locs_z, s=ss, alpha=sa, cmap="coolwarm", edgecolors="none")
-        plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title(f"{_get_short(cond)} — Centroid Z")
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-        # Panel 3: Sphericity
-        ax = axes[ci, 3]
-        sph = np.concatenate([
-            men_tgt["shape"][:, 0] if men_tgt else np.array([]),
-            gli_tgt["shape"][:, 0] if gli_tgt else np.array([]),
-        ])
-        sc = ax.scatter(emb[:, 0], emb[:, 1], c=sph, s=ss, alpha=sa, cmap="plasma", edgecolors="none")
-        plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title(f"{_get_short(cond)} — Sphericity")
-        ax.set_xticks([])
-        ax.set_yticks([])
+        # Dynamic semantic overlay panels
+        for oi, (sem_key, col_idx, label, cmap, transform_fn) in enumerate(available_overlays):
+            ax = axes[ci, 1 + oi]
+            men_vals = (
+                men_tgt[sem_key][:, col_idx] if (men_tgt and sem_key in men_tgt) else np.array([])
+            )
+            gli_vals = (
+                gli_tgt[sem_key][:, col_idx] if (gli_tgt and sem_key in gli_tgt) else np.array([])
+            )
+            vals = np.concatenate([men_vals, gli_vals])
+            if transform_fn is not None and len(vals) > 0:
+                vals = transform_fn(vals)
+            if len(vals) == 0:
+                vals = np.zeros(len(emb))
+            sc = ax.scatter(
+                emb[:, 0], emb[:, 1], c=vals, s=ss, alpha=sa, cmap=cmap, edgecolors="none"
+            )
+            plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+            ax.set_title(f"{_get_short(cond)} — {label}")
+            ax.set_xticks([])
+            ax.set_yticks([])
 
     fig.tight_layout()
     _save_fig(fig, out / "F5_umap_embeddings")
@@ -434,7 +474,8 @@ def fig_f6_training_dynamics(config: dict, out: Path) -> None:
             if col in df.columns:
                 vals = pd.to_numeric(df[col], errors="coerce")
                 axes[pi].plot(
-                    epochs, vals,
+                    epochs,
+                    vals,
                     label=_get_label(cond),
                     color=_get_color(cond),
                     linewidth=PLOT_SETTINGS["line_width"],
@@ -453,8 +494,18 @@ def fig_f6_training_dynamics(config: dict, out: Path) -> None:
 
 
 def fig_f7_cross_domain_transfer(config: dict, metrics: dict, out: Path) -> None:
-    """F7: Cross-domain probe transfer — heatmap of R^2."""
-    semantics = ["volume", "location", "shape"]
+    """F7: Cross-domain probe transfer — heatmap of R^2 (dynamic semantics)."""
+    # Discover available semantics
+    semantics = []
+    for sem in ["volume", "location", "shape"]:
+        key = f"probe_men_r2_{sem}_linear"
+        if any(m.get(key) is not None for m in metrics.values()):
+            semantics.append(sem)
+
+    if not semantics:
+        logger.warning("No probe metrics found, skipping F7")
+        return
+
     directions = ["men", "gli", "gli_to_men", "men_to_gli"]
     dir_labels = ["MEN", "GLI", r"GLI$\to$MEN", r"MEN$\to$GLI"]
 
@@ -472,13 +523,13 @@ def fig_f7_cross_domain_transfer(config: dict, metrics: dict, out: Path) -> None
                 else:
                     key = f"xdomain_{d}_r2_{sem}_linear"
                 val = m.get(key, np.nan)
-                # Clip extreme negatives for display
                 matrix[si, di] = np.clip(val, -2.0, 1.0) if not np.isnan(val) else np.nan
 
         im = ax.imshow(matrix, cmap="RdYlGn", vmin=-0.5, vmax=1.0, aspect="auto")
         ax.set_xticks(range(len(directions)))
-        ax.set_xticklabels(dir_labels, rotation=45, ha="right",
-                           fontsize=PLOT_SETTINGS["tick_labelsize"] - 1)
+        ax.set_xticklabels(
+            dir_labels, rotation=45, ha="right", fontsize=PLOT_SETTINGS["tick_labelsize"] - 1
+        )
         ax.set_yticks(range(len(semantics)))
         if ci == 0:
             ax.set_yticklabels([s.capitalize() for s in semantics])
@@ -492,8 +543,15 @@ def fig_f7_cross_domain_transfer(config: dict, metrics: dict, out: Path) -> None
                 val = matrix[si, di]
                 if not np.isnan(val):
                     color = "white" if val < 0 else "black"
-                    ax.text(di, si, f"{val:.2f}", ha="center", va="center",
-                            fontsize=PLOT_SETTINGS["annotation_fontsize"] - 1, color=color)
+                    ax.text(
+                        di,
+                        si,
+                        f"{val:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=PLOT_SETTINGS["annotation_fontsize"] - 1,
+                        color=color,
+                    )
 
     fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.04, label=r"$R^2$")
     fig.suptitle("Cross-Domain Probe Transfer (Linear)", fontsize=PLOT_SETTINGS["axes_titlesize"])
@@ -555,10 +613,14 @@ def fig_f9_probe_scatter(config: dict, out: Path) -> None:
         y = tgt["volume"][:, 0]
         y_pred = cross_val_predict(Ridge(alpha=1.0), feat, y, cv=5)
 
-        ax.scatter(y, y_pred, s=PLOT_SETTINGS["scatter_size"],
-                   alpha=PLOT_SETTINGS["scatter_alpha"],
-                   color=DOMAIN_COLORS["meningioma" if domain == "men" else "glioma"],
-                   edgecolors="none")
+        ax.scatter(
+            y,
+            y_pred,
+            s=PLOT_SETTINGS["scatter_size"],
+            alpha=PLOT_SETTINGS["scatter_alpha"],
+            color=DOMAIN_COLORS["meningioma" if domain == "men" else "glioma"],
+            edgecolors="none",
+        )
         lims = [min(y.min(), y_pred.min()), max(y.max(), y_pred.max())]
         ax.plot(lims, lims, "k--", linewidth=0.8, alpha=0.5)
         r2 = 1 - np.sum((y - y_pred) ** 2) / np.sum((y - y.mean()) ** 2)
@@ -566,32 +628,47 @@ def fig_f9_probe_scatter(config: dict, out: Path) -> None:
         ax.set_ylabel("Predicted Volume (log)")
         ax.set_title(f"{domain.upper()} — Total Volume (CV $R^2$={r2:.3f})")
 
-    fig.suptitle(f"Probe Predictions — {_get_label(best_cond)}",
-                 fontsize=PLOT_SETTINGS["axes_titlesize"])
+    fig.suptitle(
+        f"Probe Predictions — {_get_label(best_cond)}", fontsize=PLOT_SETTINGS["axes_titlesize"]
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     _save_fig(fig, out / "F9_probe_scatter")
 
 
 def fig_f10_radar(config: dict, metrics: dict, out: Path) -> None:
-    """F10: Summary radar chart — multi-axis comparison."""
-    categories = [
-        "MEN Dice", "GLI Dice", r"Vol $R^2$", r"Loc $R^2$",
-        "1 - MMD", "Var (norm)",
+    """F10: Summary radar chart — multi-axis comparison (dynamic probes)."""
+    # Build categories and value extractors dynamically
+    categories = ["MEN Dice", "GLI Dice"]
+    extractors = [
+        lambda m: m.get("dice_men_dice_mean", 0),
+        lambda m: m.get("dice_gli_dice_mean", 0),
     ]
+
+    # Add probe axes for available semantics
+    for sem, label in [("volume", r"Vol $R^2$"), ("location", r"Loc $R^2$")]:
+        key = f"probe_men_r2_{sem}_linear"
+        if any(m.get(key) is not None for m in metrics.values()):
+            categories.append(label)
+            extractors.append(lambda m, k=key: max(m.get(k, 0), 0))
+
+    # Always add domain alignment and variance
+    categories.extend(["1 - MMD", "Var (norm)"])
+    extractors.extend(
+        [
+            lambda m: 1.0 - m.get("dgap_mmd_squared", 1),
+            lambda m: min(
+                m.get("probe_men_variance_mean", m.get("dgap_men_variance_mean", 0)) * 10, 1.0
+            ),
+        ]
+    )
+
     n_cats = len(categories)
 
     # Extract values, normalise to [0, 1] range
     raw = {}
     for cond in CONDITION_ORDER_DUAL:
         m = metrics[cond]
-        raw[cond] = [
-            m.get("dice_men_dice_mean", 0),
-            m.get("dice_gli_dice_mean", 0),
-            max(m.get("probe_men_r2_volume_linear", 0), 0),
-            max(m.get("probe_men_r2_location_linear", 0), 0),
-            1.0 - m.get("dgap_mmd_squared", 1),
-            min(m.get("probe_men_variance_mean", m.get("dgap_men_variance_mean", 0)) * 10, 1.0),
-        ]
+        raw[cond] = [ext(m) for ext in extractors]
 
     angles = np.linspace(0, 2 * np.pi, n_cats, endpoint=False).tolist()
     angles += angles[:1]  # close polygon
@@ -600,15 +677,21 @@ def fig_f10_radar(config: dict, metrics: dict, out: Path) -> None:
 
     for cond in CONDITION_ORDER_DUAL:
         vals = raw[cond] + raw[cond][:1]
-        ax.plot(angles, vals, linewidth=PLOT_SETTINGS["line_width"],
-                label=_get_label(cond), color=_get_color(cond))
+        ax.plot(
+            angles,
+            vals,
+            linewidth=PLOT_SETTINGS["line_width"],
+            label=_get_label(cond),
+            color=_get_color(cond),
+        )
         ax.fill(angles, vals, alpha=0.1, color=_get_color(cond))
 
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, fontsize=PLOT_SETTINGS["tick_labelsize"])
     ax.set_ylim(0, 1)
-    ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1),
-              fontsize=PLOT_SETTINGS["legend_fontsize"] - 1)
+    ax.legend(
+        loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=PLOT_SETTINGS["legend_fontsize"] - 1
+    )
     ax.set_title("Condition Summary", fontsize=PLOT_SETTINGS["axes_titlesize"], pad=20)
 
     _save_fig(fig, out / "F10_radar_summary")
@@ -622,6 +705,7 @@ def fig_f10_radar(config: dict, metrics: dict, out: Path) -> None:
 def generate_summary_table(metrics: dict, out: Path) -> pd.DataFrame:
     """Generate summary CSV with key metrics side-by-side."""
     rows = []
+    # Build metric keys dynamically — always include dice/domain gap, conditionally add probes
     metric_keys = [
         ("dice_men_dice_mean", "MEN Dice (Mean)"),
         ("dice_men_dice_TC", "MEN Dice (TC)"),
@@ -631,19 +715,27 @@ def generate_summary_table(metrics: dict, out: Path) -> pd.DataFrame:
         ("dice_gli_dice_TC", "GLI Dice (TC)"),
         ("dice_gli_dice_WT", "GLI Dice (WT)"),
         ("dice_gli_dice_ET", "GLI Dice (ET)"),
-        ("probe_men_r2_volume_linear", "MEN Vol R2 (Linear)"),
-        ("probe_men_r2_volume_rbf", "MEN Vol R2 (RBF)"),
-        ("probe_men_r2_location_linear", "MEN Loc R2 (Linear)"),
-        ("probe_men_r2_location_rbf", "MEN Loc R2 (RBF)"),
-        ("probe_men_r2_shape_linear", "MEN Shape R2 (Linear)"),
-        ("probe_men_r2_shape_rbf", "MEN Shape R2 (RBF)"),
-        ("dgap_mmd_squared", "MMD^2"),
-        ("dgap_domain_classifier_accuracy", "Domain Classifier Acc"),
-        ("dgap_cka_men_vs_gli", "CKA (MEN vs GLI)"),
-        ("dgap_combined_effective_rank", "Effective Rank"),
-        ("dgap_men_variance_mean", "MEN Variance Mean"),
-        ("dgap_men_n_dead_dims", "MEN Dead Dims"),
     ]
+
+    # Dynamically add probe rows for available semantics
+    for sem, label in [("volume", "Vol"), ("location", "Loc"), ("shape", "Shape")]:
+        lin_key = f"probe_men_r2_{sem}_linear"
+        if any(m.get(lin_key) is not None for m in metrics.values()):
+            metric_keys.append((lin_key, f"MEN {label} R2 (Linear)"))
+            rbf_key = f"probe_men_r2_{sem}_rbf"
+            if any(m.get(rbf_key) is not None for m in metrics.values()):
+                metric_keys.append((rbf_key, f"MEN {label} R2 (RBF)"))
+
+    metric_keys.extend(
+        [
+            ("dgap_mmd_squared", "MMD^2"),
+            ("dgap_domain_classifier_accuracy", "Domain Classifier Acc"),
+            ("dgap_cka_men_vs_gli", "CKA (MEN vs GLI)"),
+            ("dgap_combined_effective_rank", "Effective Rank"),
+            ("dgap_men_variance_mean", "MEN Variance Mean"),
+            ("dgap_men_n_dead_dims", "MEN Dead Dims"),
+        ]
+    )
 
     for key, label in metric_keys:
         row = {"Metric": label}
@@ -721,16 +813,24 @@ def _find_best(metrics: dict, key: str, lower_better: bool = False) -> str:
     return best_cond
 
 
-def generate_html_report(metrics: dict, summary_df: pd.DataFrame,
-                         figures_dir: Path, out: Path) -> None:
+def generate_html_report(
+    metrics: dict, summary_df: pd.DataFrame, figures_dir: Path, out: Path
+) -> None:
     """Generate self-contained HTML report with inline CSS and base64 images."""
 
     # Collect figure base64 strings
     figures = {}
     for fname in [
-        "F1_segmentation", "F2_probes", "F3_domain_gap", "F4_variance_spectrum",
-        "F5_umap_embeddings", "F6_training_dynamics", "F7_cross_domain_transfer",
-        "F8_correlation_structure", "F9_probe_scatter", "F10_radar_summary",
+        "F1_segmentation",
+        "F2_probes",
+        "F3_domain_gap",
+        "F4_variance_spectrum",
+        "F5_umap_embeddings",
+        "F6_training_dynamics",
+        "F7_cross_domain_transfer",
+        "F8_correlation_structure",
+        "F9_probe_scatter",
+        "F10_radar_summary",
     ]:
         b64 = _fig_to_base64(figures_dir / fname)
         if b64:
@@ -743,20 +843,26 @@ def generate_html_report(metrics: dict, summary_df: pd.DataFrame,
         ("dice_men_dice_WT", "MEN Dice (WT)", ".3f", False),
         ("dice_gli_dice_mean", "GLI Dice (Mean)", ".3f", False),
         ("dice_gli_dice_WT", "GLI Dice (WT)", ".3f", False),
-        ("probe_men_r2_volume_linear", "MEN Vol R^2", ".3f", False),
-        ("probe_men_r2_location_linear", "MEN Loc R^2", ".3f", False),
-        ("probe_men_r2_shape_linear", "MEN Shape R^2", ".3f", False),
-        ("dgap_mmd_squared", "MMD^2", ".4f", True),
-        ("dgap_combined_effective_rank", "Effective Rank", ".1f", False),
-        ("dgap_men_variance_mean", "Mean Variance", ".4f", False),
     ]
+    # Dynamically add probe rows for available semantics
+    for sem, label in [("volume", "Vol"), ("location", "Loc"), ("shape", "Shape")]:
+        key = f"probe_men_r2_{sem}_linear"
+        if any(m.get(key) is not None for m in metrics.values()):
+            table_metrics.append((key, f"MEN {label} R^2", ".3f", False))
+    table_metrics.extend(
+        [
+            ("dgap_mmd_squared", "MMD^2", ".4f", True),
+            ("dgap_combined_effective_rank", "Effective Rank", ".1f", False),
+            ("dgap_men_variance_mean", "Mean Variance", ".4f", False),
+        ]
+    )
 
     for key, label, fmt, lower_better in table_metrics:
         best = _find_best(metrics, key, lower_better)
         cells = f"<td>{label}</td>"
         for cond in CONDITION_ORDER_DUAL:
             v = metrics[cond].get(key, np.nan)
-            is_best = (cond == best)
+            is_best = cond == best
             cells += _metric_cell(v, fmt, bold=is_best)
         metric_rows_html.append(f"<tr>{cells}</tr>")
 
@@ -766,40 +872,68 @@ def generate_html_report(metrics: dict, summary_df: pd.DataFrame,
     # Figure sections
     fig_sections = []
     fig_info = [
-        ("F1_segmentation", "Segmentation Performance",
-         "Grouped bar charts comparing Dice scores across MEN and GLI domains. "
-         "dual_r8 achieves the best MEN mean Dice (0.574) and dramatically improves "
-         "GLI Dice (0.653 vs 0.276 baseline), confirming effective dual-domain adaptation."),
-        ("F2_probes", "Semantic Probe Performance",
-         "Linear and GP-RBF probe R^2 for volume, location, and shape targets on MEN features. "
-         "dual_r8 improves volume R^2 by +11% over baseline. Location is stable across conditions. "
-         "Shape R^2 degrades in dual_r8, likely due to VICReg decorrelation."),
-        ("F3_domain_gap", "Domain Alignment Metrics",
-         "MMD^2 drops 3.2x with dual_r8 (0.037 vs 0.118), confirming reduced domain gap. "
-         "Effective rank concentrates from 47.6 to 25.4 — fewer but more informative dimensions."),
-        ("F4_variance_spectrum", "Variance Spectrum",
-         "Sorted per-dimension variance on log scale. dual_r8 has 13x higher mean variance "
-         "(0.068 vs 0.005), indicating the encoder learns to spread information across "
-         "active dimensions rather than compressing into near-zero variance."),
-        ("F5_umap_embeddings", "UMAP Embeddings",
-         "Dual-domain UMAP projections colored by domain, volume, centroid Z, and sphericity. "
-         "dual_r8 shows the clearest semantic organization with smooth volume gradients."),
-        ("F6_training_dynamics", "Training Dynamics",
-         "Per-epoch validation Dice and training loss. men_r8 overfits early (best at epoch 2). "
-         "dual_r8 shows steady improvement with the GLI domain providing regularization."),
-        ("F7_cross_domain_transfer", "Cross-Domain Probe Transfer",
-         "Heatmap of R^2 when probes trained on one domain are tested on another. "
-         "Negative transfer in GLI->MEN volume indicates domain-specific volume encoding; "
-         "location transfers reasonably across domains."),
-        ("F8_correlation_structure", "Feature Correlation Structure",
-         "768x768 absolute correlation matrices. dual_r8 shows sparser, more structured "
-         "correlations compared to the diffuse baseline pattern."),
-        ("F9_probe_scatter", "Probe Prediction Scatter",
-         "Cross-validated Ridge predictions vs actual total volume for dual_r8. "
-         "Both domains show positive correlation, with MEN achieving higher R^2."),
-        ("F10_radar_summary", "Summary Radar",
-         "Multi-axis comparison normalised to [0,1]. dual_r8 dominates on Dice, volume R^2, "
-         "and domain alignment (1-MMD). Baseline retains a slight edge on location R^2."),
+        (
+            "F1_segmentation",
+            "Segmentation Performance",
+            "Grouped bar charts comparing Dice scores across MEN and GLI domains. "
+            "dual_r8 achieves the best MEN mean Dice (0.574) and dramatically improves "
+            "GLI Dice (0.653 vs 0.276 baseline), confirming effective dual-domain adaptation.",
+        ),
+        (
+            "F2_probes",
+            "Semantic Probe Performance",
+            "Linear and GP-RBF probe R^2 for available semantic targets on MEN features. "
+            "Panels are generated dynamically based on which targets were evaluated.",
+        ),
+        (
+            "F3_domain_gap",
+            "Domain Alignment Metrics",
+            "MMD^2 drops 3.2x with dual_r8 (0.037 vs 0.118), confirming reduced domain gap. "
+            "Effective rank concentrates from 47.6 to 25.4 — fewer but more informative dimensions.",
+        ),
+        (
+            "F4_variance_spectrum",
+            "Variance Spectrum",
+            "Sorted per-dimension variance on log scale. dual_r8 has 13x higher mean variance "
+            "(0.068 vs 0.005), indicating the encoder learns to spread information across "
+            "active dimensions rather than compressing into near-zero variance.",
+        ),
+        (
+            "F5_umap_embeddings",
+            "UMAP Embeddings",
+            "Dual-domain UMAP projections colored by domain and available semantic targets. "
+            "Panels are generated dynamically based on which targets exist in the data.",
+        ),
+        (
+            "F6_training_dynamics",
+            "Training Dynamics",
+            "Per-epoch validation Dice and training loss. men_r8 overfits early (best at epoch 2). "
+            "dual_r8 shows steady improvement with the GLI domain providing regularization.",
+        ),
+        (
+            "F7_cross_domain_transfer",
+            "Cross-Domain Probe Transfer",
+            "Heatmap of R^2 when probes trained on one domain are tested on another. "
+            "Rows correspond to available semantic targets (dynamically detected).",
+        ),
+        (
+            "F8_correlation_structure",
+            "Feature Correlation Structure",
+            "768x768 absolute correlation matrices. dual_r8 shows sparser, more structured "
+            "correlations compared to the diffuse baseline pattern.",
+        ),
+        (
+            "F9_probe_scatter",
+            "Probe Prediction Scatter",
+            "Cross-validated Ridge predictions vs actual total volume for dual_r8. "
+            "Both domains show positive correlation, with MEN achieving higher R^2.",
+        ),
+        (
+            "F10_radar_summary",
+            "Summary Radar",
+            "Multi-axis comparison normalised to [0,1]. Axes include Dice, available probe R^2, "
+            "domain alignment (1-MMD), and variance.",
+        ),
     ]
 
     for fname, title, desc in fig_info:
@@ -865,19 +999,16 @@ def generate_html_report(metrics: dict, summary_df: pd.DataFrame,
 <body>
 
 <h1>Dual-Domain LoRA Adaptation Analysis</h1>
-<p class="meta">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} |
+<p class="meta">Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")} |
    Experiment: <code>dual_domain_v1</code> |
-   Conditions: {', '.join(_get_label(c) for c in CONDITION_ORDER_DUAL)}</p>
+   Conditions: {", ".join(_get_label(c) for c in CONDITION_ORDER_DUAL)}</p>
 
 <h2>1. Summary</h2>
 <div class="summary-box">
-<p><b>Key finding:</b> Dual-domain LoRA (dual_r8) decisively outperforms both baseline and
-   MEN-only LoRA on segmentation (+10% MEN Dice, +136% GLI Dice vs baseline) and domain
-   alignment (MMD^2 reduced 3.2x). Volume probe R^2 improves +11%. Shape encoding degrades,
-   likely due to VICReg decorrelation pressure on shape-correlated dimensions.</p>
-<p><b>Recommendation:</b> Proceed to Phase 2 (SDP) with dual_r8 encoder. Relax shape R^2
-   threshold from 0.30 to 0.15 given the encoder ceiling. Volume-focused growth prediction
-   remains feasible.</p>
+<p><b>Key finding:</b> Dual-domain LoRA (dual_r8) outperforms both baseline and MEN-only LoRA
+   on segmentation and domain alignment. Volume probe R^2 shows clear improvement.</p>
+<p><b>Recommendation:</b> Proceed to Phase 2 (SDP) with dual_r8 encoder. Volume-focused
+   growth prediction is the primary downstream task.</p>
 </div>
 
 <h2>2. Metrics Comparison</h2>
@@ -889,22 +1020,22 @@ def generate_html_report(metrics: dict, summary_df: pd.DataFrame,
 </table>
 
 <h2>3. Segmentation Analysis</h2>
-{fig_sections[0] if len(fig_sections) > 0 else ''}
+{fig_sections[0] if len(fig_sections) > 0 else ""}
 
 <h2>4. Feature Quality</h2>
-{''.join(fig_sections[1:4]) if len(fig_sections) > 1 else ''}
+{"".join(fig_sections[1:4]) if len(fig_sections) > 1 else ""}
 
 <h2>5. Domain Alignment</h2>
-{''.join(fig_sections[4:6]) if len(fig_sections) > 4 else ''}
+{"".join(fig_sections[4:6]) if len(fig_sections) > 4 else ""}
 
 <h2>6. Training & Cross-Domain Analysis</h2>
-{''.join(fig_sections[6:9]) if len(fig_sections) > 6 else ''}
+{"".join(fig_sections[6:9]) if len(fig_sections) > 6 else ""}
 
 <h2>7. SDP Readiness Assessment</h2>
 {sdp_assessment}
 
 <h2>8. Overall Summary</h2>
-{fig_sections[-1] if fig_sections else ''}
+{fig_sections[-1] if fig_sections else ""}
 
 <h2>9. Conclusions & Recommendations</h2>
 <ol>
@@ -912,12 +1043,10 @@ def generate_html_report(metrics: dict, summary_df: pd.DataFrame,
     VICReg provides both better segmentation and more informative features.</li>
 <li><b>men_r8 shows overfitting</b> — best Dice at epoch 2, negligible probe improvement
     over baseline. Single-domain LoRA with this training budget is insufficient.</li>
-<li><b>SDP should proceed</b> with dual_r8 features. Volume partition (24 dims) has adequate
-    R^2 = 0.625. Location (R^2 = 0.350) and shape (R^2 = -0.060) face encoder ceilings;
-    the SDP cannot exceed what the encoder encodes.</li>
-<li><b>Effective rank concentration</b> (25.4/768) is a feature, not a bug: the encoder
-    learns a low-dimensional but highly informative manifold. Mean variance 13x higher
-    than baseline confirms the active dimensions carry real signal.</li>
+<li><b>SDP should proceed</b> with dual_r8 features. Volume encoding is the primary
+    downstream target for growth prediction.</li>
+<li><b>Effective rank concentration</b> is a feature, not a bug: the encoder learns a
+    low-dimensional but highly informative manifold.</li>
 </ol>
 
 <hr>
@@ -932,29 +1061,38 @@ def generate_html_report(metrics: dict, summary_df: pd.DataFrame,
 
 
 def _sdp_readiness_narrative(m_base: dict, m_dual: dict, m_men: dict) -> str:
-    """Generate SDP readiness assessment HTML section."""
+    """Generate SDP readiness assessment HTML section (R1: volume-focused)."""
     vol_r2 = m_dual.get("probe_men_r2_volume_linear", 0)
-    loc_r2 = m_dual.get("probe_men_r2_location_linear", 0)
-    shape_r2 = m_dual.get("probe_men_r2_shape_linear", 0)
     eff_rank = m_dual.get("dgap_combined_effective_rank", 0)
 
     vol_status = "PASS" if vol_r2 >= 0.50 else "FAIL"
-    loc_status = "MARGINAL" if loc_r2 >= 0.30 else "FAIL"
-    shape_status = "FAIL — below encoder ceiling"
+
+    # Build partition items dynamically
+    items = [
+        f"<li>Volume partition: R^2 = {vol_r2:.3f} — <b>{vol_status}</b> "
+        f"(target: 0.80, minimum: 0.50)</li>"
+    ]
+
+    # Add location if available (demoted to static GP covariate in R1)
+    loc_r2 = m_dual.get("probe_men_r2_location_linear")
+    if loc_r2 is not None:
+        loc_status = "INFO" if loc_r2 >= 0.30 else "LOW"
+        items.append(
+            f"<li>Location (static covariate): R^2 = {loc_r2:.3f} — <b>{loc_status}</b> "
+            f"(not a predicted partition in R1)</li>"
+        )
+
+    items.append(f"<li>Effective rank: {eff_rank:.1f}/768 — concentrated but not collapsed</li>")
 
     return f"""
-    <div class="{'summary-box' if vol_status == 'PASS' else 'warning-box'}">
+    <div class="{"summary-box" if vol_status == "PASS" else "warning-box"}">
     <p><b>SDP Readiness (dual_r8 encoder):</b></p>
     <ul>
-        <li>Volume partition: R^2 = {vol_r2:.3f} — <b>{vol_status}</b> (target: 0.80, minimum: 0.50)</li>
-        <li>Location partition: R^2 = {loc_r2:.3f} — <b>{loc_status}</b> (target: 0.85, minimum: 0.30)</li>
-        <li>Shape partition: R^2 = {shape_r2:.3f} — <b>{shape_status}</b> (target: 0.30)</li>
-        <li>Effective rank: {eff_rank:.1f}/768 — concentrated but not collapsed</li>
+        {"".join(items)}
     </ul>
-    <p><b>Assessment:</b> The encoder provides adequate volume encoding for growth prediction
-       (the primary downstream task). Location and shape partitions face fundamental encoder
-       ceilings that SDP cannot overcome. Recommend proceeding with relaxed thresholds:
-       vol >= 0.50, loc >= 0.25, shape >= 0.05.</p>
+    <p><b>Assessment (R1):</b> Volume is the primary target for growth prediction. Location is
+       demoted to a static GP covariate (not a predicted SDP partition). Shape is removed entirely
+       (R^2 &lt; 0.11). The encoder provides adequate volume encoding for downstream tasks.</p>
     </div>"""
 
 
@@ -1026,7 +1164,9 @@ def main() -> None:
         description="Dual-domain LoRA analysis and report generation",
     )
     parser.add_argument(
-        "--config", type=str, required=True,
+        "--config",
+        type=str,
+        required=True,
         help="Path to experiment config YAML",
     )
     args = parser.parse_args()
