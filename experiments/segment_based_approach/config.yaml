@@ -15,10 +15,13 @@ segmentation:
   sw_overlap: 0.5
   sw_mode: gaussian
   wt_threshold: 0.5
+  model_name: brainsegfounder       # group name under predicted_segs/ in H5
+  save_to_h5: true                  # save probabilities + labels to H5
 
 volume:
   transform: log1p
 
+# Shared GP/kernel parameters (used by ScalarGP and HGP)
 gp:
   kernel: matern52
   mean_function: linear
@@ -27,6 +30,16 @@ gp:
   lengthscale_bounds: [0.1, 50.0]
   signal_var_bounds: [0.001, 10.0]
   noise_var_bounds: [0.000001, 5.0]
+
+# LME-specific config
+lme:
+  method: reml
+
+# Which models to evaluate (all enabled by default)
+models:
+  scalar_gp: true
+  lme: true
+  hgp: true
 
 time:
   variable: ordinal

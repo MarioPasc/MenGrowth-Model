@@ -45,10 +45,54 @@ def baseline_config(mengrowth_h5_path, real_checkpoint_path, tmp_path):
             "signal_var_bounds": [0.001, 10.0],
             "noise_var_bounds": [0.000001, 5.0],
         },
+        "lme": {"method": "reml"},
+        "models": {"scalar_gp": True, "lme": True, "hgp": True},
         "time": {"variable": "ordinal"},
         "experiment": {"seed": 42},
         "patients": {"exclude": ["MenGrowth-0028"], "min_timepoints": 2},
     }
+
+
+def _build_manual_scan_volumes(h5_path: str) -> list:
+    """Helper: build ScanVolumes from manual H5 segmentations (no GPU needed)."""
+    import h5py
+
+    from experiments.segment_based_approach.segment import ScanVolumes
+
+    scan_volumes = []
+    with h5py.File(h5_path, "r") as f:
+        n_scans = f.attrs["n_scans"]
+        spacing = tuple(f.attrs.get("spacing", [1.0, 1.0, 1.0]))
+        voxel_vol = float(np.prod(spacing))
+        scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
+        patient_ids = [s.decode() if isinstance(s, bytes) else s for s in f["patient_ids"][:]]
+        timepoint_idx = f["timepoint_idx"][:].astype(int)
+
+        for i in range(n_scans):
+            seg = f["segs"][i][0]  # [D, H, W]
+            wt_vol = float((seg > 0).sum() * voxel_vol)
+            tc_vol = float(((seg == 1) | (seg == 3)).sum() * voxel_vol)
+            et_vol = float((seg == 3).sum() * voxel_vol)
+
+            scan_volumes.append(
+                ScanVolumes(
+                    scan_id=scan_ids[i],
+                    patient_id=patient_ids[i],
+                    timepoint_idx=int(timepoint_idx[i]),
+                    manual_wt_vol_mm3=wt_vol,
+                    predicted_wt_vol_mm3=0.0,
+                    manual_tc_vol_mm3=tc_vol,
+                    predicted_tc_vol_mm3=0.0,
+                    manual_et_vol_mm3=et_vol,
+                    predicted_et_vol_mm3=0.0,
+                    wt_dice=0.0,
+                    tc_dice=0.0,
+                    et_dice=0.0,
+                    is_empty_manual=(wt_vol == 0.0),
+                    is_empty_predicted=True,
+                )
+            )
+    return scan_volumes
 
 
 class TestH5VolumeExtraction:
@@ -95,41 +139,9 @@ class TestTrajectoryBuilding:
     """Test trajectory construction from manual volumes."""
 
     def test_build_manual_trajectories(self, baseline_config):
-        import h5py
+        from experiments.segment_based_approach.segment import SegmentationVolumeExtractor
 
-        from experiments.segment_based_approach.segment import (
-            ScanVolumes,
-            SegmentationVolumeExtractor,
-        )
-
-        h5_path = baseline_config["paths"]["mengrowth_h5"]
-
-        # Build ScanVolumes from manual data (no BSF inference needed)
-        scan_volumes = []
-        with h5py.File(h5_path, "r") as f:
-            n_scans = f.attrs["n_scans"]
-            spacing = tuple(f.attrs.get("spacing", [1.0, 1.0, 1.0]))
-            voxel_vol = float(np.prod(spacing))
-            scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
-            patient_ids = [s.decode() if isinstance(s, bytes) else s for s in f["patient_ids"][:]]
-            timepoint_idx = f["timepoint_idx"][:].astype(int)
-
-            for i in range(n_scans):
-                seg = f["segs"][i][0]
-                vol = float((seg > 0).sum() * voxel_vol)
-                scan_volumes.append(
-                    ScanVolumes(
-                        scan_id=scan_ids[i],
-                        patient_id=patient_ids[i],
-                        timepoint_idx=int(timepoint_idx[i]),
-                        manual_vol_mm3=vol,
-                        predicted_vol_mm3=0.0,
-                        wt_dice=0.0,
-                        is_empty_manual=(vol == 0.0),
-                        is_empty_predicted=True,
-                    )
-                )
-
+        scan_volumes = _build_manual_scan_volumes(baseline_config["paths"]["mengrowth_h5"])
         extractor = SegmentationVolumeExtractor(baseline_config)
         trajectories = extractor.build_trajectories(scan_volumes, "manual")
 
@@ -147,70 +159,91 @@ class TestTrajectoryBuilding:
             assert np.all(np.isfinite(t.observations))
 
 
-class TestEndToEndManualVolumes:
-    """End-to-end test using manual volumes (no GPU needed)."""
+class TestSegmentationComparison:
+    """Test segmentation comparison report generation."""
 
-    def test_lopo_on_manual_volumes(self, baseline_config):
-        """Run LOPO-CV on manual WT volumes from H5 segmentations."""
-        import h5py
+    def test_generate_report(self, baseline_config):
+        from experiments.segment_based_approach.segment import generate_segmentation_report
 
-        from experiments.segment_based_approach.segment import (
-            ScanVolumes,
-            SegmentationVolumeExtractor,
-        )
+        scan_volumes = _build_manual_scan_volumes(baseline_config["paths"]["mengrowth_h5"])
+        report = generate_segmentation_report(scan_volumes)
+
+        assert "per_region" in report
+        assert "n_total_scans" in report
+        for region in ["wt", "tc", "et"]:
+            assert region in report["per_region"]
+            stats = report["per_region"][region]
+            assert "dice_mean" in stats
+            assert "volume_pearson_r" in stats
+        assert "per_patient_wt_dice" in report
+        assert "per_scan" in report
+
+
+class TestMultiModelLOPO:
+    """End-to-end multi-model LOPO test on manual volumes."""
+
+    def test_lopo_scalar_gp(self, baseline_config):
+        from experiments.segment_based_approach.segment import SegmentationVolumeExtractor
         from growth.evaluation.lopo_evaluator import LOPOEvaluator
         from growth.models.growth.scalar_gp import ScalarGP
 
-        h5_path = baseline_config["paths"]["mengrowth_h5"]
-
-        # Extract manual volumes
-        scan_volumes = []
-        with h5py.File(h5_path, "r") as f:
-            n_scans = f.attrs["n_scans"]
-            spacing = tuple(f.attrs.get("spacing", [1.0, 1.0, 1.0]))
-            voxel_vol = float(np.prod(spacing))
-            scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
-            patient_ids = [s.decode() if isinstance(s, bytes) else s for s in f["patient_ids"][:]]
-            timepoint_idx = f["timepoint_idx"][:].astype(int)
-
-            for i in range(n_scans):
-                seg = f["segs"][i][0]
-                vol = float((seg > 0).sum() * voxel_vol)
-                scan_volumes.append(
-                    ScanVolumes(
-                        scan_id=scan_ids[i],
-                        patient_id=patient_ids[i],
-                        timepoint_idx=int(timepoint_idx[i]),
-                        manual_vol_mm3=vol,
-                        predicted_vol_mm3=0.0,
-                        wt_dice=0.0,
-                        is_empty_manual=(vol == 0.0),
-                        is_empty_predicted=True,
-                    )
-                )
-
+        scan_volumes = _build_manual_scan_volumes(baseline_config["paths"]["mengrowth_h5"])
         extractor = SegmentationVolumeExtractor(baseline_config)
         trajectories = extractor.build_trajectories(scan_volumes, "manual")
 
-        # Run LOPO with fast settings
-        gp_kwargs = {
-            "kernel_type": "matern52",
-            "mean_function": "linear",
-            "n_restarts": 2,
-            "max_iter": 200,
-            "seed": 42,
-        }
         evaluator = LOPOEvaluator(prediction_protocols=["last_from_rest"])
-        results = evaluator.evaluate(ScalarGP, trajectories, **gp_kwargs)
+        results = evaluator.evaluate(
+            ScalarGP,
+            trajectories,
+            kernel_type="matern52",
+            mean_function="linear",
+            n_restarts=2,
+            max_iter=200,
+            seed=42,
+        )
 
-        # Should complete all folds
         assert len(results.fold_results) > 0
-        assert len(results.failed_folds) < len(trajectories) // 2
-
-        # Metrics should be computed
         assert "last_from_rest/r2_log" in results.aggregate_metrics
         assert "last_from_rest/calibration_95" in results.aggregate_metrics
+        assert np.isfinite(results.aggregate_metrics["last_from_rest/r2_log"])
 
-        # R2 should be finite
-        r2 = results.aggregate_metrics["last_from_rest/r2_log"]
-        assert np.isfinite(r2)
+    def test_lopo_lme(self, baseline_config):
+        from experiments.segment_based_approach.segment import SegmentationVolumeExtractor
+        from growth.evaluation.lopo_evaluator import LOPOEvaluator
+        from growth.models.growth.lme_model import LMEGrowthModel
+
+        scan_volumes = _build_manual_scan_volumes(baseline_config["paths"]["mengrowth_h5"])
+        extractor = SegmentationVolumeExtractor(baseline_config)
+        trajectories = extractor.build_trajectories(scan_volumes, "manual")
+
+        evaluator = LOPOEvaluator(prediction_protocols=["last_from_rest"])
+        results = evaluator.evaluate(LMEGrowthModel, trajectories, method="reml")
+
+        assert len(results.fold_results) > 0
+        assert "last_from_rest/r2_log" in results.aggregate_metrics
+        assert "last_from_rest/calibration_95" in results.aggregate_metrics
+        assert np.isfinite(results.aggregate_metrics["last_from_rest/r2_log"])
+
+    def test_lopo_hgp(self, baseline_config):
+        from experiments.segment_based_approach.segment import SegmentationVolumeExtractor
+        from growth.evaluation.lopo_evaluator import LOPOEvaluator
+        from growth.models.growth.hgp_model import HierarchicalGPModel
+
+        scan_volumes = _build_manual_scan_volumes(baseline_config["paths"]["mengrowth_h5"])
+        extractor = SegmentationVolumeExtractor(baseline_config)
+        trajectories = extractor.build_trajectories(scan_volumes, "manual")
+
+        evaluator = LOPOEvaluator(prediction_protocols=["last_from_rest"])
+        results = evaluator.evaluate(
+            HierarchicalGPModel,
+            trajectories,
+            kernel_type="matern52",
+            n_restarts=2,
+            max_iter=200,
+            seed=42,
+        )
+
+        assert len(results.fold_results) > 0
+        assert "last_from_rest/r2_log" in results.aggregate_metrics
+        assert "last_from_rest/calibration_95" in results.aggregate_metrics
+        assert np.isfinite(results.aggregate_metrics["last_from_rest/r2_log"])

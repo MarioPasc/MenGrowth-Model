@@ -134,7 +134,27 @@ if [[ ! "${OUTPUT_DIR}" = /* ]]; then
     OUTPUT_DIR="${REPO_DIR}/${OUTPUT_DIR}"
 fi
 
-for f in lopo_results_manual.json lopo_results_predicted.json volume_summary.json; do
+# Print all LOPO results (multi-model)
+for f in ${OUTPUT_DIR}/lopo_results_*.json; do
+    if [ -f "${f}" ]; then
+        BASENAME=$(basename "${f}")
+        echo ""
+        echo "--- ${BASENAME} ---"
+        python -c "
+import json
+with open('${f}') as fp:
+    data = json.load(fp)
+print(f'  Model: {data.get(\"model_name\", \"?\")}')
+print(f'  Folds: {data.get(\"n_folds\", \"?\")} ({data.get(\"n_failed\", 0)} failed)')
+if 'aggregate_metrics' in data:
+    for k, v in sorted(data['aggregate_metrics'].items()):
+        print(f'  {k}: {v:.4f}')
+"
+    fi
+done
+
+# Print volume/segmentation summaries
+for f in volume_summary.json segmentation_comparison.json model_comparison.json; do
     RESULT_FILE="${OUTPUT_DIR}/${f}"
     if [ -f "${RESULT_FILE}" ]; then
         echo ""
@@ -143,12 +163,20 @@ for f in lopo_results_manual.json lopo_results_predicted.json volume_summary.jso
 import json
 with open('${RESULT_FILE}') as fp:
     data = json.load(fp)
-if 'aggregate_metrics' in data:
-    for k, v in sorted(data['aggregate_metrics'].items()):
-        print(f'  {k}: {v:.4f}')
-else:
-    for k, v in data.items():
-        print(f'  {k}: {v}')
+# Print top-level scalar values
+for k, v in data.items():
+    if isinstance(v, (int, float, str, bool)):
+        if isinstance(v, float):
+            print(f'  {k}: {v:.4f}')
+        else:
+            print(f'  {k}: {v}')
+# Print per_region summary if present
+if 'per_region' in data:
+    for region, stats in data['per_region'].items():
+        dice_mean = stats.get('dice_mean', 0)
+        dice_std = stats.get('dice_std', 0)
+        vol_r = stats.get('volume_pearson_r', 0)
+        print(f'  {region.upper()}: Dice={dice_mean:.3f}+/-{dice_std:.3f}, Vol r={vol_r:.3f}')
 "
     fi
 done
