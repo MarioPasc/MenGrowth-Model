@@ -61,6 +61,20 @@ def _build_model_configs(cfg: dict) -> dict[str, tuple[type, dict]]:
     seed = cfg["experiment"]["seed"]
     models_cfg = cfg.get("models", {})
 
+    # Covariate settings (shared across all models)
+    cov_cfg = cfg.get("covariates", {})
+    cov_enabled = cov_cfg.get("enabled", False)
+    cov_features = cov_cfg.get("features", [])
+    cov_missing = cov_cfg.get("missing_strategy", "skip")
+
+    cov_kwargs: dict = {}
+    if cov_enabled:
+        cov_kwargs = {
+            "use_covariates": True,
+            "covariate_names": cov_features,
+            "missing_strategy": cov_missing,
+        }
+
     shared_gp_kwargs = {
         "kernel_type": gp_cfg["kernel"],
         "n_restarts": gp_cfg["n_restarts"],
@@ -69,6 +83,7 @@ def _build_model_configs(cfg: dict) -> dict[str, tuple[type, dict]]:
         "signal_var_bounds": tuple(gp_cfg["signal_var_bounds"]),
         "noise_var_bounds": tuple(gp_cfg["noise_var_bounds"]),
         "seed": seed,
+        **cov_kwargs,
     }
 
     models: dict[str, tuple[type, dict]] = {}
@@ -83,7 +98,7 @@ def _build_model_configs(cfg: dict) -> dict[str, tuple[type, dict]]:
         lme_cfg = cfg.get("lme", {})
         models["LME"] = (
             LMEGrowthModel,
-            {"method": lme_cfg.get("method", "reml")},
+            {"method": lme_cfg.get("method", "reml"), **cov_kwargs},
         )
 
     if models_cfg.get("hgp", True):
@@ -554,8 +569,9 @@ def _fig_lopo_scatter_multimodel(
     source: str = "manual",
 ) -> None:
     """Multi-model LOPO prediction scatter (predicted vs actual log(V+1))."""
+    suffix = f"_{source}"
     model_names = sorted(
-        {k.rsplit("_", 1)[0] for k in lopo_results},
+        {k[: -len(suffix)] for k in lopo_results if k.endswith(suffix)},
         key=lambda x: list(_COLORS.keys()).index(x) if x in _COLORS else 99,
     )
 
@@ -621,8 +637,9 @@ def _fig_calibration_multimodel(
     source: str = "manual",
 ) -> None:
     """Calibration curves for all GP models on a given source."""
+    suffix = f"_{source}"
     model_names = sorted(
-        {k.rsplit("_", 1)[0] for k in lopo_results},
+        {k[: -len(suffix)] for k in lopo_results if k.endswith(suffix)},
         key=lambda x: list(_COLORS.keys()).index(x) if x in _COLORS else 99,
     )
 
@@ -671,8 +688,9 @@ def _fig_model_comparison_bar(
     source: str = "manual",
 ) -> None:
     """Bar chart comparing R^2, MAE, and calibration across GP models."""
+    suffix = f"_{source}"
     model_names = sorted(
-        {k.rsplit("_", 1)[0] for k in lopo_results},
+        {k[: -len(suffix)] for k in lopo_results if k.endswith(suffix)},
         key=lambda x: list(_COLORS.keys()).index(x) if x in _COLORS else 99,
     )
 
@@ -833,7 +851,7 @@ def _fig_cross_source_summary(
             r2 = results.aggregate_metrics.get("last_from_rest/r2_log", float("nan"))
             if np.isfinite(r2) and r2 > best_r2:
                 best_r2 = r2
-                best_name = key.rsplit("_", 1)[0]
+                best_name = key[: -len(f"_{source_name}")]
         if np.isfinite(best_r2):
             source_best[source_name] = (best_name, best_r2)
 
@@ -1512,16 +1530,23 @@ def main() -> None:
     # =========================================================================
     # Phase 3: Build Trajectories for Each Source
     # =========================================================================
-    logger.info("=== Phase 3: Build Trajectories ===")
+    pred_target = cfg.get("prediction", {}).get("target", "absolute")
+    logger.info(f"=== Phase 3: Build Trajectories (target={pred_target}) ===")
     sources: dict[str, list] = {}
 
+    # Select trajectory builder based on prediction target
+    if pred_target == "delta_v":
+        build_fn = extractor.build_delta_trajectories
+    else:
+        build_fn = extractor.build_trajectories
+
     if use_manual:
-        traj_manual = extractor.build_trajectories(volumes, "manual")
+        traj_manual = build_fn(volumes, "manual")
         sources["manual"] = traj_manual
         logger.info(f"  manual: {len(traj_manual)} patients")
 
     for mc in seg_models:
-        traj = extractor.build_trajectories(volumes, mc.model_name)
+        traj = build_fn(volumes, mc.model_name)
         sources[mc.model_name] = traj
         logger.info(f"  {mc.model_name}: {len(traj)} patients")
 

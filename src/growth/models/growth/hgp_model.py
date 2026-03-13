@@ -25,6 +25,7 @@ import GPy
 import numpy as np
 
 from .base import FitResult, GrowthModel, PatientTrajectory, PredictionResult
+from .covariate_utils import get_patient_covariate_vector
 from .lme_model import LMEGrowthModel
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,9 @@ class HierarchicalGPModel(GrowthModel):
         signal_var_bounds: tuple[float, float] = (0.001, 10.0),
         noise_var_bounds: tuple[float, float] = (1e-6, 5.0),
         seed: int = 42,
+        use_covariates: bool = False,
+        covariate_names: list[str] | None = None,
+        missing_strategy: str = "skip",
     ) -> None:
         if kernel_type not in VALID_KERNELS:
             raise ValueError(f"Invalid kernel_type '{kernel_type}'. Must be one of {VALID_KERNELS}")
@@ -73,9 +77,15 @@ class HierarchicalGPModel(GrowthModel):
         self.signal_var_bounds = signal_var_bounds
         self.noise_var_bounds = noise_var_bounds
         self.seed = seed
+        self.use_covariates = use_covariates
+        self.covariate_names = covariate_names or []
+        self.missing_strategy = missing_strategy
 
         self._obs_dim: int = 0
-        self._lme_effects: list[tuple[float, float]] = []  # (β₀_d, β₁_d)
+        self._lme_effects: list[tuple[float, float]] = []  # (beta_0_d, beta_1_d)
+        self._cov_effects: list[dict[str, float]] = []  # per-dim covariate betas
+        self._active_cov_names: list[str] = []
+        self._cov_means: dict[str, float] = {}
         self._gpy_models: list[GPy.models.GPRegression] = []
         self._fitted: bool = False
 
@@ -119,14 +129,24 @@ class HierarchicalGPModel(GrowthModel):
         self._obs_dim = patients[0].obs_dim
         n_total = sum(p.n_timepoints for p in patients)
 
-        # Step 1: Get LME fixed effects (D18)
+        # Step 1: Get LME fixed effects (D18), including covariate effects
         if lme_model is not None and lme_model._fitted:
             self._lme_effects = lme_model.get_fixed_effects()
+            self._cov_effects = lme_model.get_covariate_effects()
+            self._active_cov_names = lme_model.get_active_covariate_names()
+            self._cov_means = lme_model.get_covariate_means()
         else:
             logger.info("No pre-fitted LME provided; fitting internally")
-            lme = LMEGrowthModel()
+            lme = LMEGrowthModel(
+                use_covariates=self.use_covariates,
+                covariate_names=self.covariate_names,
+                missing_strategy=self.missing_strategy,
+            )
             lme.fit(patients)
             self._lme_effects = lme.get_fixed_effects()
+            self._cov_effects = lme.get_covariate_effects()
+            self._active_cov_names = lme.get_active_covariate_names()
+            self._cov_means = lme.get_covariate_means()
 
         assert len(self._lme_effects) == self._obs_dim
 
@@ -140,12 +160,19 @@ class HierarchicalGPModel(GrowthModel):
         all_residuals: list[list[float]] = [[] for _ in range(self._obs_dim)]
 
         for p in patients:
+            cov_vec = get_patient_covariate_vector(
+                p, self._active_cov_names, self._cov_means
+            )
             for j in range(p.n_timepoints):
                 t = p.times[j]
                 all_t.append(t)
                 for d in range(self._obs_dim):
                     beta_0, beta_1 = self._lme_effects[d]
                     pop_mean = beta_0 + beta_1 * t
+                    # Add covariate contribution to population mean
+                    if cov_vec is not None and self._cov_effects[d]:
+                        for k, name in enumerate(self._active_cov_names):
+                            pop_mean += self._cov_effects[d].get(name, 0.0) * cov_vec[k]
                     all_residuals[d].append(p.observations[j, d] - pop_mean)
 
         X_pool = np.array(all_t)[:, np.newaxis]  # [N, 1]
@@ -230,6 +257,11 @@ class HierarchicalGPModel(GrowthModel):
         n_pred = len(t_pred)
         D = self._obs_dim
 
+        # Get covariate vector for this patient
+        cov_vec = get_patient_covariate_vector(
+            patient, self._active_cov_names, self._cov_means
+        )
+
         mean = np.zeros((n_pred, D))
         variance = np.zeros((n_pred, D))
 
@@ -242,6 +274,15 @@ class HierarchicalGPModel(GrowthModel):
             # Population mean at conditioning and prediction times
             pop_cond = beta_0 + beta_1 * t_cond
             pop_pred = beta_0 + beta_1 * t_pred
+
+            # Add covariate contribution
+            if cov_vec is not None and self._cov_effects[d]:
+                cov_offset = sum(
+                    self._cov_effects[d].get(name, 0.0) * cov_vec[k]
+                    for k, name in enumerate(self._active_cov_names)
+                )
+                pop_cond = pop_cond + cov_offset
+                pop_pred = pop_pred + cov_offset
 
             # Residuals at conditioning times
             r_cond = (y_cond[:, d] - pop_cond)[:, np.newaxis]

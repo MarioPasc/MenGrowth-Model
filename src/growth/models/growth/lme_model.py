@@ -24,6 +24,10 @@ import pandas as pd
 import statsmodels.formula.api as smf
 
 from .base import FitResult, GrowthModel, PatientTrajectory, PredictionResult
+from .covariate_utils import (
+    collect_covariates,
+    get_patient_covariate_vector,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,7 @@ class LMEDimensionFit:
     sigma_sq: float  # Residual variance
     omega: np.ndarray  # Random effects covariance [2, 2]
     converged: bool
+    covariate_betas: dict[str, float] | None = None  # Covariate fixed effects
 
 
 class LMEGrowthModel(GrowthModel):
@@ -50,11 +55,22 @@ class LMEGrowthModel(GrowthModel):
         method: Estimation method. ``"reml"`` (default) or ``"ml"``.
     """
 
-    def __init__(self, method: str = "reml") -> None:
+    def __init__(
+        self,
+        method: str = "reml",
+        use_covariates: bool = False,
+        covariate_names: list[str] | None = None,
+        missing_strategy: str = "skip",
+    ) -> None:
         self.method = method
+        self.use_covariates = use_covariates
+        self.covariate_names = covariate_names or []
+        self.missing_strategy = missing_strategy
         self._dim_fits: list[LMEDimensionFit] = []
         self._obs_dim: int = 0
         self._fitted: bool = False
+        self._active_cov_names: list[str] = []
+        self._cov_means: dict[str, float] = {}  # For imputation at predict time
 
     def fit(self, patients: list[PatientTrajectory]) -> FitResult:
         """Fit D independent LME models via REML.
@@ -68,21 +84,39 @@ class LMEGrowthModel(GrowthModel):
         if len(patients) == 0:
             raise ValueError("Cannot fit with zero patients")
 
+        # Collect covariates if enabled
+        cov_values: dict[str, np.ndarray] = {}
+        self._active_cov_names = []
+        if self.use_covariates and self.covariate_names:
+            cov_values, self._active_cov_names, patients = collect_covariates(
+                patients, self.covariate_names, self.missing_strategy
+            )
+            # Store means for prediction-time imputation
+            for i, name in enumerate(self._active_cov_names):
+                vals = [v[i] for v in cov_values.values()]
+                self._cov_means[name] = float(np.mean(vals)) if vals else 0.0
+
         self._obs_dim = patients[0].obs_dim
         n_total = sum(p.n_timepoints for p in patients)
 
         logger.info(
-            f"LME fitting: {len(patients)} patients, {n_total} observations, D={self._obs_dim}"
+            f"LME fitting: {len(patients)} patients, {n_total} observations, "
+            f"D={self._obs_dim}, covariates={self._active_cov_names}"
         )
 
         # Build long-format dataframe
         rows: list[dict] = []
         for p in patients:
+            cov = cov_values.get(p.patient_id)
             for j in range(p.n_timepoints):
-                row = {
+                row: dict = {
                     "patient_id": p.patient_id,
                     "time": p.times[j],
                 }
+                # Add covariate columns (static per patient, repeated per timepoint)
+                if cov is not None:
+                    for k, name in enumerate(self._active_cov_names):
+                        row[name] = cov[k]
                 for d in range(self._obs_dim):
                     row[f"y_{d}"] = p.observations[j, d]
                 rows.append(row)
@@ -122,10 +156,14 @@ class LMEGrowthModel(GrowthModel):
     def _fit_dimension(self, df: pd.DataFrame, d: int) -> LMEDimensionFit:
         """Fit a single-dimension LME via statsmodels.
 
-        Model: y_d ~ time + (1 + time | patient_id)
+        Model: y_d ~ time [+ cov1 + cov2 + ...] + (1 + time | patient_id)
+
+        Covariates enter as fixed effects only; random effects remain on
+        intercept + slope.
 
         Args:
-            df: Long-format dataframe with columns patient_id, time, y_d.
+            df: Long-format dataframe with columns patient_id, time, y_d,
+                and optional covariate columns.
             d: Dimension index.
 
         Returns:
@@ -133,9 +171,13 @@ class LMEGrowthModel(GrowthModel):
         """
         y_col = f"y_{d}"
 
+        # Build formula with covariates as fixed effects
+        formula_parts = ["time"] + self._active_cov_names
+        formula = f"{y_col} ~ " + " + ".join(formula_parts)
+
         try:
             model = smf.mixedlm(
-                f"{y_col} ~ time",
+                formula,
                 data=df,
                 groups=df["patient_id"],
                 re_formula="~time",
@@ -145,6 +187,15 @@ class LMEGrowthModel(GrowthModel):
             beta_0 = float(result.fe_params["Intercept"])
             beta_1 = float(result.fe_params["time"])
             sigma_sq = float(result.scale)
+
+            # Extract covariate betas
+            cov_betas: dict[str, float] | None = None
+            if self._active_cov_names:
+                cov_betas = {
+                    name: float(result.fe_params[name])
+                    for name in self._active_cov_names
+                    if name in result.fe_params
+                }
 
             # Random effects covariance
             re_cov = np.array(result.cov_re)
@@ -157,6 +208,7 @@ class LMEGrowthModel(GrowthModel):
                 sigma_sq=sigma_sq,
                 omega=re_cov,
                 converged=result.converged,
+                covariate_betas=cov_betas,
             )
 
         except Exception as e:
@@ -255,12 +307,19 @@ class LMEGrowthModel(GrowthModel):
             t_cond = patient.times
             y_cond = patient.observations
 
+        # Get covariate vector for this patient
+        cov_vec = get_patient_covariate_vector(
+            patient, self._active_cov_names, self._cov_means
+        )
+
         mean = np.zeros((n_pred, D))
         variance = np.zeros((n_pred, D))
 
         for d in range(D):
             dim_fit = self._dim_fits[d]
-            mu_d, var_d = self._predict_dimension(dim_fit, t_cond, y_cond[:, d], t_pred)
+            mu_d, var_d = self._predict_dimension(
+                dim_fit, t_cond, y_cond[:, d], t_pred, cov_vec
+            )
             mean[:, d] = mu_d
             variance[:, d] = var_d
 
@@ -278,6 +337,7 @@ class LMEGrowthModel(GrowthModel):
         t_cond: np.ndarray,
         y_cond: np.ndarray,
         t_pred: np.ndarray,
+        cov_vec: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """BLUP prediction for a single dimension.
 
@@ -292,6 +352,7 @@ class LMEGrowthModel(GrowthModel):
             t_cond: Conditioning times [n_cond].
             y_cond: Conditioning observations [n_cond].
             t_pred: Prediction times [n_pred].
+            cov_vec: Optional static covariate vector for this patient.
 
         Returns:
             (mean [n_pred], variance [n_pred]).
@@ -299,15 +360,25 @@ class LMEGrowthModel(GrowthModel):
         n_cond = len(t_cond)
         beta = np.array([dim_fit.beta_0, dim_fit.beta_1])
 
-        # Design matrices
+        # Design matrices (fixed effects: intercept + time)
         X_cond = np.column_stack([np.ones(n_cond), t_cond])  # [n_cond, 2]
         X_pred = np.column_stack([np.ones(len(t_pred)), t_pred])  # [n_pred, 2]
-        Z_cond = X_cond  # Random effects on intercept + slope: same design
-        Z_pred = X_pred
 
-        # Population mean
-        pop_mean_cond = X_cond @ beta
-        pop_mean_pred = X_pred @ beta
+        # Add covariate columns to design matrix if present
+        cov_contribution = 0.0
+        if cov_vec is not None and dim_fit.covariate_betas:
+            # Covariates are static — same value for all timepoints
+            cov_contribution = sum(
+                dim_fit.covariate_betas.get(name, 0.0) * cov_vec[k]
+                for k, name in enumerate(self._active_cov_names)
+            )
+
+        Z_cond = np.column_stack([np.ones(n_cond), t_cond])  # Random effects on intercept + slope
+        Z_pred = np.column_stack([np.ones(len(t_pred)), t_pred])
+
+        # Population mean (including covariate contribution)
+        pop_mean_cond = X_cond @ beta + cov_contribution
+        pop_mean_pred = X_pred @ beta + cov_contribution
 
         # Residuals from population mean
         residuals = y_cond - pop_mean_cond
@@ -341,7 +412,7 @@ class LMEGrowthModel(GrowthModel):
         return mean, np.maximum(pred_var, 1e-10)
 
     def get_fixed_effects(self) -> list[tuple[float, float]]:
-        """Return (β₀_d, β₁_d) for each dimension. Used by H-GP as mean function (D18).
+        """Return (beta_0_d, beta_1_d) for each dimension. Used by H-GP as mean function (D18).
 
         Returns:
             List of (intercept, slope) tuples, length D.
@@ -350,6 +421,26 @@ class LMEGrowthModel(GrowthModel):
             raise RuntimeError("Model not fitted. Call fit() first.")
         return [(f.beta_0, f.beta_1) for f in self._dim_fits]
 
+    def get_covariate_effects(self) -> list[dict[str, float]]:
+        """Return per-dimension covariate fixed effects.
+
+        Returns:
+            List of dicts mapping covariate name to beta, length D.
+            Empty dicts if no covariates were used.
+        """
+        if not self._fitted:
+            raise RuntimeError("Model not fitted. Call fit() first.")
+        return [f.covariate_betas or {} for f in self._dim_fits]
+
+    def get_active_covariate_names(self) -> list[str]:
+        """Return the list of covariate names actually used during fitting."""
+        return self._active_cov_names
+
+    def get_covariate_means(self) -> dict[str, float]:
+        """Return training-set covariate means (for imputation at predict time)."""
+        return dict(self._cov_means)
+
     def name(self) -> str:
         """Human-readable model name."""
-        return f"LME(D={self._obs_dim}, method={self.method})"
+        cov_str = f", cov={self._active_cov_names}" if self._active_cov_names else ""
+        return f"LME(D={self._obs_dim}, method={self.method}{cov_str})"

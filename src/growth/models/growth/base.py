@@ -25,11 +25,16 @@ class PatientTrajectory:
             (ordinal indices or months from first scan).
         observations: Observed values, shape ``[n_i, D]``. D=1 for scalar
             volume, D=24 for volume partition, D=44 for active subspace.
+        covariates: Optional static covariates for this patient (e.g.
+            ``{"centroid_x": 0.5, "centroid_y": 0.3, "age": 65}``).
+            Used by growth models as fixed effects (LME) or mean-function
+            terms (GP). ``None`` means no covariates available.
     """
 
     patient_id: str
     times: np.ndarray
     observations: np.ndarray
+    covariates: dict[str, float] | None = None
 
     def __post_init__(self) -> None:
         self.times = np.asarray(self.times, dtype=np.float64)

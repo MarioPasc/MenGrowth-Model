@@ -29,7 +29,7 @@ H5 Schema:
     |-- semantic/{volume, location, shape}
     |-- longitudinal/{patient_offsets [N_patients+1], patient_list [N_patients]}
     |-- splits/{lora_train, lora_val, test}  (patient-level)
-    +-- metadata/{grade, age, sex}  (placeholders: -1, NaN, "unknown")
+    +-- metadata/{grade, age, sex}  (from --metadata-csv if provided; else placeholders)
 
 Usage:
     # Dry-run with 3 patients
@@ -38,15 +38,18 @@ Usage:
         --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/MenGrowth.h5 \
         --max-patients 3
 
-    # Full conversion
+    # Full conversion with metadata
     python scripts/convert_mengrowth_to_h5.py \
         --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/preprocessed/MenGrowth-2025 \
-        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5
+        --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5 \
+        --metadata-csv /media/mpascual/PortableSSD/Meningiomas/MenGrowth/curated/dataset/metadata_enriched.csv
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import logging
 import re
 import sys
@@ -99,6 +102,61 @@ DEFAULT_SPLIT_SIZES = {
 # Patterns for parsing directory names
 _PATIENT_PATTERN = re.compile(r"^MenGrowth-\d+$")
 _SCAN_PATTERN = re.compile(r"^(MenGrowth-\d+)-(\d+)$")
+
+
+# =========================================================================
+# Metadata Loading
+# =========================================================================
+
+
+def load_metadata(
+    metadata_csv: Path,
+) -> dict[str, dict[str, float | str]]:
+    """Load clinical metadata from the enriched CSV.
+
+    The CSV has columns: patient_id, age, sex, ..., MenGrowth_ID.
+    Only rows with a non-empty MenGrowth_ID are included patients.
+
+    Sex encoding: 0 → "F", 1 → "M".
+
+    Args:
+        metadata_csv: Path to metadata_enriched.csv.
+
+    Returns:
+        Dict mapping MenGrowth patient ID → {"age": float|NaN, "sex": str}.
+    """
+    metadata: dict[str, dict[str, float | str]] = {}
+
+    with open(metadata_csv, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            mg_id = row.get("MenGrowth_ID", "").strip()
+            if not mg_id:
+                continue
+
+            # Parse age
+            age_str = row.get("age", "").strip()
+            age = float(age_str) if age_str else float("nan")
+
+            # Parse sex: 0 → F, 1 → M
+            sex_str = row.get("sex", "").strip()
+            if sex_str == "0.0" or sex_str == "0":
+                sex = "F"
+            elif sex_str == "1.0" or sex_str == "1":
+                sex = "M"
+            else:
+                sex = "unknown"
+
+            metadata[mg_id] = {"age": age, "sex": sex}
+
+    logger.info(
+        f"Loaded metadata for {len(metadata)} patients from {metadata_csv}"
+    )
+    n_with_age = sum(1 for m in metadata.values() if not np.isnan(m["age"]))
+    n_with_sex = sum(1 for m in metadata.values() if m["sex"] != "unknown")
+    logger.info(f"  Age available: {n_with_age}, Sex available: {n_with_sex}")
+
+    return metadata
 
 
 # =========================================================================
@@ -312,6 +370,7 @@ def convert(
     seed: int = 42,
     compression: str = "gzip",
     compression_level: int = 4,
+    metadata_csv: str | None = None,
 ) -> None:
     """Convert MenGrowth NIfTI files to HDF5 with longitudinal hierarchy.
 
@@ -322,6 +381,7 @@ def convert(
         seed: Random seed for split generation.
         compression: HDF5 compression algorithm.
         compression_level: Compression level (1-9).
+        metadata_csv: Optional path to metadata_enriched.csv with age/sex.
     """
     data_root_path = Path(data_root)
     output_path_obj = Path(output_path)
@@ -432,13 +492,30 @@ def convert(
         long_grp.create_dataset("patient_offsets", data=patient_offsets)
         long_grp.create_dataset("patient_list", data=patient_list, dtype=dt)
 
-        # Metadata group (placeholder, no clinical metadata for MenGrowth)
+        # Metadata group — load from CSV if provided, else placeholders
+        patient_metadata: dict[str, dict[str, float | str]] = {}
+        if metadata_csv is not None:
+            patient_metadata = load_metadata(Path(metadata_csv))
+
+        age_arr = np.full(n_scans, np.nan, dtype=np.float32)
+        sex_arr = ["unknown"] * n_scans
+        for i, scan_info in enumerate(all_scans):
+            pid = scan_info["patient_id"]
+            if pid in patient_metadata:
+                age_arr[i] = patient_metadata[pid]["age"]
+                sex_arr[i] = patient_metadata[pid]["sex"]
+
+        n_age_filled = np.sum(np.isfinite(age_arr))
+        n_sex_filled = sum(1 for s in sex_arr if s != "unknown")
+        logger.info(
+            f"Metadata coverage: age={n_age_filled}/{n_scans} scans, "
+            f"sex={n_sex_filled}/{n_scans} scans"
+        )
+
         meta_grp = f.create_group("metadata")
         meta_grp.create_dataset("grade", data=np.full(n_scans, -1, dtype=np.int8))
-        meta_grp.create_dataset(
-            "age", data=np.full(n_scans, np.nan, dtype=np.float32)
-        )
-        meta_grp.create_dataset("sex", data=["unknown"] * n_scans, dtype=dt)
+        meta_grp.create_dataset("age", data=age_arr)
+        meta_grp.create_dataset("sex", data=sex_arr, dtype=dt)
 
         # Semantic features group
         sem_grp = f.create_group("semantic")
@@ -639,6 +716,12 @@ def main() -> None:
         default=4,
         help="Gzip compression level 1-9 (default: 4)",
     )
+    parser.add_argument(
+        "--metadata-csv",
+        type=str,
+        default=None,
+        help="Path to metadata_enriched.csv with age/sex columns and MenGrowth_ID",
+    )
 
     args = parser.parse_args()
 
@@ -648,6 +731,7 @@ def main() -> None:
         max_patients=args.max_patients,
         seed=args.seed,
         compression_level=args.compression_level,
+        metadata_csv=args.metadata_csv,
     )
 
 

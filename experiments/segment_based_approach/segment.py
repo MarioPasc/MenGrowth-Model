@@ -23,6 +23,7 @@ import h5py
 import numpy as np
 import torch
 from monai.transforms.intensity.array import NormalizeIntensity
+from scipy.ndimage import center_of_mass
 
 from growth.inference.sliding_window import sliding_window_segment
 from growth.models.encoder.swin_loader import load_full_swinunetr
@@ -70,6 +71,8 @@ class ScanVolumes:
     manual_tc_vol_mm3: float
     manual_et_vol_mm3: float
     is_empty_manual: bool
+    # Centroid of WT mask (normalized [0,1] per axis), or None if empty
+    centroid_xyz: tuple[float, float, float] | None = None
     # Per-model predictions
     model_results: dict[str, PerModelResult] = field(default_factory=dict)
 
@@ -131,6 +134,8 @@ class SegModelConfig:
     checkpoint: str
     save_to_h5: bool = True
     enabled: bool = True
+    lora_alpha: int | None = None  # LoRA scaling factor (for PEFT checkpoints)
+    lora_rank: int | None = None  # LoRA rank (for PEFT checkpoints)
 
 
 def parse_seg_config(cfg: dict) -> tuple[list[SegModelConfig], bool]:
@@ -159,6 +164,8 @@ def parse_seg_config(cfg: dict) -> tuple[list[SegModelConfig], bool]:
                 checkpoint=m["checkpoints"],
                 save_to_h5=m.get("save_to_h5", True),
                 enabled=m.get("enabled", True),
+                lora_alpha=m.get("lora_alpha"),
+                lora_rank=m.get("lora_rank"),
             )
             if smc.enabled:
                 models.append(smc)
@@ -189,6 +196,7 @@ def parse_seg_config(cfg: dict) -> tuple[list[SegModelConfig], bool]:
 
 # Prefix mapping for training checkpoints (model.encoder.* / model.decoder.*)
 _TRAINING_CKPT_PREFIX_MAP = {
+    # Standard training checkpoint prefixes
     "model.encoder.swinViT.": "swinViT.",
     "model.encoder.encoder10.": "encoder10.",
     "model.decoder.encoder1.": "encoder1.",
@@ -201,6 +209,19 @@ _TRAINING_CKPT_PREFIX_MAP = {
     "model.decoder.decoder2.": "decoder2.",
     "model.decoder.decoder1.": "decoder1.",
     "model.decoder.out.": "out.",
+    # PEFT (LoRA) checkpoint prefixes — keys wrapped by peft library
+    "lora_encoder.model.base_model.model.swinViT.": "swinViT.",
+    "lora_encoder.model.base_model.model.encoder10.": "encoder10.",
+    "lora_encoder.model.base_model.model.encoder1.": "encoder1.",
+    "lora_encoder.model.base_model.model.encoder2.": "encoder2.",
+    "lora_encoder.model.base_model.model.encoder3.": "encoder3.",
+    "lora_encoder.model.base_model.model.encoder4.": "encoder4.",
+    "lora_encoder.model.base_model.model.decoder5.": "decoder5.",
+    "lora_encoder.model.base_model.model.decoder4.": "decoder4.",
+    "lora_encoder.model.base_model.model.decoder3.": "decoder3.",
+    "lora_encoder.model.base_model.model.decoder2.": "decoder2.",
+    "lora_encoder.model.base_model.model.decoder1.": "decoder1.",
+    "lora_encoder.model.base_model.model.out.": "out.",
 }
 
 
@@ -229,6 +250,72 @@ def _strip_training_checkpoint_prefix(state_dict: dict) -> dict:
         if not matched:
             logger.debug(f"Skipping unrecognized key: {key}")
     return stripped
+
+
+def _merge_lora_weights(
+    state_dict: dict,
+    lora_alpha: int = 16,
+    lora_rank: int = 8,
+) -> dict:
+    """Merge LoRA adapter weights into base weights in-place.
+
+    For each base weight ``W`` with corresponding ``lora_A`` and ``lora_B``,
+    computes ``W_merged = W + (alpha / r) * B @ A`` and removes the LoRA keys.
+
+    Args:
+        state_dict: State dict with base weights and LoRA adapter weights.
+            LoRA keys follow the pattern ``*.lora_A.default.weight`` and
+            ``*.lora_B.default.weight``.
+        lora_alpha: LoRA scaling factor.
+        lora_rank: LoRA rank (used to compute scaling = alpha / rank).
+
+    Returns:
+        State dict with merged weights (LoRA keys removed).
+    """
+    scaling = lora_alpha / lora_rank
+
+    # Collect LoRA A/B pairs keyed by the base parameter path
+    lora_a_keys: dict[str, str] = {}
+    lora_b_keys: dict[str, str] = {}
+    for key in list(state_dict.keys()):
+        if "lora_A" in key:
+            # e.g. "swinViT.layers3.0.blocks.0.attn.qkv.lora_A.default.weight"
+            base = key.split(".lora_A")[0]
+            lora_a_keys[base] = key
+        elif "lora_B" in key:
+            base = key.split(".lora_B")[0]
+            lora_b_keys[base] = key
+
+    n_merged = 0
+    for base in lora_a_keys:
+        if base not in lora_b_keys:
+            continue
+
+        a_key = lora_a_keys[base]
+        b_key = lora_b_keys[base]
+        base_key = base + ".weight"
+
+        A = state_dict[a_key]  # [r, in_features]
+        B = state_dict[b_key]  # [out_features, r]
+
+        if base_key in state_dict:
+            W = state_dict[base_key]
+            state_dict[base_key] = W + scaling * (B @ A)
+            n_merged += 1
+        else:
+            logger.warning(f"LoRA base weight not found: {base_key}")
+
+        # Remove LoRA keys
+        del state_dict[a_key]
+        del state_dict[b_key]
+
+    # Remove any remaining LoRA metadata keys
+    lora_meta_keys = [k for k in state_dict if "lora_" in k]
+    for k in lora_meta_keys:
+        del state_dict[k]
+
+    logger.info(f"Merged {n_merged} LoRA adapters (alpha={lora_alpha}, r={lora_rank})")
+    return state_dict
 
 
 def load_segmentation_model(
@@ -275,6 +362,16 @@ def load_segmentation_model(
             raise ValueError(f"Unexpected checkpoint type {type(ckpt)} for {path}")
         stripped = _strip_training_checkpoint_prefix(ckpt)
         logger.info(f"  Stripped {len(ckpt)} -> {len(stripped)} keys")
+
+        # Detect and merge LoRA weights if present
+        has_lora = any("lora_A" in k or "lora_B" in k for k in stripped)
+        if has_lora:
+            alpha = model_config.lora_alpha or 16
+            rank = model_config.lora_rank or 8
+            logger.info(
+                f"  Detected LoRA weights, merging with alpha={alpha}, r={rank}"
+            )
+            stripped = _merge_lora_weights(stripped, lora_alpha=alpha, lora_rank=rank)
 
         model = create_swinunetr()
         missing, unexpected = model.load_state_dict(stripped, strict=False)
@@ -607,6 +704,17 @@ class SegmentationVolumeExtractor:
 
                 gt_masks_cache.append((gt_tc, gt_wt, gt_et))
 
+                # Compute centroid from WT mask (normalized to [0, 1])
+                centroid: tuple[float, float, float] | None = None
+                if gt_wt.sum() > 0:
+                    com = center_of_mass(gt_wt)
+                    shape = gt_wt.shape
+                    centroid = (
+                        float(com[0]) / shape[0],
+                        float(com[1]) / shape[1],
+                        float(com[2]) / shape[2],
+                    )
+
                 results.append(
                     ScanVolumes(
                         scan_id=scan_ids[i],
@@ -616,6 +724,7 @@ class SegmentationVolumeExtractor:
                         manual_tc_vol_mm3=manual_tc_vol,
                         manual_et_vol_mm3=manual_et_vol,
                         is_empty_manual=(manual_wt_vol == 0.0),
+                        centroid_xyz=centroid,
                         model_results={},
                     )
                 )
@@ -895,13 +1004,136 @@ class SegmentationVolumeExtractor:
                 logger.debug(f"Skipping {pid}: all volumes are zero ({source})")
                 continue
 
+            # Attach centroid from first timepoint as static covariate
+            covariates: dict[str, float] | None = None
+            first_centroid = scans_sorted[0].centroid_xyz
+            if first_centroid is not None:
+                covariates = {
+                    "centroid_x": first_centroid[0],
+                    "centroid_y": first_centroid[1],
+                    "centroid_z": first_centroid[2],
+                }
+
             trajectories.append(
-                PatientTrajectory(patient_id=pid, times=times, observations=obs_log)
+                PatientTrajectory(
+                    patient_id=pid,
+                    times=times,
+                    observations=obs_log,
+                    covariates=covariates,
+                )
             )
 
         logger.info(
             f"Built {len(trajectories)} trajectories from {source} volumes "
             f"(time={time_variable}, excluded: {self.exclude_patients})"
+        )
+        return trajectories
+
+    def build_delta_trajectories(
+        self,
+        volumes: list[ScanVolumes],
+        source: str = "manual",
+    ) -> list[PatientTrajectory]:
+        """Build delta-V trajectories: observations are log-volume changes.
+
+        For each patient with n timepoints, produces n-1 delta observations:
+            delta_j = log1p(V_{j+1}) - log1p(V_j)
+        at midpoint times:
+            t_mid_j = (t_j + t_{j+1}) / 2
+
+        Requires min_timepoints >= 3 (to get >= 2 delta observations per patient).
+
+        Args:
+            volumes: List of ScanVolumes from extract_all().
+            source: ``"manual"`` or model name.
+
+        Returns:
+            List of PatientTrajectory with delta-V observations.
+        """
+        time_variable = self.cfg.get("time", {}).get("variable", "ordinal")
+
+        scan_id_to_months: dict[str, float] = {}
+        if time_variable == "temporal":
+            scan_id_to_months = self._load_temporal_metadata()
+            if not scan_id_to_months:
+                logger.warning(
+                    "time.variable='temporal' but no time_delta_months in H5. "
+                    "Falling back to ordinal."
+                )
+                time_variable = "ordinal"
+
+        patient_scans: dict[str, list[ScanVolumes]] = {}
+        for sv in volumes:
+            if sv.patient_id in self.exclude_patients:
+                continue
+            patient_scans.setdefault(sv.patient_id, []).append(sv)
+
+        trajectories: list[PatientTrajectory] = []
+        # Delta-V needs at least 3 timepoints to get 2 deltas for GP
+        min_tp = max(self.cfg["patients"].get("min_timepoints", 2), 3)
+
+        for pid, scans in sorted(patient_scans.items()):
+            scans_sorted = sorted(scans, key=lambda s: s.timepoint_idx)
+
+            if len(scans_sorted) < min_tp:
+                logger.debug(
+                    f"Skipping {pid}: only {len(scans_sorted)} timepoints "
+                    f"(need {min_tp} for delta-V)"
+                )
+                continue
+
+            if time_variable == "temporal":
+                raw_times = np.array(
+                    [scan_id_to_months[s.scan_id] for s in scans_sorted],
+                    dtype=np.float64,
+                )
+            else:
+                raw_times = np.array(
+                    [s.timepoint_idx for s in scans_sorted],
+                    dtype=np.float64,
+                )
+
+            if source == "manual":
+                raw_vols = np.array([s.manual_wt_vol_mm3 for s in scans_sorted])
+            else:
+                if source not in scans_sorted[0].model_results:
+                    available = ["manual"] + list(scans_sorted[0].model_results.keys())
+                    raise ValueError(f"Unknown source '{source}'. Available: {available}")
+                raw_vols = np.array(
+                    [s.model_results[source].wt_vol_mm3 for s in scans_sorted]
+                )
+
+            log_vols = np.log1p(raw_vols)
+
+            if np.all(raw_vols == 0.0):
+                continue
+
+            # Compute deltas and midpoint times
+            deltas = np.diff(log_vols)  # [n-1]
+            mid_times = (raw_times[:-1] + raw_times[1:]) / 2.0  # [n-1]
+
+            # Attach centroid from first timepoint
+            covariates: dict[str, float] | None = None
+            first_centroid = scans_sorted[0].centroid_xyz
+            if first_centroid is not None:
+                covariates = {
+                    "centroid_x": first_centroid[0],
+                    "centroid_y": first_centroid[1],
+                    "centroid_z": first_centroid[2],
+                }
+
+            trajectories.append(
+                PatientTrajectory(
+                    patient_id=pid,
+                    times=mid_times,
+                    observations=deltas,
+                    covariates=covariates,
+                )
+            )
+
+        logger.info(
+            f"Built {len(trajectories)} delta-V trajectories from {source} "
+            f"(time={time_variable}, min_tp={min_tp})"
         )
         return trajectories
 
@@ -944,6 +1176,7 @@ class SegmentationVolumeExtractor:
                 "manual_tc_vol_mm3": sv.manual_tc_vol_mm3,
                 "manual_et_vol_mm3": sv.manual_et_vol_mm3,
                 "is_empty_manual": sv.is_empty_manual,
+                "centroid_xyz": list(sv.centroid_xyz) if sv.centroid_xyz else None,
                 "model_results": {mn: asdict(mr) for mn, mr in sv.model_results.items()},
             }
             scans_data.append(scan_dict)
@@ -999,6 +1232,9 @@ class SegmentationVolumeExtractor:
                     is_empty=mr_dict["is_empty"],
                 )
 
+            centroid_raw = s.get("centroid_xyz")
+            centroid = tuple(centroid_raw) if centroid_raw else None
+
             results.append(
                 ScanVolumes(
                     scan_id=s["scan_id"],
@@ -1008,6 +1244,7 @@ class SegmentationVolumeExtractor:
                     manual_tc_vol_mm3=s["manual_tc_vol_mm3"],
                     manual_et_vol_mm3=s["manual_et_vol_mm3"],
                     is_empty_manual=s["is_empty_manual"],
+                    centroid_xyz=centroid,
                     model_results=model_results,
                 )
             )

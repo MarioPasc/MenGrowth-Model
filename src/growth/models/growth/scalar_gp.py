@@ -18,6 +18,10 @@ import GPy
 import numpy as np
 
 from .base import FitResult, GrowthModel, PatientTrajectory, PredictionResult
+from .covariate_utils import (
+    collect_covariates,
+    get_patient_covariate_vector,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,9 @@ class ScalarGP(GrowthModel):
         signal_var_bounds: tuple[float, float] = (0.001, 10.0),
         noise_var_bounds: tuple[float, float] = (1e-6, 5.0),
         seed: int = 42,
+        use_covariates: bool = False,
+        covariate_names: list[str] | None = None,
+        missing_strategy: str = "skip",
     ) -> None:
         if kernel_type not in VALID_KERNELS:
             raise ValueError(f"Invalid kernel_type '{kernel_type}'. Must be one of {VALID_KERNELS}")
@@ -71,10 +78,18 @@ class ScalarGP(GrowthModel):
         self.signal_var_bounds = signal_var_bounds
         self.noise_var_bounds = noise_var_bounds
         self.seed = seed
+        self.use_covariates = use_covariates
+        self.covariate_names = covariate_names or []
+        self.missing_strategy = missing_strategy
 
         # Populated by fit()
         self._gpy_model: GPy.models.GPRegression | None = None
         self._fit_result: FitResult | None = None
+        # Covariate regression (two-stage residualization)
+        self._cov_alpha: float = 0.0  # Intercept of linear regression
+        self._cov_gammas: np.ndarray | None = None  # Covariate coefficients
+        self._active_cov_names: list[str] = []
+        self._cov_means: dict[str, float] = {}
 
     def _build_kernel(self) -> GPy.kern.Kern:
         """Construct the GPy kernel object."""
@@ -130,6 +145,10 @@ class ScalarGP(GrowthModel):
     def fit(self, patients: list[PatientTrajectory]) -> FitResult:
         """Fit shared hyperparameters by pooling all training data.
 
+        If covariates are enabled, uses a two-stage approach:
+        1. Fit linear regression: y = alpha + sum(gamma_k * x_k) + r
+        2. GP operates on residuals r
+
         Args:
             patients: Training patient trajectories (scalar observations, D=1).
 
@@ -141,10 +160,28 @@ class ScalarGP(GrowthModel):
 
         np.random.seed(self.seed)
 
+        # Collect covariates if enabled
+        cov_values: dict[str, np.ndarray] = {}
+        self._active_cov_names = []
+        if self.use_covariates and self.covariate_names:
+            cov_values, self._active_cov_names, patients = collect_covariates(
+                patients, self.covariate_names, self.missing_strategy
+            )
+            for i, name in enumerate(self._active_cov_names):
+                vals = [v[i] for v in cov_values.values()]
+                self._cov_means[name] = float(np.mean(vals)) if vals else 0.0
+
         X, Y = self._pool_data(patients)
         n_total = X.shape[0]
 
-        logger.info(f"ScalarGP fitting: {len(patients)} patients, {n_total} observations")
+        logger.info(
+            f"ScalarGP fitting: {len(patients)} patients, {n_total} observations, "
+            f"covariates={self._active_cov_names}"
+        )
+
+        # Stage 1: If covariates present, residualize Y
+        if self._active_cov_names and cov_values:
+            Y = self._residualize(patients, Y, cov_values)
 
         kern = self._build_kernel()
         mean_fn = self._build_mean_function()
@@ -170,6 +207,10 @@ class ScalarGP(GrowthModel):
         }
         if mean_fn is not None:
             hypers["mean_params"] = model.mean_function.param_array.tolist()
+        if self._cov_gammas is not None:
+            for i, name in enumerate(self._active_cov_names):
+                hypers[f"cov_gamma_{name}"] = float(self._cov_gammas[i])
+            hypers["cov_alpha"] = self._cov_alpha
 
         # Condition number of the kernel matrix
         K = model.kern.K(X) + float(model.Gaussian_noise.variance) * np.eye(n_total)
@@ -194,6 +235,56 @@ class ScalarGP(GrowthModel):
 
         return self._fit_result
 
+    def _residualize(
+        self,
+        patients: list[PatientTrajectory],
+        Y: np.ndarray,
+        cov_values: dict[str, np.ndarray],
+    ) -> np.ndarray:
+        """Two-stage residualization: regress out covariate effects from Y.
+
+        Fits y_ij = alpha + sum(gamma_k * x_ik) + r_ij via OLS on per-patient
+        mean observations, then returns residuals r.
+
+        Args:
+            patients: Patient trajectories.
+            Y: Pooled observations [N_total, 1].
+            cov_values: Dict mapping patient_id to covariate array.
+
+        Returns:
+            Residualized Y [N_total, 1].
+        """
+        n_cov = len(self._active_cov_names)
+
+        # Build per-observation covariate matrix
+        cov_rows: list[np.ndarray] = []
+        for p in patients:
+            cov = cov_values.get(p.patient_id)
+            if cov is not None:
+                for _ in range(p.n_timepoints):
+                    cov_rows.append(cov)
+            else:
+                for _ in range(p.n_timepoints):
+                    cov_rows.append(np.zeros(n_cov))
+
+        C = np.array(cov_rows)  # [N_total, n_cov]
+        A = np.column_stack([np.ones(len(C)), C])  # [N_total, 1 + n_cov]
+
+        # OLS: y = [1, C] @ [alpha, gamma] + r
+        params, _, _, _ = np.linalg.lstsq(A, Y[:, 0], rcond=None)
+        self._cov_alpha = float(params[0])
+        self._cov_gammas = params[1:]
+
+        # Compute residuals
+        Y_pred = (A @ params)[:, np.newaxis]
+        residuals = Y - Y_pred
+
+        logger.info(
+            f"ScalarGP residualization: alpha={self._cov_alpha:.4f}, "
+            f"gammas={dict(zip(self._active_cov_names, self._cov_gammas.tolist()))}"
+        )
+        return residuals
+
     def predict(
         self,
         patient: PatientTrajectory,
@@ -203,7 +294,9 @@ class ScalarGP(GrowthModel):
         """Predict at query times by conditioning on patient's observations.
 
         The fitted GP (with pooled hyperparameters) is conditioned on the
-        patient's data to produce a personalized posterior.
+        patient's data to produce a personalized posterior. If covariates
+        were used during fitting, observations are residualized before
+        conditioning and the covariate contribution is added back.
 
         Args:
             patient: Patient trajectory (scalar observations, D=1).
@@ -229,8 +322,19 @@ class ScalarGP(GrowthModel):
             t_cond = patient.times
             y_cond = patient.observations[:, 0]
 
+        # Compute covariate offset for this patient
+        cov_offset = 0.0
+        if self._cov_gammas is not None and self._active_cov_names:
+            cov_vec = get_patient_covariate_vector(
+                patient, self._active_cov_names, self._cov_means
+            )
+            if cov_vec is not None:
+                cov_offset = self._cov_alpha + float(self._cov_gammas @ cov_vec)
+
+        # Residualize conditioning data if covariates were used
+        Y_cond = (y_cond - cov_offset)[:, np.newaxis]
+
         X_cond = t_cond[:, np.newaxis]
-        Y_cond = y_cond[:, np.newaxis]
         X_pred = t_pred[:, np.newaxis]
 
         # Build a new GP with the same hyperparameters but conditioned on this patient
@@ -246,8 +350,11 @@ class ScalarGP(GrowthModel):
         cond_model.Gaussian_noise.variance = float(self._gpy_model.Gaussian_noise.variance)
         cond_model.Gaussian_noise.variance.fix()
 
-        # Predict
+        # Predict residuals
         mu, var = cond_model.predict(X_pred)
+
+        # Add covariate offset back
+        mu = mu + cov_offset
 
         # Ensure variance is non-negative
         var = np.maximum(var, 0.0)

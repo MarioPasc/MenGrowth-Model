@@ -29,11 +29,26 @@ segmentation:
     - model_name: bsf_lora_r8_adapted_men_domain
       type: BrainSegFounder
       checkpoints: /mnt/home/users/tic_163_uma/mpascual/execs/growth/lora_dual_domain_v2/conditions/men_r8/best_model.pt
+      lora_alpha: 16
+      lora_rank: 8
       save_to_h5: true
       enabled: true
 
+
 volume:
   transform: log1p
+
+# Prediction target: "absolute" models log(V+1), "delta_v" models Δlog(V+1)
+prediction:
+  target: absolute  # absolute | delta_v
+
+# Temporal covariates for growth models (shared infrastructure with latent pipeline)
+# Note: age/sex available for 5/33 patients if H5 re-converted with --metadata-csv.
+covariates:
+  enabled: false
+  features: [centroid_x, centroid_y, centroid_z]
+  missing_strategy: skip  # skip | impute_mean | drop_patient
+  source: segmentation    # segmentation (from labels) | h5_metadata (from semantic/location)
 
 # Shared GP/kernel parameters (used by ScalarGP and HGP)
 gp:
@@ -61,4 +76,3 @@ time:
 patients:
   exclude: [MenGrowth-0028]
   min_timepoints: 2
-
