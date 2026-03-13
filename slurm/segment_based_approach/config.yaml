@@ -6,7 +6,6 @@ experiment:
   seed: 42
 
 paths:
-  checkpoint: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
   mengrowth_h5: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/MenGrowth.h5
   output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/segment_based_approach
 
@@ -15,10 +14,28 @@ segmentation:
   sw_overlap: 0.5
   sw_mode: gaussian
   wt_threshold: 0.5
+  use_manual_segmentation: true
+  models_to_use:
+    - model_name: brainsegfounder
+      type: BrainSegFounder
+      checkpoints: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS/finetuned_model_fold_0.pt
+      save_to_h5: true
+      enabled: true
+    - model_name: bsf_adapted_decoder_men_domain
+      type: BrainSegFounder
+      checkpoints: /mnt/home/users/tic_163_uma/mpascual/execs/growth/lora_dual_domain_v2/conditions/baseline/best_model.pt
+      save_to_h5: true
+      enabled: true
+    - model_name: bsf_lora_r8_adapted_men_domain
+      type: BrainSegFounder
+      checkpoints: /mnt/home/users/tic_163_uma/mpascual/execs/growth/lora_dual_domain_v2/conditions/men_r8/best_model.pt
+      save_to_h5: true
+      enabled: true
 
 volume:
   transform: log1p
 
+# Shared GP/kernel parameters (used by ScalarGP and HGP)
 gp:
   kernel: matern52
   mean_function: linear
@@ -28,9 +45,20 @@ gp:
   signal_var_bounds: [0.001, 10.0]
   noise_var_bounds: [0.000001, 5.0]
 
+# LME-specific config
+lme:
+  method: reml
+
+# Which GP models to evaluate (all enabled by default)
+models:
+  scalar_gp: true
+  lme: true
+  hgp: true
+
 time:
   variable: ordinal
 
 patients:
   exclude: [MenGrowth-0028]
   min_timepoints: 2
+

@@ -22,10 +22,9 @@ def mengrowth_h5_path():
 
 @pytest.fixture
 def baseline_config(mengrowth_h5_path, real_checkpoint_path, tmp_path):
-    """Build a config dict for the baseline experiment."""
+    """Build a config dict for the baseline experiment (multi-model format)."""
     return {
         "paths": {
-            "checkpoint": str(real_checkpoint_path),
             "mengrowth_h5": str(mengrowth_h5_path),
             "output_dir": str(tmp_path / "results"),
         },
@@ -34,6 +33,16 @@ def baseline_config(mengrowth_h5_path, real_checkpoint_path, tmp_path):
             "sw_overlap": 0.5,
             "sw_mode": "gaussian",
             "wt_threshold": 0.5,
+            "use_manual_segmentation": True,
+            "models_to_use": [
+                {
+                    "model_name": "brainsegfounder",
+                    "type": "BrainSegFounder",
+                    "checkpoints": str(real_checkpoint_path),
+                    "save_to_h5": False,
+                    "enabled": True,
+                }
+            ],
         },
         "volume": {"transform": "log1p"},
         "gp": {
@@ -80,16 +89,10 @@ def _build_manual_scan_volumes(h5_path: str) -> list:
                     patient_id=patient_ids[i],
                     timepoint_idx=int(timepoint_idx[i]),
                     manual_wt_vol_mm3=wt_vol,
-                    predicted_wt_vol_mm3=0.0,
                     manual_tc_vol_mm3=tc_vol,
-                    predicted_tc_vol_mm3=0.0,
                     manual_et_vol_mm3=et_vol,
-                    predicted_et_vol_mm3=0.0,
-                    wt_dice=0.0,
-                    tc_dice=0.0,
-                    et_dice=0.0,
                     is_empty_manual=(wt_vol == 0.0),
-                    is_empty_predicted=True,
+                    model_results={},
                 )
             )
     return scan_volumes
@@ -168,15 +171,10 @@ class TestSegmentationComparison:
         scan_volumes = _build_manual_scan_volumes(baseline_config["paths"]["mengrowth_h5"])
         report = generate_segmentation_report(scan_volumes)
 
-        assert "per_region" in report
         assert "n_total_scans" in report
-        for region in ["wt", "tc", "et"]:
-            assert region in report["per_region"]
-            stats = report["per_region"][region]
-            assert "dice_mean" in stats
-            assert "volume_pearson_r" in stats
-        assert "per_patient_wt_dice" in report
         assert "per_scan" in report
+        # With no model_results, per_model should be empty
+        assert "per_model" in report
 
 
 class TestMultiModelLOPO:
