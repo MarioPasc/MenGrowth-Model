@@ -1,13 +1,13 @@
 ---
-description: "Implement a specific pipeline phase end-to-end"
+description: "Implement a specific stage of the 3-stage complexity ladder"
 ---
 
-Implement phase $ARGUMENTS of the MenGrowth pipeline.
+Implement stage $ARGUMENTS of the MenGrowth framework.
 
-**Format:** `/implement-phase <phase_number>` (0=Data, 1=DomainGap, 2=LoRA, 3=SDP, 4=Encoding, 5=Growth, 6=Evaluation)
+**Format:** `/implement-stage <stage_number>` (1=Volumetric Baseline, 2=Severity Model, 3=Representation Learning, 4=Variance Decomposition)
 
-Before invoking the phase-implementer:
-1. Check that all previous phases have passing verification reports by reading `experiments/phase_{N-1}/verification_report.md`.
-2. If any prior phase gate is BLOCKED, stop and report which phase is blocking.
+Before invoking the stage-implementer:
+1. If stage > 1, verify that the previous stage has LOPO-CV results (read `experiments/stage_{N-1}/verification_report.md`).
+2. Stage K+1 is only justified if Stage K shows meaningful results.
 
-If all gates are OPEN (or this is Phase 0), launch the `phase-implementer` agent with the phase number: $ARGUMENTS
+If prerequisites are met (or this is Stage 1), launch the `stage-implementer` agent with the stage number: $ARGUMENTS

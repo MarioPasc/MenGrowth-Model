@@ -1,19 +1,22 @@
 % =============================================================================
-% Section 8: Phase 4 — GP-Based Growth Prediction
+% Section 8: Growth Prediction — A Three-Stage Complexity Ladder
 % =============================================================================
-\section{Phase 4: GP-Based Growth Prediction}
+\section{Growth Prediction: A Three-Stage Complexity Ladder}
 \label{sec:growth}
 
 % ---------------------------------------------------------------------------
 % 8.1 Overview and Design Rationale
 % ---------------------------------------------------------------------------
-\subsection{Overview}
+\subsection{Overview and Design Rationale}
 \label{sec:growth:overview}
 
-Phase~4 fits and evaluates three growth prediction models of increasing
-complexity on the SDP latent trajectories from the Andalusian cohort. All
-models produce volume predictions via decoding through the frozen semantic
-head $\pi_{\text{vol}}$.
+This section presents the core methodological contribution: a three-stage
+complexity ladder for meningioma growth prediction, where each stage must
+justify its existence through improved out-of-sample performance over the
+preceding one. The key design principle is parsimony: at $N = 31$--$58$
+patients with $\sim$112 total observations, models with more than 2--3
+predictor parameters per patient risk overfitting, and complex architectures
+must demonstrate they capture signal rather than noise.
 
 \subsubsection{Why Not a Neural ODE?}
 
@@ -22,200 +25,314 @@ The original pipeline design used a Neural ODE
 abandoned due to catastrophic overparameterisation: with 33~patients
 (100~observations, 112~forward pairs), the Neural ODE's $\sim$3,100+
 parameters produce a parameter-to-observation ratio of approximately 27.7.
-This makes reliable hyperparameter estimation impossible and yields
-degenerate overfitting. The full pivot rationale is documented in
-\cite{pascual2026pivot}.
+The full pivot rationale is documented in \cite{pascual2026pivot}.
 
-The GP hierarchy provides:
-\begin{itemize}[leftmargin=*]
-  \item \textbf{Appropriate complexity:} 6--95 parameters (vs.\ 3,100+).
-  \item \textbf{Closed-form inference:} No iterative ODE solving; predictive
-    distributions are analytic (\cref{eq:gp_mean,eq:gp_var}).
-  \item \textbf{Calibrated uncertainty:} GP posterior naturally provides
-    uncertainty that increases with extrapolation distance.
-  \item \textbf{Principled handling of heterogeneous observation counts:}
-    Patients with $n_i = 2$ produce wide uncertainty bands that shrink
-    toward the population mean, while patients with $n_i = 6$ receive
-    tight, data-driven predictions.
-\end{itemize}
+\subsubsection{Stage Summary}
+
+The three stages, in order of increasing complexity:
+\begin{description}[leftmargin=*,labelwidth=!]
+  \item[Stage 1:] Segment tumour $\to$ extract volume $\to$ model scalar
+    volume trajectories. Parameters: 2--5 (population level).
+  \item[Stage 2:] Estimate patient-specific latent severity $s_i \in [0, 1]$
+    $\to$ model growth as $g(s_i, t; \boldsymbol{\theta})$. Parameters:
+    population $\boldsymbol{\theta}$ + 1 per patient.
+  \item[Stage 3:] BrainSegFounder features $\to$ PCA $\to$ GP with ARD
+    kernel. Parameters: population kernel hyperparameters + 3--6 PCA
+    components.
+\end{description}
+
+A cross-cutting variance decomposition (\cref{sec:eval:variance}) quantifies
+the marginal $\Delta R^2$ of each stage.
 
 % ---------------------------------------------------------------------------
-% 8.2 Model A: LME
+% 8.2 Stage 1: Volumetric Growth Models
 % ---------------------------------------------------------------------------
-\subsection{Model A: Linear Mixed-Effects Model (LME)}
-\label{sec:growth:lme}
+\subsection{Stage 1: Segmentation-Based Volumetric Baseline}
+\label{sec:growth:stage1}
 
-The simplest model treats each latent volume dimension independently with a
-random-intercept, random-slope linear mixed-effects model. For patient $i$,
-dimension $d \in \{1, \ldots, 24\}$, at time $t_{ij}$ (months from first
-scan):
+Stage~1 is the simplest credible growth prediction approach: segment the
+tumour from each MRI, compute whole-tumour volume in mm$^3$, and model the
+resulting scalar volume trajectories. Three models of increasing flexibility
+are evaluated.
+
+\subsubsection{Model 1A: Scalar GP (ScalarGP)}
+
+A single GP is fitted to the pooled volume observations across all patients:
 \begin{equation}
-  z_i^{(d)}(t_{ij}) = \underbrace{(\beta_0^{(d)} + b_{0i}^{(d)})}_{\text{intercept}}
-    + \underbrace{(\beta_1^{(d)} + b_{1i}^{(d)})}_{\text{slope}} \cdot t_{ij}
-    + \epsilon_{ij}^{(d)},
-  \label{eq:lme}
+  v_i(t_{ij}) \sim \GP\bigl(m(t),\; k_{5/2}(t, t') + \sigma_n^2 \delta(t, t')\bigr),
+  \label{eq:scalargp}
 \end{equation}
-where $(\beta_0^{(d)}, \beta_1^{(d)})$ are the fixed effects (population
-intercept and slope), $(b_{0i}^{(d)}, b_{1i}^{(d)}) \sim
-\mathcal{N}(\mathbf{0}, \boldsymbol{\Omega}^{(d)})$ are patient-specific
-random effects, and $\epsilon_{ij}^{(d)} \sim
-\mathcal{N}(0, \sigma^{(d)2})$ is the residual noise.
+where $v_i(t_{ij}) = \log(V_{i,\text{WT}}(t_{ij}) + 1)$ is the
+log-transformed whole-tumour volume, $m(t) = \beta_0 + \beta_1 t$ is a
+linear mean function, and $k_{5/2}$ is the Mat\'{e}rn-5/2 kernel
+(\cref{eq:matern52}).
 
-\subsubsection{Parameter Count}
+\textbf{Hyperparameters:} $\{\beta_0, \beta_1, \sigma_f, \ell, \sigma_n\}$
+= 5 total, estimated by maximising the log-marginal likelihood.
 
-Per dimension: 2 fixed effects $(\beta_0, \beta_1)$, 3 variance parameters
-(2 diagonal + 1 off-diagonal of $\boldsymbol{\Omega}$), 1 residual variance
-$(\sigma^2)$ = 6 parameters. For 24 dimensions: $6 \times 24 = 144$ total
-parameters, estimated from all 100 observations via Restricted Maximum
-Likelihood (REML) using \texttt{statsmodels.MixedLM}.
+\textbf{Covariates:} Age and sex can be incorporated into the mean function:
+\begin{equation}
+  m_i(t) = \beta_0 + \beta_1 t + \beta_2 \,\text{age}_i
+    + \beta_3 \,\text{sex}_i,
+  \label{eq:scalargp_covariates}
+\end{equation}
+adding 2~parameters. Given the sample size constraints ($N/15 \approx 2$--$3$
+allowed parameters), covariates are included only if they improve LOPO-CV
+performance.
 
-\subsubsection{Single-Patient Inference}
+\subsubsection{Model 1B: Linear Mixed-Effects Model (LME)}
 
-For a held-out patient, the Best Linear Unbiased Predictor (BLUP)
+The LME introduces patient-specific random effects to separate population
+and individual trends:
+\begin{equation}
+  v_i(t_{ij}) = \underbrace{(\beta_0 + b_{0i})}_{\text{intercept}}
+    + \underbrace{(\beta_1 + b_{1i})}_{\text{slope}} \cdot t_{ij}
+    + \epsilon_{ij},
+  \label{eq:lme_vol}
+\end{equation}
+where $(\beta_0, \beta_1)$ are fixed effects (population intercept and
+slope), $(b_{0i}, b_{1i}) \sim \mathcal{N}(\mathbf{0}, \boldsymbol{\Omega})$
+are patient-specific random effects, and
+$\epsilon_{ij} \sim \mathcal{N}(0, \sigma^2)$ is residual noise.
+
+\textbf{Parameter count:} 2~fixed effects $(\beta_0, \beta_1)$, 3~variance
+parameters (2~diagonal + 1~off-diagonal of $\boldsymbol{\Omega}$),
+1~residual variance $(\sigma^2)$ = 6 total. Estimated via REML using
+\texttt{statsmodels.MixedLM}.
+
+\textbf{Single-patient inference:} The Best Linear Unbiased Predictor (BLUP)
 \cite{robinson1991blup} provides patient-specific predictions with automatic
 shrinkage: patients with few observations ($n_i = 2$) receive predictions
-closer to the population mean, while patients with many observations
-($n_i = 6$) receive data-driven predictions.
+closer to the population mean, while patients with more observations
+($n_i \geq 4$) receive data-driven predictions.
 
-% ---------------------------------------------------------------------------
-% 8.3 Model B: Hierarchical GP
-% ---------------------------------------------------------------------------
-\subsection{Model B: Hierarchical Gaussian Process (H-GP)}
-\label{sec:growth:hgp}
+\subsubsection{Model 1C: Hierarchical GP (HGP)}
 
-The H-GP extends Model~A by replacing the linear temporal model with a GP,
-enabling nonlinear growth trajectories while retaining the population mean
-from the LME as the GP prior:
+The HGP extends the LME by adding nonlinear residuals via a GP:
 \begin{equation}
-  z_i^{(d)}(t) \sim \GP\bigl(m^{(d)}(t),\; k^{(d)}(t, t')\bigr),
-  \label{eq:hgp}
+  v_i(t) \sim \GP\bigl(m(t),\; k_{5/2}(t, t') + \sigma_n^2 \delta(t, t')\bigr),
+  \label{eq:hgp_vol}
 \end{equation}
 where the mean function is the LME population trend:
 \begin{equation}
-  m^{(d)}(t) = \hat{\beta}_0^{(d)} + \hat{\beta}_1^{(d)} \cdot t,
+  m(t) = \hat{\beta}_0 + \hat{\beta}_1 \cdot t,
   \label{eq:gp_mean_lme}
 \end{equation}
-and the temporal kernel is Mat\'{e}rn-5/2 (\cref{eq:matern52}):
-\begin{equation}
-  k^{(d)}(t, t') = k_{5/2}(|t - t'|;\; \sigma_f^{(d)}, \ell^{(d)})
-    + \sigma_n^{(d)2}\,\delta(t, t').
-  \label{eq:hgp_kernel}
-\end{equation}
+using fixed effects estimated from the LME. The GP captures nonlinear
+deviations from the population trend.
 
-\subsubsection{Hierarchical Hyperparameter Sharing}
-
-With $n_i \in [2, 6]$ observations per patient, per-patient kernel fitting
-is ill-conditioned. We adopt empirical Bayes: shared kernel hyperparameters
-$\boldsymbol{\theta}^{(d)} = (\sigma_f^{(d)}, \ell^{(d)}, \sigma_n^{(d)})$
-are estimated by maximising the pooled log-marginal likelihood across all
-33~patients:
+\textbf{Hierarchical hyperparameter sharing:} Shared kernel hyperparameters
+$\boldsymbol{\theta} = (\sigma_f, \ell, \sigma_n)$ are estimated by
+maximising the pooled log-marginal likelihood across all patients:
 \begin{equation}
-  \hat{\boldsymbol{\theta}}^{(d)} = \arg\max_{\boldsymbol{\theta}}
-    \sum_{i=1}^{N} \log p\bigl(\mathbf{z}_i^{(d)} \mid
+  \hat{\boldsymbol{\theta}} = \arg\max_{\boldsymbol{\theta}}
+    \sum_{i=1}^{N} \log p\bigl(v_i \mid
     \mathbf{t}_i, \boldsymbol{\theta}\bigr).
   \label{eq:pooled_marglik}
 \end{equation}
-Given shared hyperparameters, each patient's predictive distribution is
-computed by conditioning on their individual observations via
-\cref{eq:gp_mean,eq:gp_var}.
 
-\subsubsection{Parameter Count}
+\textbf{Parameter count:} 3~kernel hyperparameters (shared) + 2~mean
+function parameters (from LME) = 5. Optimised via L-BFGS-B with 5~random
+restarts.
 
-3 hyperparameters per dimension $\times$ 24 dimensions = 72 total.
-Optimised via L-BFGS-B with 5 random restarts.
+\textbf{Model nesting:} The GP with linear mean function $\supset$ LME
+(\cref{sec:bg:gp}), ensuring the HGP can never perform worse than the LME
+on the training data. Improvement must come from the nonlinear Mat\'{e}rn
+component, which we evaluate via log-marginal likelihood comparison.
+
+\subsubsection{Gompertz Mean Function}
+
+As an alternative to the linear population mean, we evaluate a Gompertz
+mean function motivated by the growth biology literature
+(\cref{sec:bg:growth_biology}):
+\begin{equation}
+  m_G(t) = V_0 \exp\!\left(\frac{\alpha}{\beta}
+    \bigl(1 - e^{-\beta t}\bigr)\right),
+  \label{eq:gompertz_mean}
+\end{equation}
+where $V_0$ is the initial volume, $\alpha$ is the initial growth rate,
+and $\beta$ is the deceleration parameter. In log-volume space this becomes
+$\log m_G(t) = \log V_0 + \frac{\alpha}{\beta}(1 - e^{-\beta t})$. The
+Gompertz mean adds 1~parameter ($\beta$) beyond the linear mean, and is
+evaluated as ablation~A2 (\cref{sec:eval:ablations}).
 
 % ---------------------------------------------------------------------------
-% 8.4 Model C: PA-MOGP
+% 8.3 Stage 2: Latent Severity Model
 % ---------------------------------------------------------------------------
-\subsection{Model C: Partition-Aware Multi-Output GP (PA-MOGP)}
-\label{sec:growth:pamogp}
+\subsection{Stage 2: Latent Severity Model}
+\label{sec:growth:stage2}
 
-The PA-MOGP is the most complex model, jointly modelling volume, location,
-and shape dynamics with partition-specific temporal kernels and cross-partition
-coupling. It operates on the active latent subspace:
+Stage~2 posits that inter-patient growth heterogeneity is largely explained
+by a single latent severity variable $s_i \in [0, 1]$. This is motivated by
+Vaghi et al.'s \cite{vaghi2020reduced} finding that a single patient-specific
+parameter captures most growth variability in tumour populations.
+
+\subsubsection{Quantile Transform}
+
+To place all patients on a common scale, we apply a quantile transform to
+both time and growth:
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Temporal normalisation.} Within each patient, times are
+    normalised to $[0, 1]$:
+    $\tilde{t}_{ij} = (t_{ij} - t_{i,\min}) / (t_{i,\max} - t_{i,\min})$.
+  \item \textbf{Growth normalisation.} Volume changes are mapped to
+    quantiles of the population distribution:
+    $q_{ij} = F_{\text{pop}}(\Delta v_{ij})$, where $F_{\text{pop}}$ is the
+    empirical CDF of all observed volume changes across the training set.
+\end{enumerate}
+
+The quantile-transformed observations $q_{ij} \in [0, 1]$ represent the
+relative position of each observation within the population growth
+distribution.
+
+\subsubsection{NLME Formulation}
+
+The severity model is a nonlinear mixed-effects model:
 \begin{equation}
-  \tilde{\mathbf{z}} = [\Vol^{24} \mid \Loc^{8} \mid \Shape^{12}]
-    \in \R^{44},
-  \label{eq:active_subspace}
+  q_{ij} = g(s_i, \tilde{t}_{ij}; \boldsymbol{\theta}) + \epsilon_{ij},
+  \quad \epsilon_{ij} \sim \mathcal{N}(0, \sigma^2),
+  \label{eq:severity_nlme}
 \end{equation}
-excluding the residual partition (84~unsupervised dimensions that would cause
-overfitting).
+where $g$ is a monotonic growth function satisfying boundary conditions
+$g(s, 0) = 0$ (no growth at baseline) and $g(s, 1) \leq s$ (severity bounds
+maximum growth). The latent severity $s_i \sim \text{Beta}(\alpha, \beta)$ has
+a population prior.
 
-\subsubsection{Partition-Specific Temporal Kernels}
+\subsubsection{Growth Function Options}
 
-Each partition uses a kernel matched to its expected temporal dynamics:
+Three growth functions are evaluated for $g$:
 
-\begin{table}[H]
-  \centering
-  \caption{Partition-specific temporal kernels in the PA-MOGP.}
-  \label{tab:partition_kernels}
-  \begin{tabular}{llp{6.5cm}}
-    \toprule
-    \textbf{Partition} & \textbf{Kernel} & \textbf{Rationale} \\
-    \midrule
-    $\Vol$ (24 dims) & Mat\'{e}rn-5/2 & Smooth, twice-differentiable growth \\
-    $\Loc$ (8 dims)  & Squared Exponential & Very slow, infinitely smooth centroid drift \\
-    $\Shape$ (12 dims) & Mat\'{e}rn-3/2 & Once-differentiable; shape can change abruptly \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\begin{description}[leftmargin=*,labelwidth=!]
+  \item[Sigmoid.] The simplest parametric option:
+    $g(s, t; \boldsymbol{\theta}) = s \cdot \sigma(\theta_1 (t - \theta_2))$,
+    where $\sigma$ is the logistic sigmoid and
+    $\boldsymbol{\theta} = (\theta_1, \theta_2)$ controls the steepness and
+    inflection point. Monotonic in $s$ by construction. 2~population
+    parameters.
 
-\subsubsection{Composite Kernel with Cross-Partition Coupling}
+  \item[Reduced Gompertz.] Following Vaghi et al.\
+    \cite{vaghi2020reduced}:
+    $g(s, t; \beta) = s \cdot [1 - \exp(-\alpha(s)(1 - e^{-\beta t})/\beta)]$,
+    where $\alpha(s)$ maps severity to growth rate. 1~population parameter
+    ($\beta$).
 
-The PA-MOGP uses an Intrinsic Coregionalisation Model (\cref{eq:icm}) with
-an additional rank-1 coupling term:
+  \item[CMNN.] A constrained monotonic neural network
+    \cite{runje2023cmnn} with non-negative weights ensuring
+    $\partial g / \partial s \geq 0$ everywhere. The most flexible option
+    but with the highest parameter count ($\sim$10--20 weights). Evaluated
+    only if the parametric options prove insufficient.
+\end{description}
+
+These are compared in ablation~A3 (\cref{sec:eval:ablations}).
+
+\subsubsection{Joint Estimation}
+
+The population parameters $\boldsymbol{\theta}$ and patient severities
+$\{s_i\}_{i=1}^N$ are estimated jointly by maximising the marginal
+likelihood:
 \begin{equation}
-  \mathbf{K}(t, t') =
-    \underbrace{\mathbf{B}_{\text{vol}}^{\diag} \otimes k_{\text{vol}}
-    + \mathbf{B}_{\text{loc}}^{\diag} \otimes k_{\text{loc}}
-    + \mathbf{B}_{\text{shape}}^{\diag} \otimes k_{\text{shape}}}_{
-      \text{Within-partition dynamics}}
-    + \underbrace{\mathbf{B}_{\text{cross}} \otimes k_{\text{vol}}}_{
-      \text{Cross-partition coupling}}
-    + \sigma_n^2 \mathbf{I}_{44}\,\delta(t, t'),
-  \label{eq:pamogp_kernel}
+  \hat{\boldsymbol{\theta}} = \arg\max_{\boldsymbol{\theta}}
+    \sum_{i=1}^{N} \log \int p(\mathbf{q}_i \mid s_i, \boldsymbol{\theta})
+    \, p(s_i) \, ds_i.
+  \label{eq:severity_mle}
 \end{equation}
-where $\mathbf{B}_{\text{cross}} = \mathbf{w}\mathbf{w}^\top$ with
-$\mathbf{w} \in \R^{44}$ (rank-1 coupling). The coupling encodes the
-mechanistic hypothesis that volume growth is the primary driver and
-shape/location changes are secondary consequences, operating on the same
-timescale as volume dynamics.
+For the Beta prior, the inner integral is computed via Gauss--Hermite
+quadrature or Laplace approximation.
 
-\subsubsection{Parameter Count}
+\subsubsection{Test-Time Severity Estimation}
 
-\begin{table}[H]
-  \centering
-  \caption{PA-MOGP parameter breakdown.}
-  \label{tab:pamogp_params}
-  \begin{tabular}{lc}
-    \toprule
-    \textbf{Component} & \textbf{Parameters} \\
-    \midrule
-    Vol kernel ($\sigma_f, \ell, \sigma_n$) & 3 \\
-    Loc kernel ($\sigma_f, \ell, \sigma_n$) & 3 \\
-    Shape kernel ($\sigma_f, \ell, \sigma_n$) & 3 \\
-    Vol diagonal coregionalisation (24 dims) & 24 \\
-    Loc diagonal coregionalisation (8 dims) & 8 \\
-    Shape diagonal coregionalisation (12 dims) & 12 \\
-    Cross-partition coupling $\mathbf{w}$ & 44 \\
-    Noise variance & 1 \\
-    \midrule
-    \textbf{Total} & \textbf{98} \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+For a held-out patient with observed trajectory
+$\{(t_{ij}, q_{ij})\}_{j=1}^{n_i}$, the posterior severity is:
+\begin{equation}
+  p(s_i \mid \mathbf{q}_i, \hat{\boldsymbol{\theta}}) \propto
+    p(\mathbf{q}_i \mid s_i, \hat{\boldsymbol{\theta}}) \, p(s_i),
+  \label{eq:severity_posterior}
+\end{equation}
+which is maximised or integrated over for point and distributional predictions
+respectively. For patients with $n_i = 2$ (the most common case), the
+posterior is dominated by the prior, yielding predictions close to the
+population median---a desirable behaviour analogous to LME shrinkage.
 
-Hyperparameters are estimated via pooled multivariate marginal likelihood
-(4,400~observation-dimension pairs) using L-BFGS-B with 5 random restarts.
+\subsubsection{Severity Estimation from Baseline Features}
 
-\begin{remark}[R1 Revision]
-  Following the methodology revision, the PA-MOGP simplifies to a standard
-  MOGP operating on $\Vol \in \R^{32}$ only (with a single Mat\'{e}rn-5/2
-  kernel), since the shape partition is dropped and location becomes a static
-  GP covariate. The cross-partition coupling term is removed, and the
-  coregionalisation matrix $\mathbf{B} = \mathbf{W}\mathbf{W}^\top +
-  \diag(\boldsymbol{\kappa})$ captures inter-dimension correlations within
-  the volume partition.
+A secondary objective of Stage~2 is to predict severity from baseline
+(single-timepoint) information, enabling predictions without longitudinal
+data. Candidate predictors include:
+\begin{itemize}[leftmargin=*]
+  \item Clinical covariates: age, sex, tumour location.
+  \item Baseline volume $V_{i,0}$.
+  \item BrainSegFounder features at $t_0$ (linking to Stage~3).
+\end{itemize}
+This is evaluated in ablation~A4 (\cref{sec:eval:ablations}).
+
+% ---------------------------------------------------------------------------
+% 8.4 Stage 3: Representation-Learning Augmented Prediction
+% ---------------------------------------------------------------------------
+\subsection{Stage 3: Representation-Learning Augmented Prediction}
+\label{sec:growth:stage3}
+
+Stage~3 asks whether high-dimensional deep features from BrainSegFounder
+capture growth-relevant information beyond what volume and severity already
+explain. This stage uses the LoRA-adapted encoder (\cref{sec:lora}) and
+SDP (\cref{sec:sdp}) from the original pipeline, but positions them as the
+final complexity level rather than the primary approach.
+
+\subsubsection{Feature Extraction and Compression}
+
+The frozen pipeline (encoder + SDP) produces per-scan latent vectors
+$\mathbf{z} \in \R^{128}$. For growth prediction, these are compressed via
+within-fold PCA to $\tilde{\mathbf{z}} \in \R^{d_{\text{PCA}}}$ with
+$d_{\text{PCA}} \in \{3, 4, 5, 6\}$ selected by the sample size constraint
+and cross-validated performance. PCA is fitted on the training set within
+each LOPO-CV fold to prevent information leakage.
+
+\subsubsection{GP with ARD Kernel}
+
+The compressed features are used as inputs to a GP with an ARD kernel:
+\begin{equation}
+  k_{\text{ARD}}(\tilde{\mathbf{z}}, \tilde{\mathbf{z}}'; t, t') =
+    k_{5/2}(t, t') \cdot \prod_{d=1}^{d_{\text{PCA}}}
+    k_{\text{SE}}\!\left(\frac{\tilde{z}^{(d)} - \tilde{z}'^{(d)}}{\ell_d}\right)
+    + \sigma_n^2 \delta_{ii'} \delta(t, t'),
+  \label{eq:ard_kernel}
+\end{equation}
+where $\ell_d$ are per-dimension length-scales. Dimensions with large
+$\ell_d$ are effectively deactivated, providing automatic feature selection.
+The mean function is the Stage~1 population trend.
+
+\textbf{Parameter count:} $d_{\text{PCA}}$ ARD length-scales + 3 temporal
+kernel hyperparameters + mean function parameters. For $d_{\text{PCA}} = 4$:
+$\sim$9 total hyperparameters, estimated from the pooled marginal likelihood.
+
+\subsubsection{Integration with Earlier Stages}
+
+Stage~3 does not replace Stages~1 and~2 but augments them. The deep features
+enter as additional covariates in the GP mean function or as ARD inputs
+alongside time, while the population trend from Stage~1 remains the prior
+mean. The marginal contribution is quantified by the variance decomposition
+(\cref{sec:eval:variance}).
+
+\subsubsection{SDP with Supervised Residual Targets}
+
+An alternative to PCA compression is to use the SDP's supervised partition
+$\Vol \in \R^{32}$ directly. The SDP is designed to place volume-relevant
+information in a structured subspace. However, 32~dimensions is still far
+too many for GP modelling at $N = 33$. Two options are evaluated:
+\begin{enumerate}[leftmargin=*]
+  \item PCA on $\Vol$ alone (expected to require fewer components than PCA
+    on full $\mathbf{z}$, since the SDP has already concentrated
+    volume-relevant information).
+  \item Using $\Vol$ as input to a GP with an ICM coregionalisation matrix
+    (\cref{eq:icm}), treating each latent dimension as an output channel.
+    This is the PA-MOGP structure from the original design.
+\end{enumerate}
+
+\begin{remark}[Stage~3 is conditional]
+  Stage~3 is attempted only if Stages~1 and~2 leave unexplained variance
+  that could plausibly be captured by additional features. If the variance
+  decomposition shows that volume and severity together explain $R^2 > 0.70$,
+  the marginal room for improvement from deep features is limited, and
+  Stage~3 serves primarily as a negative result confirming parsimony.
 \end{remark}
 
 % ---------------------------------------------------------------------------
@@ -224,90 +341,85 @@ Hyperparameters are estimated via pooled multivariate marginal likelihood
 \subsection{Leave-One-Patient-Out Cross-Validation}
 \label{sec:growth:lopo}
 
-With only 33~patients, $k$-fold CV leaves too few patients per fold for stable
-GP hyperparameter estimation. LOPO-CV uses maximum training data per fold
-(32~patients, $\sim$97~observations):
+All three stages share a common LOPO-CV protocol. With only 31--58~patients,
+$k$-fold CV leaves too few patients per fold for stable model estimation.
+LOPO-CV uses maximum training data per fold:
 
 \begin{algorithm}[H]
-  \caption{LOPO-CV Evaluation Protocol}
+  \caption{LOPO-CV Evaluation Protocol (shared across all stages)}
   \label{alg:lopo}
   \begin{algorithmic}[1]
-    \FOR{$i = 1$ to $N = 33$}
+    \FOR{$i = 1$ to $N$}
       \STATE $\mathcal{D}_{\text{train}} \leftarrow
-        \{\mathcal{T}_j : j \neq i\}$ \COMMENT{32 patients}
+        \{\mathcal{T}_j : j \neq i\}$ \COMMENT{$N-1$ patients}
       \STATE $\mathcal{D}_{\text{test}} \leftarrow \{\mathcal{T}_i\}$
         \COMMENT{held-out patient}
-      \STATE Fit model on $\mathcal{D}_{\text{train}}$
-      \STATE Predict at patient $i$'s observation times
-      \STATE Decode predictions through $\pi_{\text{vol}}$
-      \STATE Record per-patient metrics
+      \STATE \textbf{Within-fold operations:}
+      \STATE \quad Fit PCA on $\mathcal{D}_{\text{train}}$ (Stage~3 only)
+      \STATE \quad Estimate severity $\{s_j\}_{j \neq i}$ (Stage~2 only)
+      \STATE \quad Fit model on $\mathcal{D}_{\text{train}}$
+      \STATE \quad Predict at patient $i$'s observation times
+      \STATE \quad Record per-patient metrics
     \ENDFOR
-    \STATE Aggregate metrics across 33 folds
+    \STATE Aggregate metrics across $N$ folds
+    \STATE Compute .632+ bootstrap CIs
   \end{algorithmic}
 \end{algorithm}
 
+All model fitting, feature transformation (PCA), and severity estimation
+are performed within each fold. This ensures that LOPO-CV metrics reflect
+true out-of-sample performance without information leakage.
+
 For each held-out patient $i$, predictions are evaluated at the patient's
-observed timepoints using the model trained on the remaining 32~patients. The
-LME model is refitted from scratch in each fold. For H-GP and PA-MOGP, shared
-hyperparameters are re-optimised per fold (excluding patient $i$'s data from
-the pooled marginal likelihood).
+observed timepoints. For Stage~2, the held-out patient's severity is
+re-estimated from their observations using the population model fitted on the
+remaining patients (\cref{eq:severity_posterior}).
 
 % ---------------------------------------------------------------------------
-% 8.6 Volume Decoder
+% 8.6 Volume Decoding and Uncertainty
 % ---------------------------------------------------------------------------
-\subsection{Volume Decoding}
+\subsection{Volume Representation and Uncertainty}
 \label{sec:growth:decoder}
 
-Predicted latent vectors are decoded to physical volumes through the frozen
-SDP semantic head:
+\subsubsection{Volume Representation}
+
+All models in Stages~1 and~2 operate on log-transformed whole-tumour volume:
+\begin{equation}
+  v = \log(V_{\text{WT}} + 1),
+  \label{eq:log_vol}
+\end{equation}
+where $V_{\text{WT}}$ is the whole-tumour volume in mm$^3$. This is the
+single clinically relevant growth endpoint for meningiomas. The
+log-transformation stabilises variance and makes growth rates approximately
+additive.
+
+For Stage~3, the SDP semantic head decodes latent predictions to
+log-volumes:
 \begin{equation}
   \hat{v} = \pi_{\text{vol}}(\hat{\Vol})
     = \mathbf{W}_v \hat{\Vol} + \mathbf{b}_v,
-  \quad \hat{v} \in \R^4,
+  \quad \hat{v} \in \R^1,
   \label{eq:vol_decode}
 \end{equation}
-where $\hat{v}$ represents log-volumes in normalised space. De-normalisation
-applies the stored training statistics:
-\begin{equation}
-  V_{\text{pred}} = \exp\bigl(\hat{v} \cdot \sigma_{\text{vol}}
-    + \mu_{\text{vol}}\bigr) - 1,
-  \label{eq:denorm}
-\end{equation}
-yielding predicted volumes in mm$^3$.
+with de-normalisation $V_{\text{pred}} = \exp(\hat{v} \cdot \sigma_{\text{vol}}
++ \mu_{\text{vol}}) - 1$.
 
 \subsubsection{Uncertainty Propagation}
 
-For GP models that provide predictive covariance
-$\boldsymbol{\Sigma}_{\hat{\Vol}}$, the decoded volume uncertainty is
-propagated via the linear map:
+For GP models that provide predictive variance $\sigma^2_{\hat{v}}$ in
+log-volume space, the physical volume uncertainty is propagated through the
+exponential via the delta method:
 \begin{equation}
-  \boldsymbol{\Sigma}_{\hat{v}} = \mathbf{W}_v\,
-    \boldsymbol{\Sigma}_{\hat{\Vol}}\,\mathbf{W}_v^\top.
-  \label{eq:uncertainty_prop}
+  \sigma_{V_{\text{pred}}} \approx V_{\text{pred}} \cdot \sigma_{\hat{v}}
+    \cdot \sigma_{\text{vol}},
+  \label{eq:delta_method}
 \end{equation}
-In log-volume space, this provides Gaussian uncertainty bands. Transformation
-to physical volume space requires the delta method or Monte Carlo sampling for
-non-Gaussian propagation through the exponential.
+where the multiplicative structure reflects the log-normal nature of volume
+uncertainty. For prediction intervals, we report the 95\% credible interval
+from the GP posterior.
 
 % ---------------------------------------------------------------------------
-% 8.7 GP Mean Function Design
-% ---------------------------------------------------------------------------
-\subsection{Population Mean Function}
-\label{sec:growth:mean}
-
-The GP prior mean function is set to the LME population trend
-(\cref{eq:gp_mean_lme}). This creates a natural model nesting:
-\begin{equation}
-  \GP \text{ with linear mean} \supset \LME,
-  \label{eq:nesting}
-\end{equation}
-ensuring that for patients with $n_i = 2$, the GP predictions revert to the
-well-estimated population trend rather than the zero function. Alternative
-mean functions (zero, Gompertz) are evaluated as ablation A8
-(\cref{sec:eval:ablations}).
-
-% ---------------------------------------------------------------------------
-% 8.8 Failure Recovery
+% 8.7 Failure Recovery
 % ---------------------------------------------------------------------------
 \subsection{Failure Recovery Protocol}
 \label{sec:growth:failure}
@@ -320,7 +432,13 @@ following recovery steps are applied in order:
   \item Constrain length-scale bounds: $\ell \in [1, 120]$ months.
   \item Increase L-BFGS-B random restarts from 5 to 10.
   \item Fall back to a simpler kernel (Mat\'{e}rn-5/2 $\to$ SE).
-  \item For PA-MOGP: disable cross-partition coupling (reduces to
-    independent per-partition GPs).
   \item If all fail: report per-dimension diagnostics and halt.
+\end{enumerate}
+
+For Stage~2 severity estimation, if the joint optimisation fails to converge:
+\begin{enumerate}[leftmargin=*]
+  \item Reduce the growth function complexity (CMNN $\to$ sigmoid).
+  \item Initialise severities from the empirical growth rate ranking.
+  \item Fix population parameters and estimate severities only (profile
+    likelihood).
 \end{enumerate}

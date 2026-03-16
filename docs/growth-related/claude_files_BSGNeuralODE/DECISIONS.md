@@ -94,3 +94,29 @@ All binary/multi-option decisions pre-resolved. Do not revisit these unless expl
 ## D20. PA-MOGP Coupling Structure
 **Decision:** Rank-1 cross-partition coupling (B_cross = ww^T) using volume temporal kernel.
 **Rationale:** Encodes the mechanistic hypothesis that volume growth is the primary driver and shape/location changes are secondary consequences. Rank-1 keeps the parameter count at 44 (vs. 990 for a full 44×44 coregionalization matrix). The coupling uses k_vol as its temporal kernel because cross-partition effects are hypothesized to operate on the same timescale as volume growth.
+
+---
+
+## D21. Three-Stage Complexity Ladder (2026-03-16)
+**Decision:** Restructure the project as a 3-stage complexity ladder: Stage 1 (volumetric baseline) → Stage 2 (latent severity model) → Stage 3 (representation learning).
+**Rationale:** At N=31–58 patients with ~3.6 obs/patient, parsimony is paramount (Riley et al. 2019: max 2–3 predictor parameters at N=31). Volume alone captures the dominant clinical signal for meningioma growth (Engelhardt et al. 2023). The old primary pipeline (LoRA → SDP → GP on 128-dim latent trajectories) is statistically unjustifiable as the first approach — it should be tested only after simpler alternatives are exhausted. Each stage must earn its place by demonstrably outperforming the previous one under LOPO-CV.
+
+## D22. Growth Function for Severity Model
+**Decision:** Reduced Gompertz (Vaghi et al. 2020) as the recommended growth function.
+**Rationale:** Three options were considered: (1) weighted sigmoid (3 params, approximate monotonicity), (2) CMNN (~50 params, overparameterized at N=31), (3) reduced Gompertz (3 population params + N severity values, strong biological grounding). The reduced Gompertz has the strongest mechanistic justification (Engelhardt et al. 2023 confirmed Gompertz best fits meningioma growth) and the fewest free population parameters.
+
+## D23. Quantile Space for Severity Model
+**Decision:** Operate in quantile space for the severity model (time quantile + growth quantile).
+**Rationale:** The advisor's proposal explicitly uses quantile space. The quantile transform maps heterogeneous follow-up intervals and growth magnitudes to [0,1], enabling rank-based comparison. Warning: this is a rank-based nonlinear transform that destroys magnitude information — this is intentional. Primary output space for model comparison remains log-volume (clinically interpretable); quantile R² is secondary.
+
+## D24. Variance Decomposition as Central Contribution
+**Decision:** The thesis's central analytical contribution is a formal variance decomposition across the 3 stages: M₀ (mean) → M₁ (ScalarGP) → M₂ (HGP) → M₃ (severity) → M₄ (deep+severity).
+**Rationale:** At small N, the "flat maximum" effect is likely — different models may converge to similar performance because the data cannot discriminate between them. Reporting ΔR² with paired permutation tests (B=10000) and bootstrap CIs per transition provides honest evidence of each component's marginal value.
+
+## D25. Severity Estimation at Test Time
+**Decision:** Estimate severity from baseline features via logistic regression on [log_vol, age, sex, sphericity]. Do NOT use jointly-optimized severity values at test time (data leakage).
+**Rationale:** With only a single baseline MRI at test time, the posterior over s_i is dominated by the prior. A 3–4 feature logistic regression is within the N/15 parameter budget. The regression head must be retrained inside each LOPO fold using only training patients' severities.
+
+## D26. Gompertz Mean Function for HGP
+**Decision:** Add Gompertz mean function as an ablation option for HGP (alongside existing linear mean).
+**Rationale:** Engelhardt et al. 2023 and Vaghi et al. 2020 both support Gompertz as the best parametric model for meningioma growth. Implementation: fit Gompertz parametrically first via scipy.optimize.curve_fit, then use the fitted curve as a fixed mean for the GP (0 extra GP parameters). This avoids the 3-parameter Gompertz mean adding to the GP parameter budget.

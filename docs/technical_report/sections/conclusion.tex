@@ -10,48 +10,55 @@
 \subsection{Summary of Contributions}
 \label{sec:conc:summary}
 
-This thesis has presented a four-phase pipeline for meningioma growth
-forecasting from longitudinal multi-modal 3D MRI. The key contributions and
-findings are:
+This thesis has presented a three-stage complexity ladder for meningioma
+growth forecasting from longitudinal multi-modal 3D MRI. Rather than
+proposing a single complex pipeline and reporting its metrics, we
+systematically evaluate whether each successive level of model
+sophistication provides measurable out-of-sample improvement at $N = 31$--$58$
+patients. The key contributions and findings are:
 
 \begin{enumerate}[leftmargin=*]
-  \item \textbf{Foundation model adaptation.} We demonstrated that
-    BrainSegFounder, pretrained on 41,400+ subjects for glioma segmentation,
-    can be adapted to the meningioma domain via LoRA with $\sim$197K
-    trainable parameters ($<0.32\%$ of total). However, the marginal
-    improvement in downstream feature quality ($\Delta R^2 = +0.016$)
-    suggests that SSL pretraining already provides strong cross-domain
-    features, and the primary benefit of LoRA is in segmentation quality
-    rather than representation structure.
+  \item \textbf{The first out-of-sample meningioma growth prediction
+    benchmark.} Using LOPO-CV on a longitudinal cohort, we provide the
+    first reported $R^2$, MAE, and calibration metrics for meningioma
+    volume prediction. The volumetric baseline (Stage~1: ScalarGP, LME,
+    HGP) establishes a reference point that, to our knowledge, did not
+    previously exist in the literature. The HGP with population linear mean
+    from the LME provides calibrated uncertainty with automatic shrinkage
+    toward the population trend for patients with sparse observations.
 
-  \item \textbf{Supervised disentangled projection.} We designed a
-    non-generative approach to structured latent space construction,
-    theoretically grounded in the impossibility of unsupervised
-    disentanglement \cite{locatello2019challenging} and validated against
-    the failure of VAE-based alternatives. The combination of semantic
-    regression, VICReg regularisation, and distance correlation provides a
-    principled and computationally efficient framework.
+  \item \textbf{A latent severity framework for growth characterisation.}
+    Stage~2 formulates meningioma growth heterogeneity as a latent variable
+    problem connected to Item Response Theory and the reduced Gompertz model
+    \cite{vaghi2020reduced}. A single patient-specific severity parameter
+    $s_i \in [0, 1]$ captures inter-patient variability while respecting
+    the sample size constraint of 2--3 parameters per predictor. The
+    framework provides interpretable patient stratification aligned with
+    the three growth subgroups identified by Engelhardt et al.\
+    \cite{engelhardt2023gompertz}.
+
+  \item \textbf{Systematic assessment of representation learning value.}
+    By placing the full BrainSegFounder + LoRA + SDP pipeline as Stage~3,
+    we directly quantify whether 768-dimensional deep features (compressed
+    via PCA to 3--6 dimensions) capture growth-relevant information beyond
+    what volume and severity already explain. The marginal benefit of LoRA
+    adaptation for feature quality ($\Delta R^2 = +0.016$ on semantic
+    probes) motivates scepticism that the full representation learning
+    pipeline is necessary for this task.
+
+  \item \textbf{Variance decomposition as an analytical framework.}
+    The cross-cutting analysis decomposes LOPO-CV prediction variance across
+    the three stages using paired permutation tests and BCa bootstrap CIs.
+    This provides not only a model selection criterion but also a
+    methodological template for evaluating complexity--benefit tradeoffs in
+    small-sample longitudinal prediction problems more broadly.
 
   \item \textbf{Empirically-driven methodology revision.} Rigorous
     evaluation revealed that shape disentanglement fails ($R^2 \leq 0.11$),
     meningioma location is temporally static, and sub-compartment volume
     targets are label-dependent and clinically irrelevant. These findings
-    motivated a principled simplification from a $3+1$ partition SDP with
-    PA-MOGP to a $1+1$ partition SDP with standard MOGP.
-
-  \item \textbf{GP hierarchy for small-sample temporal modelling.} The
-    three-model hierarchy (LME $\to$ H-GP $\to$ PA-MOGP) replaces the
-    originally proposed Neural ODE, which was catastrophically
-    overparameterised for 33~patients ($\sim$3,100 parameters vs.\ 112
-    observation pairs). The GP framework provides closed-form inference,
-    calibrated uncertainty, and principled handling of heterogeneous
-    observation counts.
-
-  \item \textbf{Negative results on dual-domain transfer.} Cross-domain
-    GP probes yield $R^2 \approx -0.01$, demonstrating that domain gap
-    reduction (MMD$^2$ decrease of 68.6\%) does not guarantee semantic
-    compatibility. Dual-domain training compresses the effective rank by
-    46.6\% while degrading MEN segmentation Dice from 0.64 to 0.36.
+    motivated a principled simplification and the reframing from a linear
+    pipeline to the complexity ladder.
 \end{enumerate}
 
 % ---------------------------------------------------------------------------
@@ -62,44 +69,51 @@ findings are:
 
 \subsubsection{Cohort Size}
 
-The Andalusian longitudinal cohort (33~patients, 100~observations) is the
-primary bottleneck. With 57.6\% of patients having only 2~studies, the
-per-patient growth trajectories are sparse. While the GP framework handles
-this gracefully via automatic shrinkage toward the population mean, the
-resulting predictions for 2-observation patients are dominated by the
-population trend rather than individual-specific dynamics.
+The longitudinal cohort ($N = 31$--$58$ patients, $\sim$112~observations)
+is the primary bottleneck. With approximately 57.6\% of patients having
+only 2~studies, per-patient growth trajectories are sparse. The GP and LME
+frameworks handle this via automatic shrinkage toward the population mean,
+but predictions for 2-observation patients are necessarily dominated by
+population-level dynamics rather than individual-specific growth rates.
+The sample size also limits the statistical power of the variance
+decomposition: Varoquaux \cite{varoquaux2018cv} showed that CV error
+estimates have standard deviations of $\sim$$\pm$10\% at $N = 100$, and
+uncertainty is larger still at $N = 33$.
 
-\subsubsection{Temporal Sparsity}
+\subsubsection{Ordinal Time}
 
-The irregular and sparse temporal sampling (2--6 observations per patient
-over months to years) limits the detection of non-monotonic growth patterns
-(e.g., saltatory growth, temporary regression). The Mat\'{e}rn-5/2 kernel
-imposes a smoothness prior that may be inappropriate for tumours with
-abrupt growth regime changes.
+At the time of writing, exact acquisition timestamps for the longitudinal
+cohort are pending. If only ordinal timepoint indices are available (scan~1,
+scan~2, scan~3, \ldots) rather than calendar dates, the temporal models
+operate on a surrogate time axis. This does not invalidate the complexity
+ladder comparison (all models use the same time representation) but limits
+the clinical interpretability of growth rate estimates and length-scale
+hyperparameters.
 
-\subsubsection{LoRA Marginality}
+\subsubsection{LoRA Marginality and Stage~3 Viability}
 
-The finding that LoRA adaptation provides marginal downstream benefit
-($\Delta R^2 = +0.016$) raises the question of whether the Phase~1
-adaptation step is necessary at all for this pipeline. The frozen
-BrainSegFounder encoder may suffice, with the SDP and GP models providing
-the primary modelling value. However, LoRA does improve segmentation
-quality, which affects the accuracy of the semantic feature extraction used
-to train the SDP.
+The marginal benefit of LoRA adaptation ($\Delta R^2 = +0.016$ for
+semantic probing) suggests that the entire Stage~3 pipeline may provide
+limited value at the current sample size. This is, however, a finding
+rather than a failure: establishing that simple volumetric models suffice
+is a valuable negative result that can save computational resources in
+clinical deployment.
 
 \subsubsection{Single-Site Longitudinal Data}
 
-The Andalusian cohort is collected from hospitals in a single region, which
-may limit generalisability to other populations, scanner manufacturers, and
-acquisition protocols. ComBat harmonisation addresses scanner batch effects
-but cannot correct for biological population differences.
+The longitudinal cohort is collected from hospitals in a single region
+(Andalusia, Spain), which may limit generalisability to other populations,
+scanner manufacturers, and acquisition protocols. ComBat harmonisation
+addresses scanner batch effects but cannot correct for biological population
+differences.
 
 \subsubsection{Absence of Clinical Validation}
 
 The pipeline has not been validated against clinical outcomes (intervention
-decisions, actual tumour behaviour at longer follow-up). The volume
-prediction $R^2$ and calibration metrics are necessary but not sufficient
-for clinical utility.
+decisions, actual tumour behaviour at longer follow-up). Volume prediction
+$R^2$ and calibration metrics are necessary but not sufficient for clinical
+utility. A positive growth prediction does not, by itself, determine the
+appropriate clinical action.
 
 % ---------------------------------------------------------------------------
 % 10.3 Future Work
@@ -107,44 +121,52 @@ for clinical utility.
 \subsection{Future Work}
 \label{sec:conc:future}
 
-\subsubsection{Larger Longitudinal Cohorts}
+\subsubsection{Cohort Expansion to $N \geq 50$}
 
-The most impactful improvement would be access to larger longitudinal
-meningioma cohorts. Multi-centre collaborations could provide 100--500
-patients, which would enable: (i)~proper training/validation/test splits
-for GP models; (ii)~exploration of higher-capacity models (deep kernel
-GPs, neural process families); (iii)~subgroup analysis by tumour grade,
+The most impactful improvement would be expanding the longitudinal cohort.
+Multi-centre collaborations targeting $N \geq 50$ patients would: (i)~tighten
+the variance decomposition CIs, enabling confident $\Delta R^2$ conclusions;
+(ii)~potentially unlock value in Stage~2 and~3 by providing sufficient data
+for more complex models; (iii)~enable subgroup analyses by tumour grade,
 location, and patient demographics.
 
-\subsubsection{Self-Supervised Temporal Pretraining}
+\subsubsection{Exact Timestamps}
 
-Following the JEPA paradigm \cite{lecun2022path}, the SDP and GP models
-could be replaced by a self-supervised temporal prediction objective:
-given the latent vector at $t_0$, predict the latent vector at $t_1$ in
-representation space. This would require more longitudinal data but could
-learn temporal dynamics end-to-end rather than relying on the two-stage
-SDP + GP approach.
+Obtaining exact acquisition dates would enable physically meaningful
+growth rate estimation, improve GP length-scale interpretability, and allow
+direct comparison with the volumetric growth rates reported in the clinical
+literature \cite{hashimoto2012natural,nakamura2003natural,
+engelhardt2023gompertz}.
 
 \subsubsection{Clinical Decision Support Integration}
 
 The GP posterior's calibrated uncertainty is directly suitable for clinical
 decision support: the probability that a tumour will exceed a volume
 threshold $V_{\text{critical}}$ within a specified time horizon can be
-computed analytically from the Gaussian predictive distribution. Integrating
-this into a clinical workflow would require prospective validation and
-regulatory approval.
+computed analytically from the Gaussian predictive distribution:
+\begin{equation}
+  P(V(t_{\text{future}}) > V_{\text{critical}}) =
+    1 - \Phi\!\left(\frac{\log(V_{\text{critical}} + 1) - \mu_*(t_{\text{future}})}
+    {\sigma_*(t_{\text{future}})}\right),
+  \label{eq:clinical_decision}
+\end{equation}
+where $\Phi$ is the standard normal CDF and $(\mu_*, \sigma_*)$ are the GP
+posterior mean and standard deviation in log-volume space. Integrating this
+into a clinical workflow would require prospective validation and regulatory
+approval.
 
-\subsubsection{Multi-Task Growth Prediction}
+\subsubsection{Severity-Guided Surveillance}
 
-Rather than predicting volume alone, the pipeline could be extended to
-jointly predict clinical endpoints (e.g., symptom onset, need for surgery)
-from the latent trajectories. This would require outcome labels that are
-typically available in retrospective clinical databases.
+If the severity model (Stage~2) provides robust patient stratification,
+it could inform surveillance scheduling: high-severity patients receive
+shorter follow-up intervals, while low-severity patients can be monitored
+less frequently. This requires validation of the severity--growth
+relationship at longer follow-up horizons.
 
 \subsubsection{Foundation Model Scaling}
 
 BrainSegFounder is a relatively small foundation model (BSF-Tiny, 62M
 parameters). Larger variants or more recent foundation models pretrained on
-broader datasets may provide stronger initial features, potentially
-eliminating the need for LoRA adaptation entirely and improving the SDP's
-semantic decodability.
+broader datasets may provide stronger initial features, potentially shifting
+the Stage~3 $\Delta R^2$ from marginal to significant. However, this
+hypothesis must be tested empirically rather than assumed.

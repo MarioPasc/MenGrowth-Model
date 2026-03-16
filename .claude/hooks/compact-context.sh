@@ -4,65 +4,48 @@
 cat <<'CONTEXT'
 === MENGROWTH COMPACTION RECOVERY ===
 
+PROJECT: Meningioma growth prediction from small longitudinal MRI cohorts.
+FRAMEWORK: 3-stage complexity ladder. Each stage must beat the previous under LOPO-CV.
+
+STAGE 1 (PRIMARY): Volume-only baseline
+  Segment → WT volume → log(V+1) → {ScalarGP, LME, HGP} → LOPO-CV
+  Spec: docs/stages/stage_1_volumetric_baseline.md
+
+STAGE 2 (SECONDARY): Latent severity model
+  Quantile transform → NLME with s∈[0,1] → monotonic g(s,t;θ) → LOPO-CV
+  Spec: docs/stages/stage_2_severity_model.md
+
+STAGE 3 (TERTIARY): Representation learning (old primary pipeline)
+  BrainSegFounder → LoRA → SDP → PCA(residual) → GP+ARD → LOPO-CV
+  Spec: docs/stages/stage_3_representation_learning.md
+
+VARIANCE DECOMPOSITION: M₀→M₁→M₂→M₃→M₄, ΔR², permutation tests
+  Spec: docs/stages/variance_decomposition.md
+
+KEY CONSTRAINT: N=31-58 patients, max 2-3 predictor params at N=31.
+
 CHANNEL ORDER (CRITICAL):
   [FLAIR, T1ce, T1, T2] = ["t2f", "t1c", "t1n", "t2w"]
-  Wrong order → Dice ~0.00. See transforms.py MODALITY_KEYS.
-
-ROI SIZE: 128³ (training), 192³ (feature extraction/eval).
-  encoder10 → [B, 768, 4, 4, 4] with 128³ input.
-
-SEGMENTATION: 3-ch sigmoid — Ch0=TC, Ch1=WT, Ch2=ET (overlapping).
-  Input labels: 0=BG, 1=NCR, 2=ED, 3=ET.
+  Wrong order → Dice ~0.00.
 
 ENVIRONMENT:
   Conda: ~/.conda/envs/growth/bin
-  Tests: ~/.conda/envs/growth/bin/python -m pytest tests/ -v
-  Safe default: pytest -m "not slow and not real_data" -v --tb=short
+  Tests: ~/.conda/envs/growth/bin/python -m pytest -m "not slow and not real_data" -v --tb=short
 
-PIPELINE PHASES:
-  [X] Phase 0: Data Infrastructure (BraTSDatasetH5, HDF5 v2.0)
-  [X] Phase 1: LoRA Adaptation (experiments/lora/, Dice WT ~0.87)
-  [X] Phase 2: SDP (128-d latent, vol/loc/shape/residual partitions)
-  [X] Phase 3: Encoding + ComBat (infrastructure ready)
-  [~] Phase 4: Growth Prediction (LME ✓, H-GP ✓, PA-MOGP STUBBED)
-  [~] Phase 5: Evaluation (GP probes ✓, ablation A0 in progress)
+KEY DOCS:
+  docs/RESEACH_PLAN.md — Literature synthesis, 3 axes
+  docs/PLAN_OF_ACTION_v1.md — Implementation spec, all 3 stages
+  docs/stages/ — Self-contained stage specs
+  docs/growth-related/claude_files_BSGNeuralODE/ — Stage 3 reference specs
 
-GP HIERARCHY (replaces Neural ODE — D16):
-  LME → H-GP → PA-MOGP, LOPO-CV 33 folds
-  z_vol (24-dim), population linear mean from LME (D18)
-
-KEY DECISIONS:
-  D16: GP hierarchy (not ODE — overparameterization)
-  D17: LOPO-CV (33 folds)
-  D18: Population linear mean from LME
-  D19: Hierarchical hyperparameter sharing
-  D20: Rank-1 cross-partition coupling (PA-MOGP)
-
-SLASH COMMANDS:
-  /implement-phase N — implement a pipeline phase
-  /run-tests N — run phase-specific tests
-  /check-gate N — check if phase gate is OPEN
-  /pre-flight <config> — validate before SLURM submission
-  /analyze-run <dir> — analyze experiment results
-  /dl-scientist — rigorous scientific analysis
-  /explore — codebase exploration
-  /test — quick test runner
-
-KEY FILES:
-  docs/growth-related/claude_files_BSGNeuralODE/ — Module specs
-  docs/growth-related/methodology_refined.md — Master methodology
-  docs/technical_report/main.tex — LaTeX technical report hub
-  src/growth/losses/segmentation.py — TC/WT/ET conversion
-  src/growth/data/transforms.py — Channel order, preprocessing
+KEY CODE:
+  src/growth/models/growth/ — GP models (scalar_gp, lme_model, hgp_model)
+  src/growth/evaluation/lopo_evaluator.py — LOPO-CV framework
+  experiments/segment_based_approach/ — Stage 1 pipeline
 
 CODING RULES:
-  1. Type hints on ALL function signatures
-  2. Google-style docstrings on public functions/classes
-  3. No magic numbers — config from YAML via OmegaConf
-  4. Use MONAI transforms, einops.rearrange
-  5. No BatchNorm — LayerNorm only
-  6. Shape assertions at tensor function boundaries
-  7. Logging via Python logging module (no print)
+  Type hints, Google docstrings, no magic numbers, LayerNorm only,
+  shape assertions, logging (no print), prefer library functions.
 
 === END COMPACTION RECOVERY ===
 CONTEXT

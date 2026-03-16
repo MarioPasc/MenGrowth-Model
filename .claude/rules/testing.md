@@ -54,9 +54,15 @@ Markers can be combined: `pytest -m "phase1 and unit"` runs only fast Phase 1 te
 - Each test file must be independently runnable
 - Every test file must have a module-level `pytestmark` list with appropriate markers
 
-## Module Dependencies
-Do NOT write tests for Phase N+1 until Phase N tests pass.
-Phase order: 0 (Data) → 1 (LoRA) → 2 (SDP) → 3 (Encoding) → 4 (Growth Prediction)
+## Stage Dependencies
+The project follows a 3-stage complexity ladder. Stage K+1 tests should only be written after Stage K demonstrates results under LOPO-CV.
+
+**Stage 1** (Volumetric Baseline): ScalarGP, LME, HGP on volume trajectories
+**Stage 2** (Severity Model): NLME with latent severity, quantile transform
+**Stage 3** (Representation Learning): LoRA → SDP → PCA → GP+ARD
+
+Within Stage 3, the old module order applies:
+Data (phase0) → LoRA (phase1) → SDP (phase2) → Encoding → Growth Prediction
 
 ## Known Issues
 - `TestRealDataForwardPass` in `test_swin_loader.py` fails with H5 transforms on NIfTI data (pre-existing, marked `real_data`)

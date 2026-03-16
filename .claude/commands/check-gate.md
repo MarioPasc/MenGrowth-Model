@@ -1,15 +1,16 @@
 ---
-description: "Check if a phase gate is open (all critical tests pass)"
+description: "Check if a stage gate is open (LOPO-CV results demonstrate improvement)"
 ---
 
-Check the gate status for phase $ARGUMENTS.
+Check the gate status for stage $ARGUMENTS.
 
-Read `experiments/phase_$ARGUMENTS/verification_report.md`.
+Read `experiments/stage_$ARGUMENTS/verification_report.md`.
 
 If the file exists:
 - Parse the test results table
-- Count CRITICAL tests that PASS vs FAIL
-- Report: "Phase $ARGUMENTS gate is OPEN" or "Phase $ARGUMENTS gate is BLOCKED" with failing tests
+- Count BLOCKING tests that PASS vs FAIL
+- For stages 2+: check if R² improves over previous stage
+- Report: "Stage $ARGUMENTS gate is OPEN" or "Stage $ARGUMENTS gate is BLOCKED" with details
 
 If the file does not exist:
-- Report: "Phase $ARGUMENTS gate is UNKNOWN -- no verification report found. Run `/run-tests $ARGUMENTS` first."
+- Report: "Stage $ARGUMENTS gate is UNKNOWN — no verification report found. Run `/run-tests` first."

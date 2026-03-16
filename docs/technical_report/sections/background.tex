@@ -5,192 +5,66 @@
 \label{sec:background}
 
 % ---------------------------------------------------------------------------
-% 2.1 Foundation Models for Brain MRI
+% 2.1 Meningioma Growth Biology
 % ---------------------------------------------------------------------------
-\subsection{Foundation Models for Brain MRI}
-\label{sec:bg:foundation}
+\subsection{Meningioma Growth Biology}
+\label{sec:bg:growth_biology}
 
-The paradigm of pretraining large encoder--decoder architectures on massive,
-diverse datasets and subsequently fine-tuning on downstream tasks has
-transformed medical image analysis \cite{he2023foundation,moor2023foundation}.
-BrainSegFounder \cite{cox2024brainsegfounder} instantiates this paradigm for
-3D brain MRI segmentation through a three-stage training pipeline:
+Understanding the biological dynamics of meningioma growth is essential for
+selecting appropriate mathematical models. Unlike gliomas, which are
+infiltrative parenchymal tumours, meningiomas are extra-axial masses arising
+from the arachnoid cap cells of the meninges. They grow by displacing rather
+than infiltrating brain tissue, and their dural attachment constrains their
+spatial dynamics.
 
+\subsubsection{Growth Patterns and Subgroups}
+
+Engelhardt et al.\ \cite{engelhardt2023gompertz} conducted a comprehensive
+analysis of meningioma growth trajectories and found that the Gompertz model
+provides the best fit among standard parametric growth curves. They identified
+three growth subgroups: (i)~non-growing tumours that remain volumetrically
+stable; (ii)~slowly growing tumours with near-linear dynamics over clinical
+timescales; and (iii)~rapidly growing tumours displaying clear deceleration
+consistent with Gompertz saturation. Approximately 67\% of incidental
+meningiomas show measurable growth at 4--5~year follow-up
+\cite{hashimoto2012natural}.
+
+Fountain et al.\ \cite{fountain2017growth} compared logistic and Gompertz
+models for benign versus atypical meningiomas, confirming that saturating
+growth models outperform exponential fits for most patients. The critical
+clinical implication is that short-term growth rates do not reliably predict
+long-term behaviour: a tumour on the decelerating phase of a Gompertz curve
+may appear aggressive early but stabilise later.
+
+\subsubsection{Volumetric versus Diameter Measurements}
+
+Benjamin et al.\ \cite{benjamin2021volumetric} demonstrated that volumetric
+assessment is substantially more sensitive than diameter-based measurements for
+detecting meningioma growth, with detection rates of 15.2\% versus 5.6\%. This
+motivates our use of whole-tumour volume as the primary growth endpoint and
+underscores the importance of accurate segmentation.
+
+\subsubsection{Clinical Implications for Modelling}
+
+Three biological facts constrain the modelling framework:
 \begin{enumerate}[leftmargin=*]
-  \item \textbf{Self-supervised pretraining.} A SwinUNETR encoder
-    \cite{hatamizadeh2022swinunetr,tang2022self} is pretrained on 41,400+
-    brain MRI subjects from the UK Biobank using a combination of masked image
-    modelling, contrastive learning, and rotation prediction. This stage uses a
-    $96^3$ voxel region-of-interest (ROI) and produces general-purpose
-    anatomical features.
-
-  \item \textbf{Supervised pretraining.} The encoder is paired with the
-    SwinUNETR decoder and trained on the BraTS~2021 glioma segmentation
-    benchmark \cite{baid2021rsna} at $128^3$ ROI, producing tumour-specific
-    features.
-
-  \item \textbf{Per-fold fine-tuning.} Final fine-tuning on BraTS~2021 with
-    cross-validation yields the released checkpoints.
+  \item \textbf{Meningiomas do not migrate.} As extra-axial, dural-attached
+    tumours, the spatial centroid is essentially static over time (modulo
+    asymmetric growth). Location is therefore a patient-level covariate, not
+    a temporal variable.
+  \item \textbf{Growth heterogeneity is high.} The three-subgroup structure
+    \cite{engelhardt2023gompertz} implies that population-level models must
+    accommodate qualitatively different growth regimes, motivating
+    mixed-effects or latent variable approaches.
+  \item \textbf{Observation density is low.} Typical clinical follow-up
+    yields 2--6 scans per patient over months to years, with irregular
+    spacing. Models must handle sparse, irregular time series gracefully.
 \end{enumerate}
 
-\subsubsection{SwinUNETR Architecture}
-
-SwinUNETR combines the Swin Transformer \cite{liu2021swin} with a
-UNet-style encoder--decoder structure. The encoder consists of a patch
-embedding layer followed by four transformer stages with shifted window
-self-attention. For BSF-Tiny (the variant used in this work), the
-architectural parameters are:
-
-\begin{table}[H]
-  \centering
-  \caption{SwinUNETR encoder (BSF-Tiny) architecture. Input: $[B, 4, 128^3]$.}
-  \label{tab:swinunetr_arch}
-  \begin{tabular}{lcccc}
-    \toprule
-    \textbf{Stage} & \textbf{Output shape} & \textbf{Channels} & \textbf{Heads} & \textbf{Blocks} \\
-    \midrule
-    Patch embed & $[B, 48, 64^3]$  & 48  & --- & --- \\
-    Stage 1     & $[B, 96, 32^3]$  & 96  & 3   & 2 \\
-    Stage 2     & $[B, 192, 16^3]$ & 192 & 6   & 2 \\
-    Stage 3     & $[B, 384, 8^3]$  & 384 & 12  & 2 \\
-    Stage 4     & $[B, 768, 4^3]$  & 768 & 24  & 2 \\
-    encoder10   & $[B, 768, 4^3]$  & 768 & --- & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-The bottleneck layer \texttt{encoder10} applies a residual convolutional
-block preserving the $768$-channel, $4^3$-spatial resolution from Stage~4.
-Global Average Pooling (GAP) over the spatial dimensions produces the feature
-vector $\mathbf{h} \in \R^{768}$ used throughout our pipeline.
-
-The segmentation decoder mirrors the encoder with skip connections, producing
-a 3-channel sigmoid output following the BraTS convention: Channel~0 encodes
-Tumour Core (TC), Channel~1 encodes Whole Tumour (WT), and Channel~2 encodes
-Enhancing Tumour (ET), using hierarchical overlapping labels rather than
-mutually exclusive classes.
-
 % ---------------------------------------------------------------------------
-% 2.2 Low-Rank Adaptation (LoRA)
+% 2.2 Gaussian Process Regression for Longitudinal Data
 % ---------------------------------------------------------------------------
-\subsection{Low-Rank Adaptation}
-\label{sec:bg:lora}
-
-Low-Rank Adaptation (LoRA) \cite{hu2022lora} provides parameter-efficient
-fine-tuning by injecting trainable rank-$r$ decompositions into frozen
-pretrained weight matrices. For a pretrained weight matrix
-$\mathbf{W}_0 \in \R^{d \times k}$, LoRA parameterises the adapted weight as:
-\begin{equation}
-  \mathbf{W} = \mathbf{W}_0 + \frac{\alpha}{r}\, \mathbf{B}\mathbf{A},
-  \quad \mathbf{B} \in \R^{d \times r},\; \mathbf{A} \in \R^{r \times k},
-  \label{eq:lora}
-\end{equation}
-where $r \ll \min(d, k)$ is the rank, $\alpha$ is a scaling hyperparameter,
-$\mathbf{A}$ is initialised from $\mathcal{N}(0, \sigma^2)$, and
-$\mathbf{B} = \mathbf{0}$ so that the adapted model initially reproduces the
-pretrained model exactly. The number of trainable parameters per adapted layer
-is $r(d + k)$, compared to $dk$ for full fine-tuning.
-
-The theoretical foundation rests on the observation by Aghajanyan et al.\
-\cite{aghajanyan2021intrinsic} that pretrained language models have a low
-intrinsic dimensionality: the parameter space can be projected to a
-low-dimensional subspace without significant loss in fine-tuning performance.
-LoRA operationalises this insight by constraining the weight update to lie in a
-rank-$r$ subspace.
-
-\textbf{DoRA} \cite{liu2024dora} extends LoRA by decomposing the weight
-update into magnitude and direction components:
-\begin{equation}
-  \mathbf{W} = m \cdot \frac{\mathbf{W}_0 + \mathbf{B}\mathbf{A}}
-    {\|\mathbf{W}_0 + \mathbf{B}\mathbf{A}\|_c},
-  \label{eq:dora}
-\end{equation}
-where $m$ is a learnable magnitude vector and $\|\cdot\|_c$ denotes
-column-wise normalisation. This decomposition was shown to more closely
-approximate full fine-tuning behaviour in language models; we evaluate it as
-an ablation condition (A2, \cref{sec:eval:ablations}).
-
-% ---------------------------------------------------------------------------
-% 2.3 Supervised Disentangled Projection
-% ---------------------------------------------------------------------------
-\subsection{Disentangled Representation Learning}
-\label{sec:bg:disentanglement}
-
-Disentangled representations encode independent generative factors of
-variation in separate latent dimensions or subspaces. Higgins et al.\
-\cite{higgins2018towards} formalised this via group theory: a representation
-is disentangled with respect to a group decomposition
-$G = G_1 \times \cdots \times G_n$ if there exists a corresponding
-decomposition $Z = Z_1 \oplus \cdots \oplus Z_n$ where each $Z_i$ is affected
-only by $G_i$.
-
-The impossibility theorem of Locatello et al.\ \cite{locatello2019challenging}
-established that unsupervised disentanglement is theoretically impossible
-without inductive biases: for any generative model producing disentangled
-representations, there exists another model with identical marginal
-distribution but entangled latents. Their follow-up work
-\cite{locatello2020disentangling} demonstrated that as few as 100 labelled
-examples suffice to resolve this impossibility through supervision.
-
-These results motivate our Supervised Disentangled Projection (SDP) approach:
-rather than relying on VAE-based unsupervised disentanglement (which we
-empirically found to suffer from posterior collapse and KL distortion), we
-use explicit semantic supervision from segmentation-derived features to
-anchor each latent partition to a known generative factor.
-
-\subsubsection{VICReg Regularisation}
-
-VICReg \cite{bardes2022vicreg} defines three regularisation terms for
-representation learning. The \textit{variance} term prevents dimensional
-collapse via a hinge loss on per-dimension standard deviation:
-\begin{equation}
-  \mathcal{L}_{\text{var}}(\mathbf{Z}) = \frac{1}{d}\sum_{j=1}^{d}
-    \max\!\bigl(0,\; \gamma - \sqrt{\operatorname{Var}(z^{(j)}) + \epsilon}
-    \,\bigr),
-  \label{eq:vicreg_var}
-\end{equation}
-where $\gamma = 1$ is the target standard deviation. The \textit{covariance}
-term decorrelates dimensions by penalising off-diagonal elements of the batch
-covariance matrix $\mathbf{C}$:
-\begin{equation}
-  \mathcal{L}_{\text{cov}}(\mathbf{Z}) = \frac{1}{d}\sum_{i \neq j}
-    C_{ij}^2.
-  \label{eq:vicreg_cov}
-\end{equation}
-
-\subsubsection{Distance Correlation}
-
-VICReg's covariance penalty captures only linear dependencies. Distance
-correlation \cite{szekely2007measuring} detects all forms of statistical
-dependence between random vectors $X$ and $Y$ of potentially different
-dimensions:
-\begin{equation}
-  \dCor(X, Y) = \frac{\dCov(X, Y)}
-    {\sqrt{\dVar(X) \cdot \dVar(Y)}},
-  \label{eq:dcor}
-\end{equation}
-where $\dCov$ is computed from doubly-centred pairwise distance matrices.
-Critically, $\dCor(X, Y) = 0$ if and only if $X \perp\!\!\!\perp Y$ (for
-random vectors with finite first moments), providing a necessary and
-sufficient condition for statistical independence.
-
-\subsubsection{Spectral Normalisation}
-
-Spectral normalisation \cite{miyato2018spectral} constrains each linear layer
-$\mathbf{W}$ by dividing by its largest singular value
-$\sigma(\mathbf{W})$, yielding a weight matrix with spectral norm exactly~1.
-For an $L$-layer MLP with 1-Lipschitz activations (e.g., ReLU, GELU), this
-bounds the global Lipschitz constant: $\operatorname{Lip}(f) \leq
-\prod_{\ell=1}^{L} 1 = 1$. The contraction property
-$\|\mathbf{z}_1 - \mathbf{z}_2\| \leq \|\mathbf{h}_1 - \mathbf{h}_2\|$
-ensures that encoder feature noise is not amplified through the projection,
-which is essential for stable downstream GP prediction
-\cite{gouk2021regularisation}.
-
-% ---------------------------------------------------------------------------
-% 2.4 Gaussian Process Regression
-% ---------------------------------------------------------------------------
-\subsection{Gaussian Process Regression}
+\subsection{Gaussian Process Regression for Longitudinal Data}
 \label{sec:bg:gp}
 
 A Gaussian process (GP) is a distribution over functions such that any finite
@@ -239,8 +113,33 @@ twice-differentiable sample paths:
     \exp\!\left(-\frac{\sqrt{5}\,|\Delta t|}{\ell}\right).
   \label{eq:matern52}
 \end{equation}
-This is our default temporal kernel for volume dynamics, encoding the prior
-belief that tumour volume evolves smoothly over time.
+This is our default temporal kernel for tumour volume dynamics, encoding the
+prior belief that volume evolves smoothly over time.
+
+\subsubsection{Connection to Linear Mixed-Effects Models}
+
+A GP with a linear kernel $k(t, t') = \sigma_0^2 + \sigma_1^2 t t'$ and
+zero mean is mathematically equivalent to a random-intercept, random-slope
+LME \cite{rasmussen2006gaussian}. This connection is not merely formal:
+it means that the LME baseline (Stage~1) is a special case of the GP
+framework, and improvements from the GP must come from the nonlinear
+component captured by the Mat\'{e}rn kernel. This nesting property ensures
+that the GP can never perform worse than the LME on training data and
+provides a principled model comparison via log-marginal likelihood.
+
+\subsubsection{Hierarchical GP for Longitudinal Cohorts}
+
+When multiple patients share similar growth dynamics, a hierarchical
+(empirical Bayes) GP structure pools information across patients.
+The Gaussian Process Panel Model (GPPM) framework of Karch et al.\
+\cite{karch2020gppm} formalises this: shared kernel hyperparameters
+$\boldsymbol{\theta} = (\sigma_f, \ell, \sigma_n)$ are estimated from the
+pooled marginal likelihood across all patients, while patient-specific
+posteriors arise from conditioning on individual observations. This is
+particularly important at small $N$: per-patient kernel fitting with
+$n_i \in [2, 6]$ observations is ill-conditioned, but pooling across
+$N = 33$ patients with $\sim$100 total observations provides stable
+hyperparameter estimates.
 
 \subsubsection{Multi-Output GPs and the Intrinsic Coregionalisation Model}
 
@@ -264,7 +163,268 @@ Coregionalisation (LMC) generalises this to a sum over $Q$ latent functions:
 \end{equation}
 
 % ---------------------------------------------------------------------------
-% 2.5 Related Work
+% 2.3 Nonlinear Mixed-Effects Models and Item Response Theory
+% ---------------------------------------------------------------------------
+\subsection{Nonlinear Mixed-Effects Models and Latent Severity}
+\label{sec:bg:nlme}
+
+\subsubsection{NLME Formulation}
+
+Nonlinear mixed-effects (NLME) models extend the LME framework to nonlinear
+growth functions while preserving the population--individual decomposition
+\cite{pinheiro2000mixed}. For patient $i$ at timepoint $j$:
+\begin{equation}
+  y_{ij} = g(s_i, t_{ij}; \boldsymbol{\theta}) + \epsilon_{ij},
+  \quad \epsilon_{ij} \sim \mathcal{N}(0, \sigma^2),
+  \label{eq:nlme}
+\end{equation}
+where $g$ is a nonlinear growth function, $s_i$ is a patient-specific latent
+variable (the ``severity'' or growth propensity), and $\boldsymbol{\theta}$
+are population-level parameters.
+
+\subsubsection{Reduced Gompertz Model}
+
+Vaghi et al.\ \cite{vaghi2020reduced} demonstrated that for tumour growth
+modelling, a \emph{reduced Gompertz} model with a single patient-specific
+parameter explains the majority of inter-patient growth heterogeneity:
+\begin{equation}
+  V_i(t) = V_{i,0} \exp\!\left(\frac{\alpha_i}{\beta}
+    \bigl(1 - e^{-\beta t}\bigr)\right),
+  \label{eq:reduced_gompertz}
+\end{equation}
+where $\beta$ is a shared deceleration parameter and $\alpha_i$ is the
+patient-specific initial growth rate. This aligns with Engelhardt et al.'s
+finding \cite{engelhardt2023gompertz} that Gompertz dynamics best describe
+meningioma growth. The single-parameter reduction is essential at small $N$:
+with only $\sim$3.6 observations per patient on average, estimating more than
+1--2 individual-level parameters per patient is infeasible.
+
+\subsubsection{Connection to Item Response Theory}
+
+The severity model has a formal connection to Item Response Theory (IRT)
+\cite{embretson2000irt}. In the IRT analogy:
+\begin{itemize}[leftmargin=*]
+  \item Patients are ``examinees'' with latent ability $s_i \in [0, 1]$.
+  \item Timepoints are ``items'' with difficulty determined by the elapsed
+    time $t_{ij}$.
+  \item Observed growth is the ``response'' governed by a monotonic link
+    function.
+\end{itemize}
+Proust-Lima et al.\ \cite{proustlima2014joint,proustlima2023lcmm} developed
+joint latent class mixed models (JLCM) that formalise this connection for
+longitudinal biomarker trajectories. Our Stage~2 severity model can be viewed
+as a single-class JLCM with a continuous (rather than discrete) latent
+variable.
+
+\subsubsection{Monotonic Constraints}
+
+The severity variable $s_i$ must induce a monotonic relationship with
+observed growth (higher severity implies faster growth at all times). This
+can be enforced through:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Parametric constraints:} Using growth functions that are
+    monotonically increasing in $s_i$ by construction (e.g., reduced
+    Gompertz with $\alpha_i = f(s_i)$ where $f$ is monotone).
+  \item \textbf{Constrained monotonic neural networks (CMNN):}
+    Runje \& Shankaranarayana \cite{runje2023cmnn} provide architectures
+    with provable monotonicity via non-negative weight constraints.
+  \item \textbf{Monotonic GPs:} Riihim\"{a}ki \& Vehtari
+    \cite{riihimaki2010monotonic} impose derivative constraints on the GP
+    posterior to enforce monotonicity.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+% 2.4 Sample Size Constraints
+% ---------------------------------------------------------------------------
+\subsection{Sample Size Constraints for Predictive Modelling}
+\label{sec:bg:sample_size}
+
+The longitudinal cohort in this work contains $N = 31$--$58$ patients with
+approximately 112 total observations. This places severe constraints on model
+complexity.
+
+\subsubsection{Subjects-per-Variable Rules}
+
+Riley et al.\ \cite{riley2019pmsampsize} provide sample size criteria for
+prediction models, recommending a minimum of 15--20 subjects per predictor
+parameter (events per variable, EPV) for stable coefficient estimation.
+Harrell \cite{harrell2015regression} similarly advocates a maximum of
+$N/15 \approx 2$--$3$ predictor parameters for $N = 31$--$58$. These rules
+imply that the growth prediction model should have at most 2--3 free
+parameters per patient, ruling out high-dimensional neural approaches.
+
+\subsubsection{Effective Sample Size in Multilevel Models}
+
+For hierarchical/mixed-effects models, the effective sample size depends on
+both the number of patients $N$ and the number of observations per patient
+$n_i$. Snijders \& Bosker \cite{snijders2012multilevel} note that
+level-2 parameters (between-patient effects) depend on $N$, not on
+$\sum n_i$. This is critical: even though we have $\sim$112 total
+observations, the effective sample size for patient-level parameters remains
+$N = 31$--$58$.
+
+\subsubsection{Cross-Validation Error at Small $N$}
+
+Varoquaux \cite{varoquaux2018cv} demonstrated that cross-validation error
+estimates have standard deviations of approximately $\pm 10\%$ at $N = 100$.
+At $N = 33$, the uncertainty is larger still. This motivates our use of LOPO-CV
+(maximising training set size) and bootstrap confidence intervals, while
+cautioning against over-interpreting small differences between models.
+
+% ---------------------------------------------------------------------------
+% 2.5 Foundation Models for Brain MRI
+% ---------------------------------------------------------------------------
+\subsection{Foundation Models for Brain MRI}
+\label{sec:bg:foundation}
+
+The paradigm of pretraining large encoder--decoder architectures on massive,
+diverse datasets and subsequently fine-tuning on downstream tasks has
+transformed medical image analysis \cite{he2023foundation,moor2023foundation}.
+BrainSegFounder \cite{cox2024brainsegfounder} instantiates this paradigm for
+3D brain MRI segmentation through a three-stage training pipeline:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Self-supervised pretraining.} A SwinUNETR encoder
+    \cite{hatamizadeh2022swinunetr,tang2022self} is pretrained on 41,400+
+    brain MRI subjects from the UK Biobank using a combination of masked image
+    modelling, contrastive learning, and rotation prediction.
+
+  \item \textbf{Supervised pretraining.} The encoder is paired with the
+    SwinUNETR decoder and trained on the BraTS~2021 glioma segmentation
+    benchmark \cite{baid2021rsna} at $128^3$ ROI.
+
+  \item \textbf{Per-fold fine-tuning.} Final fine-tuning on BraTS~2021 with
+    cross-validation yields the released checkpoints.
+\end{enumerate}
+
+\subsubsection{SwinUNETR Architecture}
+
+SwinUNETR combines the Swin Transformer \cite{liu2021swin} with a
+UNet-style encoder--decoder structure. The encoder consists of a patch
+embedding layer followed by four transformer stages with shifted window
+self-attention. For BSF-Tiny (the variant used in this work):
+
+\begin{table}[H]
+  \centering
+  \caption{SwinUNETR encoder (BSF-Tiny) architecture. Input: $[B, 4, 128^3]$.}
+  \label{tab:swinunetr_arch}
+  \begin{tabular}{lcccc}
+    \toprule
+    \textbf{Stage} & \textbf{Output shape} & \textbf{Channels} & \textbf{Heads} & \textbf{Blocks} \\
+    \midrule
+    Patch embed & $[B, 48, 64^3]$  & 48  & --- & --- \\
+    Stage 1     & $[B, 96, 32^3]$  & 96  & 3   & 2 \\
+    Stage 2     & $[B, 192, 16^3]$ & 192 & 6   & 2 \\
+    Stage 3     & $[B, 384, 8^3]$  & 384 & 12  & 2 \\
+    Stage 4     & $[B, 768, 4^3]$  & 768 & 24  & 2 \\
+    encoder10   & $[B, 768, 4^3]$  & 768 & --- & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Global Average Pooling (GAP) over the spatial dimensions of \texttt{encoder10}
+produces the feature vector $\mathbf{h} \in \R^{768}$ used in Stage~3 of our
+pipeline.
+
+% ---------------------------------------------------------------------------
+% 2.6 Low-Rank Adaptation (LoRA)
+% ---------------------------------------------------------------------------
+\subsection{Low-Rank Adaptation}
+\label{sec:bg:lora}
+
+Low-Rank Adaptation (LoRA) \cite{hu2022lora} provides parameter-efficient
+fine-tuning by injecting trainable rank-$r$ decompositions into frozen
+pretrained weight matrices. For a pretrained weight matrix
+$\mathbf{W}_0 \in \R^{d \times k}$, LoRA parameterises the adapted weight as:
+\begin{equation}
+  \mathbf{W} = \mathbf{W}_0 + \frac{\alpha}{r}\, \mathbf{B}\mathbf{A},
+  \quad \mathbf{B} \in \R^{d \times r},\; \mathbf{A} \in \R^{r \times k},
+  \label{eq:lora}
+\end{equation}
+where $r \ll \min(d, k)$ is the rank, $\alpha$ is a scaling hyperparameter,
+$\mathbf{A}$ is initialised from $\mathcal{N}(0, \sigma^2)$, and
+$\mathbf{B} = \mathbf{0}$ so that the adapted model initially reproduces the
+pretrained model exactly.
+
+\textbf{DoRA} \cite{liu2024dora} extends LoRA by decomposing the weight
+update into magnitude and direction components:
+\begin{equation}
+  \mathbf{W} = m \cdot \frac{\mathbf{W}_0 + \mathbf{B}\mathbf{A}}
+    {\|\mathbf{W}_0 + \mathbf{B}\mathbf{A}\|_c},
+  \label{eq:dora}
+\end{equation}
+where $m$ is a learnable magnitude vector and $\|\cdot\|_c$ denotes
+column-wise normalisation. We evaluate DoRA as an ablation condition
+(A5, \cref{sec:eval:ablations}).
+
+In the context of our three-stage ladder, LoRA adaptation is relevant to
+Stage~3 (representation learning). It is also relevant to Stage~1 insofar
+as an adapted encoder may produce better segmentations and hence more
+accurate volume estimates. We evaluate this explicitly in ablation~A1
+(\cref{sec:eval:ablations}).
+
+% ---------------------------------------------------------------------------
+% 2.7 Dimensionality Reduction for Deep Features
+% ---------------------------------------------------------------------------
+\subsection{Dimensionality Reduction for Deep Features}
+\label{sec:bg:dimred}
+
+The BrainSegFounder encoder produces 768-dimensional feature vectors, which
+must be compressed for use in growth prediction models at small $N$.
+
+\subsubsection{PCA with Supervised Selection}
+
+Principal Component Analysis provides an unsupervised linear projection to
+a lower-dimensional subspace. For Stage~3, we apply PCA within each LOPO-CV
+fold (to prevent information leakage) and select 3--6 components, guided
+by: (i)~the elbow of the variance-explained curve; (ii)~correlation with
+the volume growth target; and (iii)~the sample size constraint of 2--3
+parameters per predictor.
+
+\subsubsection{ARD Kernels}
+
+Automatic Relevance Determination (ARD) kernels assign a separate length-scale
+$\ell_d$ per input dimension \cite{rasmussen2006gaussian}. During marginal
+likelihood optimisation, irrelevant dimensions acquire large length-scales
+(effectively deactivating them). ARD provides an alternative to explicit
+dimensionality reduction, performing implicit feature selection within the GP.
+However, at $N = 33$ the number of ARD hyperparameters must be carefully
+controlled to avoid overfitting.
+
+\subsubsection{Active Subspaces}
+
+Tripathy et al.\ \cite{tripathy2016active} formalise the notion of active
+subspaces for dimensionality reduction in GP regression, identifying the
+low-dimensional linear subspace of the input that captures most of the
+variation in the function output. This provides a principled alternative to
+PCA that accounts for the target variable, and is conceptually related to the
+SDP's supervised projection in Stage~3.
+
+% ---------------------------------------------------------------------------
+% 2.8 Disentangled Representation Learning
+% ---------------------------------------------------------------------------
+\subsection{Disentangled Representation Learning}
+\label{sec:bg:disentanglement}
+
+The impossibility theorem of Locatello et al.\ \cite{locatello2019challenging}
+established that unsupervised disentanglement is theoretically impossible
+without inductive biases. Their follow-up work
+\cite{locatello2020disentangling} demonstrated that as few as 100 labelled
+examples suffice to resolve this impossibility through supervision.
+
+These results motivate our Supervised Disentangled Projection (SDP) approach
+in Stage~3: rather than relying on unsupervised disentanglement, we use
+explicit semantic supervision from segmentation-derived features to anchor
+each latent partition to a known generative factor. The SDP combines semantic
+regression, VICReg-style \cite{bardes2022vicreg} variance--covariance
+regularisation, and distance correlation \cite{szekely2007measuring}
+penalties. Spectral normalisation \cite{miyato2018spectral} on all linear
+layers bounds the global Lipschitz constant, ensuring that encoder feature
+noise is not amplified through the projection
+\cite{gouk2021regularisation}. Full details are in \cref{sec:sdp}.
+
+% ---------------------------------------------------------------------------
+% 2.9 Related Work
 % ---------------------------------------------------------------------------
 \subsection{Related Work}
 \label{sec:bg:related}
@@ -288,31 +448,26 @@ progression predictions for brain atrophy, trained on 11,730~MRIs.
 
 For meningiomas specifically, most existing work is limited to retrospective
 volumetric analysis \cite{hashimoto2012natural,ius2020management,
-nakamura2003natural}. To our knowledge, no prior work has applied foundation
-model-derived latent spaces with GP-based temporal modelling to meningioma
-growth prediction.
+nakamura2003natural}. To our knowledge, no prior work has provided
+out-of-sample prediction benchmarks for meningioma growth.
 
 \subsubsection{Latent Space Temporal Prediction}
 
 The Joint Embedding Predictive Architecture (JEPA) framework
 \cite{lecun2022path} advocates predicting in representation space rather than
-pixel space, avoiding the waste of capacity on irrelevant details. I-JEPA
-\cite{assran2023self} and V-JEPA \cite{bardes2024revisiting} validated this
-for images and video respectively. Longitudinal Self-Supervised Learning
-(LSSL) \cite{zhao2021longitudinal} disentangles brain-age factors from latent
-MRI representations on 811 ADNI subjects. Our pipeline aligns with this
-``predict in latent space'' principle while using GPs instead of neural
-predictors, providing closed-form uncertainty quantification for clinical
-decision support.
+pixel space. Puglisi et al.\ \cite{puglisi2025brain} validated this principle
+for brain atrophy using LME in a learned latent space. Our Stage~3 aligns
+with this ``predict in latent space'' principle while our Stages~1 and~2 serve
+as necessary baselines to determine whether the latent space provides value
+beyond simpler volumetric features.
 
 \subsubsection{Domain Adaptation in Medical Imaging}
 
 Domain adaptation for medical image analysis has been addressed through
 adversarial training \cite{kamnitsas2017unsupervised}, style transfer
-\cite{chen2022maxstyle}, and more recently through parameter-efficient
-fine-tuning of foundation models \cite{dutt2023parameter}. Ben-David et al.\
-\cite{bendavid2010theory} established the theoretical framework relating
-domain divergence to target risk. Our work contributes empirical evidence on
-LoRA adaptation for 3D medical imaging foundation models, including
-dual-domain training that attempts to maintain glioma competence while
-acquiring meningioma specialisation.
+\cite{chen2022maxstyle}, and parameter-efficient fine-tuning of foundation
+models \cite{dutt2023parameter}. Ben-David et al.\ \cite{bendavid2010theory}
+established the theoretical framework relating domain divergence to target
+risk. Our LoRA adaptation (Stage~3) contributes empirical evidence on the
+marginal value of domain adaptation when a strong SSL-pretrained encoder is
+available.
