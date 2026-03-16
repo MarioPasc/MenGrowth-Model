@@ -104,7 +104,7 @@ if [ "${FORCE_RECOMPUTE}" = "1" ]; then
     echo "[info] FORCE_RECOMPUTE=1 — re-running segmentation"
 fi
 
-python -m experiments.segment_based_approach.run_baseline \
+python -m experiments.stage1_volumetric.run_baseline \
     --config "${CONFIG_PATH}" \
     ${FORCE_FLAG} \
     2>&1 | tee "${LOG_DIR}/run_baseline.log"

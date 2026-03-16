@@ -19,13 +19,14 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from experiments.utils.experiment_output import (
+    save_experiment_metadata,
+    save_stage_results,
+)
 from growth.shared.bootstrap import (
-    BootstrapResult,
-    bootstrap_metric,
     paired_permutation_test,
 )
 from growth.shared.lopo import LOPOEvaluator, LOPOResults
-from growth.shared.metrics import compute_mae, compute_r2, compute_rmse
 from growth.stages.stage1_volumetric.trajectory_loader import load_trajectories_from_h5
 from growth.stages.stage2_severity.severity_model import SeverityModel
 
@@ -89,52 +90,6 @@ def _build_severity_model_kwargs(cfg: dict) -> tuple[type, dict]:
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap CIs (reused from Stage 1 pattern)
-# ---------------------------------------------------------------------------
-
-
-def compute_bootstrap_cis(
-    lopo_results: LOPOResults,
-    n_bootstrap: int = 2000,
-    confidence_level: float = 0.95,
-    seed: int = 42,
-) -> dict[str, BootstrapResult]:
-    """Compute bootstrap CIs on LOPO-CV metrics."""
-    actuals: list[float] = []
-    preds: list[float] = []
-
-    for fr in lopo_results.fold_results:
-        if "last_from_rest" not in fr.predictions:
-            continue
-        for p in fr.predictions["last_from_rest"]:
-            actuals.append(p["actual"])
-            preds.append(p["pred_mean"])
-
-    if len(actuals) < 3:
-        return {}
-
-    y_true = np.array(actuals)
-    y_pred = np.array(preds)
-
-    results: dict[str, BootstrapResult] = {}
-    for metric_name, metric_fn in [
-        ("r2_log", compute_r2),
-        ("mae_log", compute_mae),
-        ("rmse_log", compute_rmse),
-    ]:
-        results[metric_name] = bootstrap_metric(
-            y_true,
-            y_pred,
-            metric_fn,
-            n_bootstrap=n_bootstrap,
-            confidence_level=confidence_level,
-            seed=seed,
-        )
-
-    return results
-
-
-# ---------------------------------------------------------------------------
 # Stage 1 comparison
 # ---------------------------------------------------------------------------
 
@@ -147,7 +102,6 @@ def load_stage1_errors(stage1_results_dir: str | Path) -> dict[str, float] | Non
     """
     results_dir = Path(stage1_results_dir)
 
-    # Try LME first (best Stage 1 model), then ScalarGP
     for model_name in ["LME", "ScalarGP", "HGP"]:
         errors_path = results_dir / model_name / "per_patient_errors.json"
         if errors_path.exists():
@@ -166,21 +120,14 @@ def compare_to_stage1(
     n_permutations: int = 10000,
     seed: int = 42,
 ) -> dict:
-    """Compare Stage 2 to Stage 1 via paired permutation test.
-
-    Returns:
-        Dict with delta_r2, permutation_p_value, etc.
-    """
-    # Collect Stage 2 per-patient absolute errors
+    """Compare Stage 2 to Stage 1 via paired permutation test."""
     s2_errors: dict[str, float] = {}
     for fr in stage2_results.fold_results:
         if "last_from_rest" not in fr.predictions:
             continue
         for p in fr.predictions["last_from_rest"]:
-            err = abs(p["pred_mean"] - p["actual"])
-            s2_errors[fr.patient_id] = err
+            s2_errors[fr.patient_id] = abs(p["pred_mean"] - p["actual"])
 
-    # Find common patients
     common = sorted(set(s2_errors.keys()) & set(stage1_errors.keys()))
     if len(common) < 3:
         return {"error": "Too few common patients for comparison"}
@@ -199,68 +146,6 @@ def compare_to_stage1(
         "observed_diff": perm_result.observed_diff,
         "n_permutations": perm_result.n_permutations,
     }
-
-
-# ---------------------------------------------------------------------------
-# Result saving
-# ---------------------------------------------------------------------------
-
-
-def save_results(
-    lopo_results: LOPOResults,
-    bootstrap_cis: dict[str, BootstrapResult],
-    comparison: dict | None,
-    model_class_name: str,
-    output_dir: Path,
-) -> None:
-    """Save Stage 2 results."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # LOPO results
-    with open(output_dir / "lopo_results.json", "w") as f:
-        json.dump(lopo_results.to_dict(), f, indent=2)
-
-    # Bootstrap CIs
-    if bootstrap_cis:
-        ci_data = {
-            k: {"estimate": br.estimate, "ci_lower": br.ci_lower, "ci_upper": br.ci_upper}
-            for k, br in bootstrap_cis.items()
-        }
-        with open(output_dir / "bootstrap_cis.json", "w") as f:
-            json.dump(ci_data, f, indent=2)
-
-    # Per-patient errors
-    errors: dict[str, dict] = {}
-    for fr in lopo_results.fold_results:
-        if "last_from_rest" not in fr.predictions:
-            continue
-        for p in fr.predictions["last_from_rest"]:
-            errors[fr.patient_id] = {
-                "error": p["pred_mean"] - p["actual"],
-                "abs_error": abs(p["pred_mean"] - p["actual"]),
-                "actual": p["actual"],
-                "predicted": p["pred_mean"],
-                "within_95_ci": p["lower_95"] <= p["actual"] <= p["upper_95"],
-            }
-    with open(output_dir / "per_patient_errors.json", "w") as f:
-        json.dump(errors, f, indent=2)
-
-    # Comparison to Stage 1
-    if comparison:
-        with open(output_dir / "stage1_comparison.json", "w") as f:
-            json.dump(comparison, f, indent=2)
-
-    # Summary
-    summary = {
-        "model": model_class_name,
-        "n_folds": len(lopo_results.fold_results),
-        "n_failed": len(lopo_results.failed_folds),
-        "metrics": lopo_results.aggregate_metrics,
-    }
-    with open(output_dir / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
-
-    logger.info(f"Results saved to {output_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +192,8 @@ def main() -> None:
     logger.info(f"=== Step 2: LOPO-CV ({method.upper()}) ===")
 
     model_class, model_kwargs = _build_severity_model_kwargs(cfg)
+    model_name = f"Severity_{method}"
     evaluator = LOPOEvaluator(prediction_protocols=["last_from_rest", "all_from_first"])
-
     results = evaluator.evaluate(model_class, trajectories, **model_kwargs)
 
     r2 = results.aggregate_metrics.get("last_from_rest/r2_log", float("nan"))
@@ -316,31 +201,42 @@ def main() -> None:
     cal = results.aggregate_metrics.get("last_from_rest/calibration_95", float("nan"))
     logger.info(
         f"LOPO-CV: R2_log={r2:.4f}, MAE_log={mae:.4f}, Cal_95={cal:.3f}, "
-        f"failed={len(results.failed_folds)}/{len(results.fold_results) + len(results.failed_folds)}"
+        f"failed={len(results.failed_folds)}"
     )
 
     # =========================================================================
-    # Step 3: Bootstrap CIs
+    # Step 3: Save results with shared output module
     # =========================================================================
-    bootstrap_cis: dict[str, BootstrapResult] = {}
-    boot_cfg = cfg.get("bootstrap", {})
-    if boot_cfg.get("enabled", True):
-        logger.info("=== Step 3: Bootstrap CIs ===")
-        bootstrap_cis = compute_bootstrap_cis(
-            results,
-            n_bootstrap=boot_cfg.get("n_samples", 2000),
-            confidence_level=boot_cfg.get("confidence_level", 0.95),
-            seed=boot_cfg.get("seed", 42),
-        )
-        if "r2_log" in bootstrap_cis:
-            br = bootstrap_cis["r2_log"]
-            logger.info(f"R2_log = {br.estimate:.4f} [{br.ci_lower:.4f}, {br.ci_upper:.4f}]")
+    logger.info("=== Step 3: Save Results ===")
+
+    bootstrap_cfg = cfg.get("bootstrap", {})
+
+    # Build stage-specific extra data
+    extra_data: dict = {
+        "estimation_method": method,
+        "growth_function": cfg["severity"].get("growth_function", "gompertz_reduced"),
+    }
+
+    ci_results = save_stage_results(
+        output_dir=output_dir,
+        model_name=model_name,
+        lopo_results=results,
+        trajectories=trajectories,
+        config=cfg,
+        stage_name="stage2_severity",
+        bootstrap_n=bootstrap_cfg.get("n_samples", 2000),
+        bootstrap_seed=bootstrap_cfg.get("seed", 42),
+        extra_data=extra_data,
+    )
+
+    all_bootstrap_cis = {model_name: ci_results} if ci_results else {}
+    lopo_results_dict = {model_name: results}
 
     # =========================================================================
     # Step 4: Compare to Stage 1
     # =========================================================================
-    comparison: dict | None = None
     comp_cfg = cfg.get("comparison", {})
+    comparison: dict | None = None
     if comp_cfg.get("enabled", True):
         logger.info("=== Step 4: Stage 1 Comparison ===")
         stage1_errors = load_stage1_errors(cfg["paths"].get("stage1_results", ""))
@@ -355,12 +251,19 @@ def main() -> None:
                     f"Stage 2 vs Stage 1: delta_MAE={comparison['delta_mae']:.4f}, "
                     f"p={comparison['permutation_p_value']:.4f}"
                 )
+            # Save comparison
+            with open(output_dir / "stage1_comparison.json", "w") as f:
+                json.dump(comparison, f, indent=2)
 
-    # =========================================================================
-    # Step 5: Save Results
-    # =========================================================================
-    logger.info("=== Step 5: Save Results ===")
-    save_results(results, bootstrap_cis, comparison, model_class.__name__, output_dir)
+    # Save experiment metadata and model comparison
+    save_experiment_metadata(
+        output_dir=output_dir,
+        trajectories=trajectories,
+        config=cfg,
+        stage_name="stage2_severity",
+        all_model_results=lopo_results_dict,
+        all_bootstrap_cis=all_bootstrap_cis,
+    )
 
     # =========================================================================
     # Summary
@@ -371,8 +274,8 @@ def main() -> None:
 
     m = results.aggregate_metrics
     ci_str = ""
-    if "r2_log" in bootstrap_cis:
-        br = bootstrap_cis["r2_log"]
+    if ci_results and "r2_log" in ci_results:
+        br = ci_results["r2_log"]
         ci_str = f"  95% CI: [{br.ci_lower:.4f}, {br.ci_upper:.4f}]"
 
     print(f"\n  R2_log:        {m.get('last_from_rest/r2_log', float('nan')):.4f}{ci_str}")
@@ -381,13 +284,11 @@ def main() -> None:
     print(f"  Cal_95:        {m.get('last_from_rest/calibration_95', float('nan')):.3f}")
     print(f"  Failed folds:  {len(results.failed_folds)}")
 
-    # Gate checks
     print("\n--- Stage 2 Gate Checks ---")
     print(f"  S2-T2 Optimization converged: {'PASS' if len(results.failed_folds) == 0 else 'FAIL'}")
 
     if comparison and "permutation_p_value" in comparison:
         p_val = comparison["permutation_p_value"]
-        alpha = comp_cfg.get("significance_level", 0.05)
         print(
             f"  S2-T7 R2 >= Stage 1: "
             f"{'PASS' if comparison['delta_mae'] < 0 else 'FAIL'} "

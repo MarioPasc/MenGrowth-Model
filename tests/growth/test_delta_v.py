@@ -4,7 +4,7 @@
 import numpy as np
 import pytest
 
-from experiments.segment_based_approach.segment import (
+from experiments.stage1_volumetric.segment import (
     ScanVolumes,
     SegmentationVolumeExtractor,
 )

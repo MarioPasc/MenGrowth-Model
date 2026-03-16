@@ -5,7 +5,7 @@ Loads volume_cache.json and lopo_results_*.json, reconstructs the data
 structures, and calls the figure generation pipeline.
 
 Usage:
-    python -m experiments.segment_based_approach.regenerate_figures \
+    python -m experiments.stage1_volumetric.regenerate_figures \
         --results-dir /path/to/results \
         --config experiments/segment_based_approach/config.yaml
 """

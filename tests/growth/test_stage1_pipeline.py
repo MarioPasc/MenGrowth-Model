@@ -420,28 +420,33 @@ class TestBootstrapCIs:
 
     def test_bootstrap_on_lopo_results(self, synthetic_trajectories) -> None:
         """End-to-end bootstrap on LOPO-CV results."""
-        from experiments.stage1_volumetric.run_stage1 import compute_bootstrap_cis
+        from experiments.utils.experiment_output import (
+            compute_bootstrap_cis_with_distribution,
+        )
         from growth.models.growth.scalar_gp import ScalarGP
         from growth.shared.lopo import LOPOEvaluator
 
         evaluator = LOPOEvaluator(prediction_protocols=["last_from_rest"])
         results = evaluator.evaluate(ScalarGP, synthetic_trajectories, n_restarts=1, max_iter=200)
 
-        cis = compute_bootstrap_cis(results, n_bootstrap=200, seed=42)
+        cis, dist = compute_bootstrap_cis_with_distribution(results, n_bootstrap=200, seed=42)
 
         assert "r2_log" in cis
         assert "mae_log" in cis
         assert "rmse_log" in cis
         assert cis["r2_log"].ci_lower <= cis["r2_log"].ci_upper
+        assert len(dist["r2_log"]) == 200  # Full distribution saved
 
     def test_bootstrap_insufficient_data(self) -> None:
         """Bootstrap handles insufficient data gracefully."""
-        from experiments.stage1_volumetric.run_stage1 import compute_bootstrap_cis
+        from experiments.utils.experiment_output import (
+            compute_bootstrap_cis_with_distribution,
+        )
         from growth.shared.lopo import LOPOResults
 
         # Empty results
         results = LOPOResults(model_name="test", fold_results=[])
-        cis = compute_bootstrap_cis(results)
+        cis, dist = compute_bootstrap_cis_with_distribution(results)
         assert len(cis) == 0
 
 
@@ -455,9 +460,9 @@ class TestPerPatientErrors:
 
     def test_per_patient_errors_structure(self, synthetic_trajectories) -> None:
         """Per-patient errors have correct structure."""
-        from experiments.stage1_volumetric.run_stage1 import (
-            compute_per_patient_errors,
-            summarize_per_patient_errors,
+        from experiments.utils.experiment_output import (
+            extract_per_patient_errors,
+            summarize_errors,
         )
         from growth.models.growth.lme_model import LMEGrowthModel
         from growth.shared.lopo import LOPOEvaluator
@@ -465,7 +470,7 @@ class TestPerPatientErrors:
         evaluator = LOPOEvaluator(prediction_protocols=["last_from_rest"])
         results = evaluator.evaluate(LMEGrowthModel, synthetic_trajectories)
 
-        errors = compute_per_patient_errors(results)
+        errors = extract_per_patient_errors(results)
         assert len(errors) > 0
 
         for pid, err_dict in errors.items():
@@ -476,7 +481,7 @@ class TestPerPatientErrors:
             assert "within_95_ci" in err_dict
             assert "ci_width" in err_dict
 
-        summary = summarize_per_patient_errors(errors)
+        summary = summarize_errors(errors)
         assert summary["n_patients"] == len(errors)
         assert summary["abs_error_min"] <= summary["abs_error_mean"]
         assert summary["abs_error_mean"] <= summary["abs_error_max"]
@@ -718,10 +723,9 @@ class TestResultSaving:
 
     def test_save_and_load_results(self, synthetic_trajectories, tmp_path: Path) -> None:
         """Results can be saved and reloaded as JSON."""
-        from experiments.stage1_volumetric.run_stage1 import (
-            compute_bootstrap_cis,
-            compute_per_patient_errors,
-            save_results,
+        from experiments.utils.experiment_output import (
+            save_experiment_metadata,
+            save_stage_results,
         )
         from growth.models.growth.lme_model import LMEGrowthModel
         from growth.shared.lopo import LOPOEvaluator
@@ -729,24 +733,52 @@ class TestResultSaving:
         evaluator = LOPOEvaluator(prediction_protocols=["last_from_rest"])
         results = evaluator.evaluate(LMEGrowthModel, synthetic_trajectories)
 
-        lopo_results = {"LME": results}
-        bootstrap_cis = {"LME": compute_bootstrap_cis(results, n_bootstrap=100)}
-        per_patient_errors = {"LME": compute_per_patient_errors(results)}
+        ci_results = save_stage_results(
+            output_dir=tmp_path,
+            model_name="LME",
+            lopo_results=results,
+            trajectories=synthetic_trajectories,
+            config={"test": True},
+            stage_name="test",
+            bootstrap_n=100,
+        )
 
-        save_results(lopo_results, bootstrap_cis, per_patient_errors, tmp_path)
+        save_experiment_metadata(
+            output_dir=tmp_path,
+            trajectories=synthetic_trajectories,
+            config={"test": True},
+            stage_name="test",
+            all_model_results={"LME": results},
+            all_bootstrap_cis={"LME": ci_results} if ci_results else {},
+        )
 
         # Check files exist
         assert (tmp_path / "LME" / "lopo_results.json").exists()
-        assert (tmp_path / "LME" / "bootstrap_cis.json").exists()
+        assert (tmp_path / "LME" / "raw_predictions.json").exists()
         assert (tmp_path / "LME" / "per_patient_errors.json").exists()
         assert (tmp_path / "LME" / "error_summary.json").exists()
+        assert (tmp_path / "LME" / "bootstrap_cis.json").exists()
+        assert (tmp_path / "LME" / "bootstrap_samples.json").exists()
+        assert (tmp_path / "LME" / "hyperparameters.json").exists()
         assert (tmp_path / "model_comparison.json").exists()
+        assert (tmp_path / "run_metadata.json").exists()
+        assert (tmp_path / "trajectories_used.json").exists()
 
         # Verify JSON is valid
         with open(tmp_path / "model_comparison.json") as f:
             comparison = json.load(f)
         assert "models" in comparison
         assert "LME" in comparison["models"]
+
+        # Verify raw predictions have aligned data
+        with open(tmp_path / "LME" / "raw_predictions.json") as f:
+            raw = json.load(f)
+        assert "last_from_rest" in raw
+        for pred in raw["last_from_rest"]:
+            assert "patient_id" in pred
+            assert "actual" in pred
+            assert "predicted" in pred
+            assert "variance" in pred
 
 
 # ---------------------------------------------------------------------------

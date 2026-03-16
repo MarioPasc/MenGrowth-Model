@@ -10,23 +10,24 @@ Usage::
 
     cd /home/mpascual/research/code/MenGrowth-Model
     ~/.conda/envs/growth/bin/python -m experiments.stage1_volumetric.run_stage1 \\
-        --config experiments/stage1_volumetric/config_stage1.yaml
+        --config experiments/stage1_volumetric/config.yaml
 """
 
 import argparse
-import json
 import logging
 from pathlib import Path
 
-import numpy as np
 import yaml
 
+from experiments.utils.experiment_output import (
+    save_experiment_metadata,
+    save_stage_results,
+)
 from growth.models.growth.hgp_model import HierarchicalGPModel
 from growth.models.growth.lme_model import LMEGrowthModel
 from growth.models.growth.scalar_gp import ScalarGP
-from growth.shared.bootstrap import BootstrapResult, bootstrap_metric
+from growth.shared.bootstrap import BootstrapResult
 from growth.shared.lopo import LOPOEvaluator, LOPOResults
-from growth.shared.metrics import compute_mae, compute_r2, compute_rmse
 from growth.stages.stage1_volumetric.trajectory_loader import load_trajectories_from_h5
 
 logger = logging.getLogger(__name__)
@@ -108,227 +109,6 @@ def _build_model_configs(cfg: dict) -> dict[str, tuple[type, dict]]:
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap CIs
-# ---------------------------------------------------------------------------
-
-
-def compute_bootstrap_cis(
-    lopo_results: LOPOResults,
-    n_bootstrap: int = 2000,
-    confidence_level: float = 0.95,
-    seed: int = 42,
-) -> dict[str, BootstrapResult]:
-    """Compute bootstrap CIs on LOPO-CV metrics.
-
-    Resamples per-patient predictions (last_from_rest) and computes
-    R^2, MAE, RMSE on each bootstrap sample.
-
-    Args:
-        lopo_results: LOPO-CV results for one model.
-        n_bootstrap: Number of bootstrap resamples.
-        confidence_level: CI confidence level.
-        seed: Random seed.
-
-    Returns:
-        Dict mapping metric name to BootstrapResult.
-    """
-    # Collect per-prediction actuals and predictions
-    actuals: list[float] = []
-    preds: list[float] = []
-
-    for fr in lopo_results.fold_results:
-        if "last_from_rest" not in fr.predictions:
-            continue
-        for p in fr.predictions["last_from_rest"]:
-            actuals.append(p["actual"])
-            preds.append(p["pred_mean"])
-
-    if len(actuals) < 3:
-        logger.warning("Not enough predictions for bootstrap CIs")
-        return {}
-
-    y_true = np.array(actuals)
-    y_pred = np.array(preds)
-
-    results: dict[str, BootstrapResult] = {}
-
-    for metric_name, metric_fn in [
-        ("r2_log", compute_r2),
-        ("mae_log", compute_mae),
-        ("rmse_log", compute_rmse),
-    ]:
-        results[metric_name] = bootstrap_metric(
-            y_true,
-            y_pred,
-            metric_fn,
-            n_bootstrap=n_bootstrap,
-            confidence_level=confidence_level,
-            seed=seed,
-        )
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Per-patient error analysis
-# ---------------------------------------------------------------------------
-
-
-def compute_per_patient_errors(
-    lopo_results: LOPOResults,
-) -> dict[str, dict]:
-    """Compute per-patient prediction errors from LOPO-CV.
-
-    Returns:
-        Dict mapping patient_id to error statistics.
-    """
-    errors: dict[str, dict] = {}
-
-    for fr in lopo_results.fold_results:
-        if "last_from_rest" not in fr.predictions:
-            continue
-        for p in fr.predictions["last_from_rest"]:
-            err = p["pred_mean"] - p["actual"]
-            abs_err = abs(err)
-            within_ci = p["lower_95"] <= p["actual"] <= p["upper_95"]
-            errors[fr.patient_id] = {
-                "error": err,
-                "abs_error": abs_err,
-                "actual": p["actual"],
-                "predicted": p["pred_mean"],
-                "within_95_ci": within_ci,
-                "ci_width": p["upper_95"] - p["lower_95"],
-                "n_conditioning": p["n_conditioning"],
-            }
-
-    return errors
-
-
-def summarize_per_patient_errors(errors: dict[str, dict]) -> dict:
-    """Compute summary statistics for per-patient error distribution."""
-    if not errors:
-        return {}
-
-    abs_errors = [e["abs_error"] for e in errors.values()]
-    signed_errors = [e["error"] for e in errors.values()]
-    ci_widths = [e["ci_width"] for e in errors.values()]
-
-    return {
-        "n_patients": len(errors),
-        "abs_error_mean": float(np.mean(abs_errors)),
-        "abs_error_std": float(np.std(abs_errors)),
-        "abs_error_median": float(np.median(abs_errors)),
-        "abs_error_min": float(np.min(abs_errors)),
-        "abs_error_max": float(np.max(abs_errors)),
-        "abs_error_q25": float(np.percentile(abs_errors, 25)),
-        "abs_error_q75": float(np.percentile(abs_errors, 75)),
-        "signed_error_mean": float(np.mean(signed_errors)),
-        "signed_error_std": float(np.std(signed_errors)),
-        "ci_width_mean": float(np.mean(ci_widths)),
-        "ci_width_std": float(np.std(ci_widths)),
-        "fraction_within_ci": float(np.mean([e["within_95_ci"] for e in errors.values()])),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Result saving
-# ---------------------------------------------------------------------------
-
-
-def save_results(
-    lopo_results: dict[str, LOPOResults],
-    bootstrap_cis: dict[str, dict[str, BootstrapResult]],
-    per_patient_errors: dict[str, dict[str, dict]],
-    output_dir: Path,
-) -> None:
-    """Save all Stage 1 results to organized directory structure."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Per-model results
-    for model_name, results in lopo_results.items():
-        model_dir = output_dir / model_name
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        # LOPO results
-        with open(model_dir / "lopo_results.json", "w") as f:
-            json.dump(results.to_dict(), f, indent=2)
-
-        # Bootstrap CIs
-        if model_name in bootstrap_cis:
-            ci_data = {}
-            for metric, br in bootstrap_cis[model_name].items():
-                ci_data[metric] = {
-                    "estimate": br.estimate,
-                    "ci_lower": br.ci_lower,
-                    "ci_upper": br.ci_upper,
-                    "confidence_level": br.confidence_level,
-                    "n_bootstrap": br.n_bootstrap,
-                }
-            with open(model_dir / "bootstrap_cis.json", "w") as f:
-                json.dump(ci_data, f, indent=2)
-
-        # Per-patient errors
-        if model_name in per_patient_errors:
-            errors = per_patient_errors[model_name]
-            with open(model_dir / "per_patient_errors.json", "w") as f:
-                json.dump(errors, f, indent=2, default=str)
-
-            summary = summarize_per_patient_errors(errors)
-            with open(model_dir / "error_summary.json", "w") as f:
-                json.dump(summary, f, indent=2)
-
-    # Model comparison
-    comparison = _build_comparison(lopo_results, bootstrap_cis)
-    with open(output_dir / "model_comparison.json", "w") as f:
-        json.dump(comparison, f, indent=2)
-
-    logger.info(f"Results saved to {output_dir}")
-
-
-def _build_comparison(
-    lopo_results: dict[str, LOPOResults],
-    bootstrap_cis: dict[str, dict[str, BootstrapResult]],
-) -> dict:
-    """Build head-to-head comparison table."""
-    comparison: dict = {"models": {}}
-
-    for model_name, results in lopo_results.items():
-        entry: dict = {
-            "model_name": results.model_name,
-            "n_folds": len(results.fold_results),
-            "n_failed": len(results.failed_folds),
-        }
-
-        for metric_name, val in sorted(results.aggregate_metrics.items()):
-            entry[metric_name] = val
-
-        # Add bootstrap CI info
-        if model_name in bootstrap_cis:
-            ci_info: dict = {}
-            for metric, br in bootstrap_cis[model_name].items():
-                ci_info[metric] = {
-                    "estimate": br.estimate,
-                    "ci_lower": br.ci_lower,
-                    "ci_upper": br.ci_upper,
-                }
-            entry["bootstrap_ci"] = ci_info
-
-        comparison["models"][model_name] = entry
-
-    # Rank by R^2
-    r2_ranking = sorted(
-        comparison["models"].items(),
-        key=lambda x: x[1].get("last_from_rest/r2_log", float("-inf")),
-        reverse=True,
-    )
-    comparison["ranking"] = [
-        {"model": k, "r2_log": v.get("last_from_rest/r2_log")} for k, v in r2_ranking
-    ]
-
-    return comparison
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -339,7 +119,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="experiments/stage1_volumetric/config_stage1.yaml",
+        default="experiments/stage1_volumetric/config.yaml",
         help="Path to Stage 1 config YAML",
     )
     args = parser.parse_args()
@@ -366,15 +146,11 @@ def main() -> None:
         exclude_patients=cfg["patients"].get("exclude", []),
         min_timepoints=cfg["patients"].get("min_timepoints", 2),
         covariate_features=covariate_features,
+        semantic_covariates=cfg.get("semantic_covariates", []),
         skip_all_zero_volume=cfg["patients"].get("skip_all_zero_volume", True),
     )
 
     logger.info(f"Loaded {len(trajectories)} patient trajectories")
-    for traj in trajectories[:3]:
-        logger.info(
-            f"  {traj.patient_id}: {traj.n_timepoints} tp, "
-            f"obs range [{traj.observations.min():.2f}, {traj.observations.max():.2f}]"
-        )
 
     # =========================================================================
     # Step 2: LOPO-CV with all models
@@ -384,6 +160,11 @@ def main() -> None:
     evaluator = LOPOEvaluator()
 
     lopo_results: dict[str, LOPOResults] = {}
+    all_bootstrap_cis: dict[str, dict[str, BootstrapResult]] = {}
+
+    bootstrap_cfg = cfg.get("bootstrap", {})
+    bootstrap_n = bootstrap_cfg.get("n_samples", 2000)
+    bootstrap_seed = bootstrap_cfg.get("seed", 42)
 
     for model_name, (model_cls, kwargs) in model_configs.items():
         logger.info(f"--- {model_name} ---")
@@ -399,54 +180,36 @@ def main() -> None:
                 f"folds={len(results.fold_results)}/"
                 f"{len(results.fold_results) + len(results.failed_folds)}"
             )
+
+            # Save per-model results with shared output module
+            ci_results = save_stage_results(
+                output_dir=output_dir,
+                model_name=model_name,
+                lopo_results=results,
+                trajectories=trajectories,
+                config=cfg,
+                stage_name="stage1_volumetric",
+                bootstrap_n=bootstrap_n,
+                bootstrap_seed=bootstrap_seed,
+            )
+            if ci_results:
+                all_bootstrap_cis[model_name] = ci_results
+
         except Exception as e:
             logger.error(f"  {model_name} FAILED: {e}", exc_info=True)
 
     # =========================================================================
-    # Step 3: Bootstrap CIs
+    # Step 3: Save experiment-level metadata and comparison
     # =========================================================================
-    bootstrap_cfg = cfg.get("bootstrap", {})
-    bootstrap_cis: dict[str, dict[str, BootstrapResult]] = {}
-
-    if bootstrap_cfg.get("enabled", True):
-        logger.info("=== Step 3: Bootstrap CIs ===")
-        for model_name, results in lopo_results.items():
-            cis = compute_bootstrap_cis(
-                results,
-                n_bootstrap=bootstrap_cfg.get("n_samples", 2000),
-                confidence_level=bootstrap_cfg.get("confidence_level", 0.95),
-                seed=bootstrap_cfg.get("seed", 42),
-            )
-            bootstrap_cis[model_name] = cis
-            if "r2_log" in cis:
-                br = cis["r2_log"]
-                logger.info(
-                    f"  {model_name}: R2_log = {br.estimate:.4f} "
-                    f"[{br.ci_lower:.4f}, {br.ci_upper:.4f}]"
-                )
-
-    # =========================================================================
-    # Step 4: Per-patient error analysis
-    # =========================================================================
-    logger.info("=== Step 4: Per-Patient Error Analysis ===")
-    per_patient_errors: dict[str, dict[str, dict]] = {}
-
-    for model_name, results in lopo_results.items():
-        errors = compute_per_patient_errors(results)
-        per_patient_errors[model_name] = errors
-        summary = summarize_per_patient_errors(errors)
-        if summary:
-            logger.info(
-                f"  {model_name}: |error| = {summary['abs_error_mean']:.4f} "
-                f"+/- {summary['abs_error_std']:.4f}, "
-                f"range [{summary['abs_error_min']:.4f}, {summary['abs_error_max']:.4f}]"
-            )
-
-    # =========================================================================
-    # Step 5: Save Results
-    # =========================================================================
-    logger.info("=== Step 5: Save Results ===")
-    save_results(lopo_results, bootstrap_cis, per_patient_errors, output_dir)
+    logger.info("=== Step 3: Save Results ===")
+    save_experiment_metadata(
+        output_dir=output_dir,
+        trajectories=trajectories,
+        config=cfg,
+        stage_name="stage1_volumetric",
+        all_model_results=lopo_results,
+        all_bootstrap_cis=all_bootstrap_cis,
+    )
 
     # =========================================================================
     # Summary
@@ -466,8 +229,8 @@ def main() -> None:
         m = lopo_results[model_name].aggregate_metrics
 
         ci_str = ""
-        if model_name in bootstrap_cis and "r2_log" in bootstrap_cis[model_name]:
-            br = bootstrap_cis[model_name]["r2_log"]
+        if model_name in all_bootstrap_cis and "r2_log" in all_bootstrap_cis[model_name]:
+            br = all_bootstrap_cis[model_name]["r2_log"]
             ci_str = f"[{br.ci_lower:.4f}, {br.ci_upper:.4f}]"
 
         print(
@@ -480,7 +243,7 @@ def main() -> None:
             f"{ci_str:>20}"
         )
 
-    # Stage 1 gate checks
+    # Gate checks
     print("\n--- Stage 1 Gate Checks ---")
     best_r2 = float("-inf")
     best_model = None
@@ -490,17 +253,14 @@ def main() -> None:
             best_r2 = r2
             best_model = model_name
 
-    # S1-T1: ScalarGP completes without NaN
     if "ScalarGP" in lopo_results:
         n_failed = len(lopo_results["ScalarGP"].failed_folds)
         print(f"  S1-T1 ScalarGP no NaN: {'PASS' if n_failed == 0 else 'FAIL'} ({n_failed} failed)")
 
-    # S1-T2: LME R2 > 0
     if "LME" in lopo_results:
         lme_r2 = lopo_results["LME"].aggregate_metrics.get("last_from_rest/r2_log", -1)
         print(f"  S1-T2 LME R2 > 0: {'PASS' if lme_r2 > 0 else 'FAIL'} (R2={lme_r2:.4f})")
 
-    # S1-T3: HGP >= ScalarGP
     if "HGP" in lopo_results and "ScalarGP" in lopo_results:
         hgp_r2 = lopo_results["HGP"].aggregate_metrics.get("last_from_rest/r2_log", -999)
         sgp_r2 = lopo_results["ScalarGP"].aggregate_metrics.get("last_from_rest/r2_log", -999)
@@ -510,9 +270,8 @@ def main() -> None:
             f"({hgp_r2:.4f} vs {sgp_r2:.4f})"
         )
 
-    # S1-T5: Bootstrap CI excludes 0
-    if best_model and best_model in bootstrap_cis and "r2_log" in bootstrap_cis[best_model]:
-        br = bootstrap_cis[best_model]["r2_log"]
+    if best_model and best_model in all_bootstrap_cis and "r2_log" in all_bootstrap_cis[best_model]:
+        br = all_bootstrap_cis[best_model]["r2_log"]
         excludes_0 = br.ci_lower > 0
         print(
             f"  S1-T5 Best model CI excludes 0: "
@@ -520,7 +279,6 @@ def main() -> None:
             f"({best_model} [{br.ci_lower:.4f}, {br.ci_upper:.4f}])"
         )
 
-    # S1-T7: Gompertz ablation
     if "HGP_Gompertz" in lopo_results and "HGP" in lopo_results:
         gomp_r2 = lopo_results["HGP_Gompertz"].aggregate_metrics.get("last_from_rest/r2_log", -999)
         hgp_r2 = lopo_results["HGP"].aggregate_metrics.get("last_from_rest/r2_log", -999)

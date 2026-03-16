@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from experiments.segment_based_approach.segment import (
+from experiments.stage1_volumetric.segment import (
     _merge_lora_weights,
     _strip_training_checkpoint_prefix,
 )

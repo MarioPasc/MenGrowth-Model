@@ -66,7 +66,7 @@ def _build_manual_scan_volumes(h5_path: str) -> list:
     """Helper: build ScanVolumes from manual H5 segmentations (no GPU needed)."""
     import h5py
 
-    from experiments.segment_based_approach.segment import ScanVolumes
+    from experiments.stage1_volumetric.segment import ScanVolumes
 
     scan_volumes = []
     with h5py.File(h5_path, "r") as f:
@@ -142,7 +142,7 @@ class TestTrajectoryBuilding:
     """Test trajectory construction from manual volumes."""
 
     def test_build_manual_trajectories(self, baseline_config):
-        from experiments.segment_based_approach.segment import SegmentationVolumeExtractor
+        from experiments.stage1_volumetric.segment import SegmentationVolumeExtractor
 
         scan_volumes = _build_manual_scan_volumes(baseline_config["paths"]["mengrowth_h5"])
         extractor = SegmentationVolumeExtractor(baseline_config)
@@ -166,7 +166,7 @@ class TestSegmentationComparison:
     """Test segmentation comparison report generation."""
 
     def test_generate_report(self, baseline_config):
-        from experiments.segment_based_approach.segment import generate_segmentation_report
+        from experiments.stage1_volumetric.segment import generate_segmentation_report
 
         scan_volumes = _build_manual_scan_volumes(baseline_config["paths"]["mengrowth_h5"])
         report = generate_segmentation_report(scan_volumes)
@@ -181,7 +181,7 @@ class TestMultiModelLOPO:
     """End-to-end multi-model LOPO test on manual volumes."""
 
     def test_lopo_scalar_gp(self, baseline_config):
-        from experiments.segment_based_approach.segment import SegmentationVolumeExtractor
+        from experiments.stage1_volumetric.segment import SegmentationVolumeExtractor
         from growth.evaluation.lopo_evaluator import LOPOEvaluator
         from growth.models.growth.scalar_gp import ScalarGP
 
@@ -206,7 +206,7 @@ class TestMultiModelLOPO:
         assert np.isfinite(results.aggregate_metrics["last_from_rest/r2_log"])
 
     def test_lopo_lme(self, baseline_config):
-        from experiments.segment_based_approach.segment import SegmentationVolumeExtractor
+        from experiments.stage1_volumetric.segment import SegmentationVolumeExtractor
         from growth.evaluation.lopo_evaluator import LOPOEvaluator
         from growth.models.growth.lme_model import LMEGrowthModel
 
@@ -223,7 +223,7 @@ class TestMultiModelLOPO:
         assert np.isfinite(results.aggregate_metrics["last_from_rest/r2_log"])
 
     def test_lopo_hgp(self, baseline_config):
-        from experiments.segment_based_approach.segment import SegmentationVolumeExtractor
+        from experiments.stage1_volumetric.segment import SegmentationVolumeExtractor
         from growth.evaluation.lopo_evaluator import LOPOEvaluator
         from growth.models.growth.hgp_model import HierarchicalGPModel
 

@@ -9,7 +9,7 @@ Supports **multi-model** configs: each enabled segmentation model produces its
 own set of LOPO-CV results and figures, plus cross-source comparison.
 
 Usage:
-    python -m experiments.segment_based_approach.run_baseline \
+    python -m experiments.stage1_volumetric.run_baseline \
         --config experiments/segment_based_approach/config.yaml
 """
 

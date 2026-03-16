@@ -13,7 +13,7 @@ class TestPerModelResult:
     """Test the PerModelResult dataclass."""
 
     def test_construction(self):
-        from experiments.segment_based_approach.segment import PerModelResult
+        from experiments.stage1_volumetric.segment import PerModelResult
 
         pmr = PerModelResult(
             model_name="test_model",
@@ -31,7 +31,7 @@ class TestPerModelResult:
         assert not pmr.is_empty
 
     def test_empty_prediction(self):
-        from experiments.segment_based_approach.segment import PerModelResult
+        from experiments.stage1_volumetric.segment import PerModelResult
 
         pmr = PerModelResult(
             model_name="empty_model",
@@ -51,7 +51,7 @@ class TestScanVolumesBackwardCompat:
     """Test backward-compatible property accessors on ScanVolumes."""
 
     def _make_scan_volumes(self):
-        from experiments.segment_based_approach.segment import (
+        from experiments.stage1_volumetric.segment import (
             PerModelResult,
             ScanVolumes,
         )
@@ -106,7 +106,7 @@ class TestScanVolumesBackwardCompat:
         assert not sv.is_empty_predicted
 
     def test_no_models_defaults(self):
-        from experiments.segment_based_approach.segment import ScanVolumes
+        from experiments.stage1_volumetric.segment import ScanVolumes
 
         sv = ScanVolumes(
             scan_id="scan_002",
@@ -127,7 +127,7 @@ class TestParseSegConfig:
     """Test config parsing for both old and new formats."""
 
     def test_new_format(self):
-        from experiments.segment_based_approach.segment import parse_seg_config
+        from experiments.stage1_volumetric.segment import parse_seg_config
 
         cfg = {
             "segmentation": {
@@ -167,7 +167,7 @@ class TestParseSegConfig:
         assert models[1].save_to_h5 is False
 
     def test_old_format_fallback(self):
-        from experiments.segment_based_approach.segment import parse_seg_config
+        from experiments.stage1_volumetric.segment import parse_seg_config
 
         cfg = {
             "paths": {"checkpoint": "/path/to/bsf.pt"},
@@ -185,7 +185,7 @@ class TestParseSegConfig:
         assert models[0].model_type == "BrainSegFounder"
 
     def test_old_format_no_checkpoint(self):
-        from experiments.segment_based_approach.segment import parse_seg_config
+        from experiments.stage1_volumetric.segment import parse_seg_config
 
         cfg = {"segmentation": {}}
 
@@ -194,7 +194,7 @@ class TestParseSegConfig:
         assert use_manual is True
 
     def test_use_manual_false(self):
-        from experiments.segment_based_approach.segment import parse_seg_config
+        from experiments.stage1_volumetric.segment import parse_seg_config
 
         cfg = {
             "segmentation": {
@@ -219,7 +219,7 @@ class TestStripTrainingCheckpointPrefix:
     """Test the training checkpoint key stripping logic."""
 
     def test_encoder_keys(self):
-        from experiments.segment_based_approach.segment import (
+        from experiments.stage1_volumetric.segment import (
             _strip_training_checkpoint_prefix,
         )
 
@@ -233,7 +233,7 @@ class TestStripTrainingCheckpointPrefix:
         assert len(stripped) == 2
 
     def test_decoder_keys(self):
-        from experiments.segment_based_approach.segment import (
+        from experiments.stage1_volumetric.segment import (
             _strip_training_checkpoint_prefix,
         )
 
@@ -246,7 +246,7 @@ class TestStripTrainingCheckpointPrefix:
         assert "out.conv.conv.weight" in stripped
 
     def test_unrecognized_keys_skipped(self):
-        from experiments.segment_based_approach.segment import (
+        from experiments.stage1_volumetric.segment import (
             _strip_training_checkpoint_prefix,
         )
 
@@ -260,7 +260,7 @@ class TestStripTrainingCheckpointPrefix:
         assert "swinViT.patch_embed.weight" in stripped
 
     def test_all_encoder_decoder_prefixes(self):
-        from experiments.segment_based_approach.segment import (
+        from experiments.stage1_volumetric.segment import (
             _strip_training_checkpoint_prefix,
         )
 
@@ -284,7 +284,7 @@ class TestSegmentationReport:
     """Test multi-model segmentation report generation."""
 
     def test_multi_model_report(self):
-        from experiments.segment_based_approach.segment import (
+        from experiments.stage1_volumetric.segment import (
             PerModelResult,
             ScanVolumes,
             generate_segmentation_report,
@@ -345,7 +345,7 @@ class TestSegmentationReport:
         assert report["per_region"] == report["per_model"]["model_a"]["per_region"]
 
     def test_empty_model_results(self):
-        from experiments.segment_based_approach.segment import (
+        from experiments.stage1_volumetric.segment import (
             ScanVolumes,
             generate_segmentation_report,
         )
