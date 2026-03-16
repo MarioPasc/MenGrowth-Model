@@ -24,16 +24,17 @@ Before writing any code, read these files in order:
 3. **Implementation plan:** `docs/PLAN_OF_ACTION_v1.md` -- detailed specs per stage.
 4. **Stage spec:** `docs/stages/stage_{N}_*.md` where N is the stage number. This is your primary spec.
 5. **Pre-resolved decisions:** `docs/growth-related/claude_files_BSGNeuralODE/DECISIONS.md` -- do NOT revisit these.
-6. **Existing code:** Use Glob and Grep to find files listed in the stage spec. Read each before writing.
+6. **Shared infrastructure:** `src/growth/shared/` -- GrowthModel ABC, LOPOEvaluator, metrics, bootstrap. Import from here.
+7. **Existing code:** Use Glob and Grep to find files listed in the stage spec. Read each before writing.
 
 ## Stage Mapping
 
 | Stage | Spec | Description |
 |-------|------|-------------|
-| 1 | `stage_1_volumetric_baseline.md` | Segmentation-based volumetric growth models |
-| 2 | `stage_2_severity_model.md` | Latent severity NLME model |
-| 3 | `stage_3_representation_learning.md` | Deep features + LoRA + SDP + ARD GP |
-| 4 | `variance_decomposition.md` | Cross-stage variance decomposition |
+| 1 | `stage_1_volumetric_baseline.md` | Volumetric growth models → `src/growth/stages/stage1_volumetric/` |
+| 2 | `stage_2_severity_model.md` | Severity NLME → `src/growth/stages/stage2_severity/` |
+| 3 | `stage_3_representation_learning.md` | Deep features → `src/growth/stages/stage3_latent/` |
+| 4 | `variance_decomposition.md` | Decomposition → `src/growth/evaluation/variance_decomposition.py` |
 
 For Stage 3, also read the old module specs (module_2_lora.md, module_3_sdp.md) as reference.
 

@@ -28,11 +28,14 @@ Tests are tagged with markers defined in `pyproject.toml`. **Always use markers 
 
 | Files changed in... | Run |
 |---------------------|-----|
+| `src/growth/shared/` | `pytest -m "not slow and not real_data"` (cross-cutting) |
 | `src/growth/data/` | `pytest -m phase0` |
-| `src/growth/models/encoder/`, `src/growth/losses/`, `experiments/lora/` | `pytest -m phase1` |
-| `src/growth/models/projection/`, `experiments/sdp/` | `pytest -m phase2` |
+| `src/growth/models/growth/`, `src/growth/stages/stage1_*/` | `pytest -m "phase4 or unit"` |
+| `src/growth/stages/stage2_*/` | `pytest -m "stage2 or unit"` |
+| `src/growth/models/encoder/`, `src/growth/losses/` | `pytest -m phase1` |
+| `src/growth/models/projection/`, `experiments/stage3_latent/sdp/` | `pytest -m phase2` |
 | `src/growth/evaluation/` | `pytest -m evaluation` |
-| `experiments/lora/analysis/`, `experiments/lora/vis/` | `pytest -m experiment` |
+| `experiments/stage3_latent/lora/analysis/` | `pytest -m experiment` |
 | `experiments/utils/settings.py` | `pytest -m experiment` |
 | Unknown / broad changes | `pytest -m "not slow and not real_data"` |
 

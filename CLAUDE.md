@@ -148,9 +148,12 @@ Project root: `/home/mpascual/research/code/MenGrowth-Model/`. Agent environment
 | Resource | Path |
 |----------|------|
 | Main package | `src/growth/` |
-| Growth models (Stage 1) | `src/growth/models/growth/` (scalar_gp, lme_model, hgp_model) |
-| Severity model (Stage 2) | `src/growth/models/growth/severity_model.py` (NEW) |
-| Quantile transform (Stage 2) | `src/growth/models/growth/quantile_transform.py` (NEW) |
+| **Shared infrastructure** | `src/growth/shared/` (GrowthModel ABC, LOPO, metrics, bootstrap, covariates, trajectory I/O) |
+| **Stage facades** | `src/growth/stages/stage{1,2,3}_*/` (thin re-exports + stage-specific code) |
+| Growth models (all stages) | `src/growth/models/growth/` (scalar_gp, lme_model, hgp_model — stage-agnostic) |
+| Stage 1 specifics | `src/growth/stages/stage1_volumetric/` (Gompertz mean function) |
+| Stage 2 specifics | `src/growth/stages/stage2_severity/` (severity_model, quantile_transform, growth_functions) |
+| Stage 3 specifics | `src/growth/stages/stage3_latent/` (facade for encoder, SDP, projection) |
 | Encoder/SDP (Stage 3) | `src/growth/models/encoder/`, `src/growth/models/projection/` |
 | LOPO evaluator | `src/growth/evaluation/lopo_evaluator.py` |
 | Variance decomposition | `src/growth/evaluation/variance_decomposition.py` (NEW) |
@@ -162,13 +165,12 @@ Project root: `/home/mpascual/research/code/MenGrowth-Model/`. Agent environment
 
 | Experiment | Path | Stage | Status |
 |------------|------|-------|--------|
-| Segment-based baseline | `experiments/segment_based_approach/` | 1 | IN PROGRESS |
-| Severity model | `experiments/severity_model/` | 2 | NOT STARTED |
-| LoRA ablation | `experiments/lora/` | 3 | COMPLETE |
-| SDP training | `experiments/sdp/` | 3 | COMPLETE |
-| Deep feature GP | `experiments/deep_features/` | 3 | NOT STARTED |
+| Volumetric baseline | `experiments/stage1_volumetric/` | 1 | IN PROGRESS |
+| Severity model | `experiments/stage2_severity/` | 2 | NOT STARTED |
+| LoRA ablation | `experiments/stage3_latent/lora/` | 3 | COMPLETE |
+| SDP training | `experiments/stage3_latent/sdp/` | 3 | COMPLETE |
+| Domain gap analysis | `experiments/stage3_latent/domain_gap/` | 3 | COMPLETE |
 | Variance decomposition | `experiments/variance_decomposition/` | Cross | NOT STARTED |
-| Domain gap analysis | `experiments/domain_gap/` | 3 | COMPLETE |
 
 ### 5.4 When to Use What
 

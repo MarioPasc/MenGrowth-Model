@@ -1,0 +1,22 @@
+# Stage 2: Latent Severity Model Configuration
+# Spec: docs/stages/stage_2_severity_model.md
+
+severity:
+  growth_function: gompertz_reduced  # gompertz_reduced | weighted_sigmoid
+  optimization:
+    method: lbfgsb
+    max_iter: 5000
+    n_restarts: 5
+    lambda_reg: 0.01
+  severity_estimation:
+    features: [log_volume, age, sex, sphericity]
+    model: linear_regression
+
+evaluation:
+  cv: lopo
+  prediction_protocols: [last_from_rest, all_from_first]
+  bootstrap:
+    n_bootstrap: 2000
+    confidence_level: 0.95
+
+seed: 42

@@ -115,7 +115,7 @@ vae-analyze = "vae.tools.analysis.cli:main"
 # growth-train-growth = "growth.training.train_growth:main"
 
 # Experiment entry points
-growth-exp-lora-ablation = "experiments.lora_ablation.run_ablation:main"
+growth-exp-lora = "experiments.stage3_latent.lora.run:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -138,6 +138,9 @@ markers = [
     "gpu: Requires GPU",
     "real_data: Requires real checkpoint or H5 data files",
     "unit: Fast unit tests with synthetic data only",
+    "stage1: Stage 1 volumetric growth prediction tests",
+    "stage2: Stage 2 latent severity NLME model tests",
+    "stage3: Stage 3 representation learning pipeline tests",
 ]
 
 [tool.pyright]
@@ -149,7 +152,7 @@ include = ["vae*", "growth*", "experiments*"]
 
 [tool.setuptools.package-data]
 vae = ["py.typed", "config/*.yaml"]
-growth = ["py.typed", "config/*.yaml"]
+growth = ["py.typed", "config/*.yaml", "config/**/*.yaml"]
 
 [tool.mypy]
 python_version = "3.11"
