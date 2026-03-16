@@ -43,6 +43,7 @@ def load_trajectories_from_h5(
     exclude_patients: list[str] | None = None,
     min_timepoints: int = 2,
     covariate_features: list[str] | None = None,
+    semantic_covariates: list[str] | None = None,
     skip_all_zero_volume: bool = True,
 ) -> list[PatientTrajectory]:
     """Load per-patient volume trajectories from MenGrowth H5 file.
@@ -56,9 +57,13 @@ def load_trajectories_from_h5(
             ``"days_from_baseline"`` (requires ``time_delta_days`` in H5).
         exclude_patients: Patient IDs to exclude.
         min_timepoints: Minimum observations required per patient.
-        covariate_features: List of covariate names to attach (e.g.
-            ``["age", "sex"]``). Only patients with non-missing values
-            for these features will have covariates attached.
+        covariate_features: List of covariate names to attach from
+            ``metadata/`` group (e.g. ``["age", "sex"]``). Only patients
+            with non-missing values will have these attached.
+        semantic_covariates: List of semantic feature names to attach as
+            covariates from the ``semantic/`` group. Supported:
+            ``"sphericity"`` (from ``semantic/shape[:, 0]``). These have
+            100% coverage and are always attached.
         skip_all_zero_volume: If True, skip patients where all WT
             volumes are zero (empty segmentations at all timepoints).
 
@@ -71,8 +76,16 @@ def load_trajectories_from_h5(
 
     exclude_patients = set(exclude_patients or [])
     covariate_features = covariate_features or []
+    semantic_covariates = semantic_covariates or []
 
     trajectories: list[PatientTrajectory] = []
+
+    # Mapping from semantic covariate name to (group, column_index)
+    _SEMANTIC_COV_MAP = {
+        "sphericity": ("shape", 0),
+        "enhancement_ratio": ("shape", 1),
+        "infiltration_index": ("shape", 2),
+    }
 
     with h5py.File(h5_path, "r") as f:
         # Validate schema
@@ -124,6 +137,29 @@ def load_trajectories_from_h5(
                 else:
                     logger.warning(f"Covariate '{feat}' not found in H5 metadata")
 
+        # Load semantic covariates from semantic/ group
+        semantic_arrays: dict[str, np.ndarray] = {}
+        if semantic_covariates and "semantic" in f:
+            for sem_name in semantic_covariates:
+                if sem_name in _SEMANTIC_COV_MAP:
+                    group_name, col_idx = _SEMANTIC_COV_MAP[sem_name]
+                    if group_name in f["semantic"]:
+                        sem_data = f["semantic"][group_name][:]
+                        if col_idx < sem_data.shape[1]:
+                            semantic_arrays[sem_name] = sem_data[:, col_idx].astype(np.float64)
+                        else:
+                            logger.warning(
+                                f"Semantic covariate '{sem_name}': column {col_idx} "
+                                f"out of range for semantic/{group_name}"
+                            )
+                    else:
+                        logger.warning(f"Semantic group '{group_name}' not found in H5")
+                else:
+                    logger.warning(
+                        f"Unknown semantic covariate '{sem_name}'. "
+                        f"Available: {list(_SEMANTIC_COV_MAP.keys())}"
+                    )
+
     # Build per-patient trajectories using CSR offsets
     n_patients = len(patient_list)
 
@@ -161,8 +197,14 @@ def load_trajectories_from_h5(
             logger.debug(f"Skipping {pid}: all WT volumes are zero")
             continue
 
-        # Build covariates dict from metadata
+        # Build covariates dict from metadata + semantic features
         covariates = _build_covariates(scan_indices[0], covariate_features, metadata_arrays)
+        sem_covs = _build_semantic_covariates(scan_indices[0], semantic_covariates, semantic_arrays)
+        if sem_covs:
+            if covariates is None:
+                covariates = sem_covs
+            else:
+                covariates.update(sem_covs)
 
         trajectories.append(
             PatientTrajectory(
@@ -219,6 +261,32 @@ def _build_covariates(
             covariates[feat] = val
 
     return covariates
+
+
+def _build_semantic_covariates(
+    scan_idx: int,
+    semantic_covariates: list[str],
+    semantic_arrays: dict[str, np.ndarray],
+) -> dict[str, float] | None:
+    """Extract semantic covariates for a patient's baseline scan.
+
+    Unlike metadata covariates, semantic covariates are always available
+    (100% coverage) so missing values are not expected.
+
+    Returns:
+        Dict mapping covariate name to value, or None if no covariates requested.
+    """
+    if not semantic_covariates or not semantic_arrays:
+        return None
+
+    covariates: dict[str, float] = {}
+    for name in semantic_covariates:
+        if name in semantic_arrays:
+            val = float(semantic_arrays[name][scan_idx])
+            if np.isfinite(val):
+                covariates[name] = val
+
+    return covariates if covariates else None
 
 
 def compute_wt_volumes_from_segs(

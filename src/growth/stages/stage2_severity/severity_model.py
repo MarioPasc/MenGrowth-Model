@@ -1,22 +1,21 @@
 # src/growth/stages/stage2_severity/severity_model.py
-"""Latent severity NLME growth model (Stage 2).
+"""Latent severity NLME growth model — Option A: MLE via L-BFGS-B.
 
 Implements a nonlinear mixed-effects model where a single latent variable
-s_i ∈ [0, 1] governs each patient's growth trajectory:
+s_i in [0, 1] governs each patient's growth trajectory:
 
-    q_ij = g(s_i, t_ij; θ) + ε_ij
+    q_ij = g(s_i, t_ij; theta) + eps_ij
 
 where q_ij is the growth quantile, s_i is the latent severity, t_ij is the
 normalized time, and g is a monotonic growth function satisfying g(s, 0) = 0.
 
-The model is formally equivalent to an IRT 2PL model (D22, D23).
-Severity is estimated jointly with population parameters θ via L-BFGS-B
-during training, and predicted from baseline features at test time (D25).
+Severity is estimated jointly with population parameters theta via L-BFGS-B
+during training (Approach A), and predicted from baseline features at test
+time via a linear regression head (D25).
 
 References:
     - Vaghi et al. (2020) PLOS Computational Biology
     - Proust-Lima et al. (2014, 2023) lcmm R package
-    - Runje & Shankaranarayana (2023) ICML — CMNN
 
 Spec: ``docs/stages/stage_2_severity_model.md``
 """
@@ -38,6 +37,7 @@ from growth.stages.stage2_severity.growth_functions import (
     GrowthFunctionRegistry,
 )
 from growth.stages.stage2_severity.quantile_transform import QuantileTransform
+from growth.stages.stage2_severity.severity_regression import SeverityRegressionHead
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +47,8 @@ class SeverityFitResult:
     """Extended fit result with severity-specific diagnostics.
 
     Args:
-        severities: Estimated severity per patient, dict mapping patient_id → s_i.
-        population_params: Fitted population parameters θ.
+        severities: Estimated severity per patient, dict mapping patient_id to s_i.
+        population_params: Fitted population parameters theta.
         growth_function_name: Name of the growth function used.
         final_loss: Final optimization loss value.
         converged: Whether the optimizer converged.
@@ -62,15 +62,15 @@ class SeverityFitResult:
 
 
 class SeverityModel(GrowthModel):
-    """Latent severity NLME model for growth prediction.
+    """Latent severity NLME model for growth prediction (MLE).
 
-    Each patient is assigned a latent severity s_i ∈ [0, 1] that, together
-    with the shared population parameters θ, determines the growth trajectory
-    via a monotonic growth function g(s, t; θ).
+    Each patient is assigned a latent severity s_i in [0, 1] that, together
+    with the shared population parameters theta, determines the growth
+    trajectory via a monotonic growth function g(s, t; theta).
 
-    At training time, s_i and θ are jointly optimized via L-BFGS-B.
+    At training time, s_i and theta are jointly optimized via L-BFGS-B.
     At test time, severity is estimated from baseline features using a
-    simple linear regression head.
+    ridge regression head (D25).
 
     Args:
         growth_function: Name of the growth function (``"gompertz_reduced"``
@@ -78,6 +78,8 @@ class SeverityModel(GrowthModel):
         lambda_reg: L2 regularization on population parameters.
         n_restarts: Number of random restarts for optimization.
         max_iter: Maximum L-BFGS-B iterations per restart.
+        severity_features: Feature names for the severity regression head.
+            Default: ``["log_volume", "sphericity"]``.
         seed: Random seed for reproducibility.
     """
 
@@ -87,28 +89,31 @@ class SeverityModel(GrowthModel):
         lambda_reg: float = 0.01,
         n_restarts: int = 5,
         max_iter: int = 5000,
+        severity_features: list[str] | None = None,
         seed: int = 42,
     ) -> None:
         self._growth_fn: GrowthFunction = GrowthFunctionRegistry.get(growth_function)
         self._lambda_reg = lambda_reg
         self._n_restarts = n_restarts
         self._max_iter = max_iter
+        self._severity_features = severity_features or ["log_volume", "sphericity"]
         self._seed = seed
 
         # Fitted state
         self._qt: QuantileTransform | None = None
         self._severity_result: SeverityFitResult | None = None
-        self._severity_regression_weights: np.ndarray | None = None
-        self._severity_regression_bias: float = 0.0
-        self._train_patient_ids: list[str] = []
+        self._regression_head: SeverityRegressionHead | None = None
+        self._residual_std: float = 0.1
+        self._train_patient_ids: set[str] = set()
 
     def fit(self, patients: list[PatientTrajectory]) -> FitResult:
         """Fit severity model via joint MLE.
 
-        1. Compute growth values (Δ log-volume from baseline)
-        2. Fit quantile transform on pooled training data
-        3. Jointly optimize θ and {s_i} via L-BFGS-B
-        4. Fit severity regression head from baseline features
+        1. Compute growth values (delta log-volume from baseline)
+        2. Fit quantile transform on non-baseline observations
+        3. Jointly optimize theta and {s_i} via L-BFGS-B
+        4. Compute residual std for uncertainty estimation
+        5. Fit severity regression head from baseline features
 
         Args:
             patients: Training patient trajectories with D=1 observations.
@@ -117,46 +122,66 @@ class SeverityModel(GrowthModel):
             FitResult with optimization diagnostics.
         """
         rng = np.random.default_rng(self._seed)
-        self._train_patient_ids = [p.patient_id for p in patients]
+        self._train_patient_ids = {p.patient_id for p in patients}
 
         # 1. Compute growth values relative to baseline
-        all_times: list[float] = []
-        all_growths: list[float] = []
+        all_times_nonbaseline: list[float] = []
+        all_growths_nonbaseline: list[float] = []
         patient_data: list[tuple[np.ndarray, np.ndarray]] = []
 
         for p in patients:
             baseline = float(p.observations[0, 0])
-            growth = p.observations[:, 0] - baseline  # ΔV in log-space
+            growth = p.observations[:, 0] - baseline
             elapsed = p.times - p.times[0]
-            all_times.extend(elapsed.tolist())
-            all_growths.extend(growth.tolist())
             patient_data.append((elapsed, growth))
 
-        # 2. Fit quantile transform
+            # Exclude baseline (elapsed=0) from quantile transform fitting
+            for j in range(len(elapsed)):
+                if elapsed[j] > 0:
+                    all_times_nonbaseline.append(elapsed[j])
+                    all_growths_nonbaseline.append(growth[j])
+
+        # 2. Fit quantile transform on non-baseline data only
         self._qt = QuantileTransform()
-        self._qt.fit(np.array(all_times), np.array(all_growths))
+        if len(all_times_nonbaseline) > 0:
+            self._qt.fit(
+                np.array(all_times_nonbaseline),
+                np.array(all_growths_nonbaseline),
+            )
+        else:
+            # Degenerate case: all patients have only one timepoint
+            self._qt.fit(np.array([1.0]), np.array([0.0]))
 
         # Transform each patient to quantile space
+        # Handle baseline: t_q=0, q_g=0 at baseline; transform rest
         patient_quantiles: list[tuple[np.ndarray, np.ndarray]] = []
         for elapsed, growth in patient_data:
-            result = self._qt.transform(elapsed, growth)
-            patient_quantiles.append((result.t_quantile, result.q_growth))
+            n_tp = len(elapsed)
+            t_q = np.zeros(n_tp)
+            q_g = np.zeros(n_tp)
 
-        # 3. Joint optimization: θ + {s_i}
+            mask = elapsed > 0
+            if np.any(mask):
+                result = self._qt.transform(elapsed[mask], growth[mask])
+                t_q[mask] = result.t_quantile
+                q_g[mask] = result.q_growth
+
+            patient_quantiles.append((t_q, q_g))
+
+        # 3. Joint optimization: theta + {s_i}
         n_theta = self._growth_fn.n_params()
         n_patients = len(patients)
 
         best_loss = float("inf")
-        best_params = None
+        best_params: np.ndarray | None = None
+        best_converged = False
 
         for restart in range(self._n_restarts):
-            # Initialize: random θ within bounds, uniform s_i
             theta_bounds = self._growth_fn.param_bounds()
             theta_init = np.array([rng.uniform(lo, (lo + hi) / 2) for lo, hi in theta_bounds])
             s_init = rng.uniform(0.1, 0.9, size=n_patients)
             x0 = np.concatenate([theta_init, s_init])
 
-            # Bounds: θ bounds + [0, 1] for each s_i
             bounds = theta_bounds + [(0.01, 0.99)] * n_patients
 
             result = minimize(
@@ -170,10 +195,11 @@ class SeverityModel(GrowthModel):
 
             if result.fun < best_loss:
                 best_loss = result.fun
-                best_params = result.x
-                converged = result.success
+                best_params = result.x.copy()
+                best_converged = result.success
 
-        # Extract best results
+        assert best_params is not None, "No optimization succeeded"
+
         theta_opt = best_params[:n_theta]
         s_opt = best_params[n_theta:]
 
@@ -182,20 +208,30 @@ class SeverityModel(GrowthModel):
             population_params=theta_opt,
             growth_function_name=self._growth_fn.name(),
             final_loss=best_loss,
-            converged=converged,
+            converged=best_converged,
         )
 
         logger.info(
-            f"Severity model fit: loss={best_loss:.6f}, converged={converged}, "
-            f"θ={theta_opt}, severity range=[{s_opt.min():.3f}, {s_opt.max():.3f}]"
+            f"Severity model fit: loss={best_loss:.6f}, converged={best_converged}, "
+            f"theta={theta_opt}, severity range=[{s_opt.min():.3f}, {s_opt.max():.3f}], "
+            f"severity std={s_opt.std():.3f}"
         )
 
-        # 4. Fit severity regression head from baseline features
-        self._fit_severity_regression(patients, s_opt)
+        # 4. Compute residual std from training data
+        self._residual_std = self._compute_residual_std(patient_quantiles, theta_opt, s_opt)
+
+        # 5. Fit severity regression head
+        self._regression_head = SeverityRegressionHead(feature_names=self._severity_features)
+        self._regression_head.fit(patients, s_opt)
 
         return FitResult(
             log_marginal_likelihood=-best_loss,
-            hyperparameters={f"theta_{i}": float(v) for i, v in enumerate(theta_opt)},
+            hyperparameters={
+                **{f"theta_{i}": float(v) for i, v in enumerate(theta_opt)},
+                "severity_mean": float(s_opt.mean()),
+                "severity_std": float(s_opt.std()),
+                "residual_std": self._residual_std,
+            },
             n_train_patients=n_patients,
             n_train_observations=sum(p.n_timepoints for p in patients),
         )
@@ -211,11 +247,14 @@ class SeverityModel(GrowthModel):
         For held-out patients, severity is estimated from the regression head.
         For training patients, the fitted severity is used directly.
 
+        Predictions are made in quantile space, then inverse-transformed
+        to log-volume space via the fitted empirical CDF.
+
         Args:
             patient: Patient trajectory.
             t_pred: Query times, shape ``[n_pred]``.
-            n_condition: Number of observations to condition on (unused for
-                severity model; prediction depends on s_i, not on conditioning).
+            n_condition: Number of observations to condition on (unused;
+                severity model prediction depends on s_i, not conditioning).
 
         Returns:
             PredictionResult in log-volume space (not quantile space).
@@ -223,33 +262,38 @@ class SeverityModel(GrowthModel):
         assert self._severity_result is not None, "Call fit() first"
         assert self._qt is not None, "Call fit() first"
 
-        # Estimate severity
+        t_pred = np.asarray(t_pred, dtype=np.float64)
+        if t_pred.ndim == 0:
+            t_pred = t_pred[np.newaxis]
+
+        # Estimate severity: training patients use fitted, others use regression
         if patient.patient_id in self._severity_result.severities:
             s_i = self._severity_result.severities[patient.patient_id]
         else:
-            s_i = self._estimate_severity_from_features(patient)
+            s_i = self._regression_head.predict(patient) if self._regression_head else 0.5
 
-        # Predict in quantile space
+        # Compute elapsed prediction times from baseline
         baseline = float(patient.observations[0, 0])
         elapsed_pred = t_pred - patient.times[0]
 
         # Transform prediction times to quantile space
-        qt_result = self._qt.transform(elapsed_pred, np.zeros_like(elapsed_pred))
-        t_q = qt_result.t_quantile
+        # For elapsed=0, t_q=0 directly
+        t_q = np.zeros_like(elapsed_pred)
+        mask = elapsed_pred > 0
+        if np.any(mask):
+            qt_result = self._qt.transform(elapsed_pred[mask], np.zeros(int(mask.sum())))
+            t_q[mask] = qt_result.t_quantile
 
-        # Evaluate growth function
+        # Evaluate growth function in quantile space
         theta = self._severity_result.population_params
         q_pred = self._growth_fn(np.full_like(t_q, s_i), t_q, theta)
 
-        # Map back to log-volume space (approximate inverse via linear scaling)
-        # q ≈ 0 means no growth, q ≈ 1 means max growth in training set
-        all_growths = np.array(list(self._qt._all_growths))
-        growth_scale = np.percentile(all_growths, 95) if len(all_growths) > 0 else 1.0
-        pred_growth = q_pred * max(growth_scale, 0.01)
+        # Inverse quantile transform: q -> delta log-volume
+        pred_growth = self._qt.inverse_growth(q_pred)
         pred_log_vol = baseline + pred_growth
 
-        # Uncertainty: simple estimate from residual variance
-        sigma = max(np.std(all_growths) * 0.3, 0.01)
+        # Uncertainty from training residuals
+        sigma = max(self._residual_std, 0.01)
         variance = np.full_like(pred_log_vol, sigma**2)
         lower = pred_log_vol - 1.96 * sigma
         upper = pred_log_vol + 1.96 * sigma
@@ -262,6 +306,7 @@ class SeverityModel(GrowthModel):
         )
 
     def name(self) -> str:
+        """Human-readable model name."""
         fn_name = self._growth_fn.name() if self._growth_fn else "Unknown"
         return f"SeverityModel({fn_name})"
 
@@ -273,7 +318,7 @@ class SeverityModel(GrowthModel):
         """Joint optimization objective: MSE + L2 regularization.
 
         Args:
-            x: Concatenated [θ, s_1, ..., s_N].
+            x: Concatenated [theta, s_1, ..., s_N].
             patient_quantiles: Per-patient (t_quantile, q_growth) tuples.
 
         Returns:
@@ -292,94 +337,38 @@ class SeverityModel(GrowthModel):
             total_loss += np.sum((q_actual - q_pred) ** 2)
             n_total += len(t_q)
 
-        # Normalize by number of observations
         mse = total_loss / max(n_total, 1)
-
-        # L2 regularization on population params
         reg = self._lambda_reg * np.sum(theta**2)
 
         return mse + reg
 
-    def _fit_severity_regression(
+    def _compute_residual_std(
         self,
-        patients: list[PatientTrajectory],
+        patient_quantiles: list[tuple[np.ndarray, np.ndarray]],
+        theta: np.ndarray,
         severities: np.ndarray,
-    ) -> None:
-        """Fit a linear regression from baseline features to severity.
+    ) -> float:
+        """Compute residual standard deviation in log-volume space.
 
-        Features: [log_volume_baseline, + any available covariates]
-
-        Args:
-            patients: Training patients.
-            severities: Fitted severity values, shape ``[N]``.
+        Evaluates the fitted model on training data and computes the
+        std of (actual - predicted) in log-volume space (after inverse
+        quantile transform).
         """
-        # Build feature matrix: [log_vol_baseline, covariates...]
-        features: list[np.ndarray] = []
-        valid_indices: list[int] = []
+        residuals: list[float] = []
 
-        for i, p in enumerate(patients):
-            feat = [float(p.observations[0, 0])]  # log_vol at baseline
-            if p.covariates:
-                for key in sorted(p.covariates.keys()):
-                    feat.append(p.covariates[key])
-            features.append(np.array(feat))
-            valid_indices.append(i)
+        for i, (t_q, q_actual) in enumerate(patient_quantiles):
+            s_i = severities[i]
+            q_pred = self._growth_fn(np.full_like(t_q, s_i), t_q, theta)
 
-        if not features:
-            self._severity_regression_weights = None
-            return
+            # Convert both to growth space
+            actual_growth = self._qt.inverse_growth(q_actual)
+            pred_growth = self._qt.inverse_growth(q_pred)
+            residuals.extend((actual_growth - pred_growth).tolist())
 
-        # Ensure all feature vectors have the same length
-        max_len = max(len(f) for f in features)
-        X = np.zeros((len(features), max_len))
-        for i, f in enumerate(features):
-            X[i, : len(f)] = f
+        if len(residuals) < 2:
+            return 0.1
 
-        y = severities[valid_indices]
-
-        # Simple least-squares regression with regularization
-        # ŝ = X @ w + b
-        X_aug = np.column_stack([X, np.ones(len(X))])
-        reg_matrix = np.eye(X_aug.shape[1]) * 0.01
-        reg_matrix[-1, -1] = 0  # Don't regularize bias
-
-        try:
-            w = np.linalg.solve(X_aug.T @ X_aug + reg_matrix, X_aug.T @ y)
-            self._severity_regression_weights = w[:-1]
-            self._severity_regression_bias = float(w[-1])
-            logger.info(f"Severity regression fitted: {len(w) - 1} features")
-        except np.linalg.LinAlgError:
-            logger.warning("Severity regression failed; using mean severity as fallback")
-            self._severity_regression_weights = None
-            self._severity_regression_bias = float(np.mean(severities))
-
-    def _estimate_severity_from_features(self, patient: PatientTrajectory) -> float:
-        """Estimate severity for a new patient from baseline features (D25).
-
-        Args:
-            patient: Patient with at least one observation.
-
-        Returns:
-            Estimated severity in [0, 1].
-        """
-        if self._severity_regression_weights is None:
-            return self._severity_regression_bias
-
-        feat = [float(patient.observations[0, 0])]
-        if patient.covariates:
-            for key in sorted(patient.covariates.keys()):
-                feat.append(patient.covariates[key])
-
-        x = np.array(feat)
-        # Pad or truncate to match regression weights
-        n_w = len(self._severity_regression_weights)
-        if len(x) < n_w:
-            x = np.pad(x, (0, n_w - len(x)))
-        elif len(x) > n_w:
-            x = x[:n_w]
-
-        s_hat = float(np.dot(self._severity_regression_weights, x) + self._severity_regression_bias)
-        return np.clip(s_hat, 0.01, 0.99)
+        return float(np.std(residuals))
 
     @property
     def fitted_severities(self) -> dict[str, float] | None:
@@ -387,3 +376,8 @@ class SeverityModel(GrowthModel):
         if self._severity_result is None:
             return None
         return self._severity_result.severities
+
+    @property
+    def severity_fit_result(self) -> SeverityFitResult | None:
+        """Access the full severity fit result."""
+        return self._severity_result

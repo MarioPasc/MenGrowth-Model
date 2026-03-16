@@ -1,22 +1,62 @@
-# Stage 2: Latent Severity Model Configuration
-# Spec: docs/stages/stage_2_severity_model.md
+# experiments/stage2_severity/config.yaml
+# Stage 2: Latent Severity Model — Unified Configuration
+#
+# Supports both MLE (Option A) and Bayesian (Option B) estimation methods.
+# Switch via severity.estimation_method: mle | bayesian
+#
+# Install bayesian deps: pip install mengrowth-model[bayesian]
 
+experiment:
+  name: stage2_severity_model
+  seed: 42
+
+paths:
+  mengrowth_h5: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5
+  output_dir: experiments/stage2_severity/results
+  stage1_results: experiments/stage1_volumetric/results
+
+# Time variable: "ordinal" or "days_from_baseline" (when timestamps arrive)
+time:
+  variable: ordinal
+
+# Patient filtering
+patients:
+  exclude: [MenGrowth-0028]
+  min_timepoints: 2
+  skip_all_zero_volume: true
+
+# Semantic features loaded from H5 semantic/ group as covariates (100% coverage)
+semantic_covariates: [sphericity]
+
+# Severity model configuration
 severity:
+  estimation_method: mle  # mle | bayesian
   growth_function: gompertz_reduced  # gompertz_reduced | weighted_sigmoid
+
+  # Features for test-time severity regression head
+  severity_features: [log_volume, sphericity]
+
+  # MLE-specific (Option A)
   optimization:
-    method: lbfgsb
     max_iter: 5000
-    n_restarts: 5
+    n_restarts: 10
     lambda_reg: 0.01
-  severity_estimation:
-    features: [log_volume, age, sex, sphericity]
-    model: linear_regression
 
-evaluation:
-  cv: lopo
-  prediction_protocols: [last_from_rest, all_from_first]
-  bootstrap:
-    n_bootstrap: 2000
-    confidence_level: 0.95
+  # Bayesian-specific (Option B) — requires pip install mengrowth-model[bayesian]
+  mcmc:
+    n_warmup: 500
+    n_samples: 1000
+    n_chains: 2
 
-seed: 42
+# Bootstrap CIs on LOPO-CV metrics
+bootstrap:
+  enabled: true
+  n_samples: 2000
+  confidence_level: 0.95
+  seed: 42
+
+# Stage 1 comparison (paired permutation test)
+comparison:
+  enabled: true
+  permutation_test_n: 10000
+  significance_level: 0.05

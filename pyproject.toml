@@ -84,6 +84,15 @@ vae = [
     "scikit-image>=0.21.0",
 ]
 
+# Bayesian severity model (Stage 2, Option B)
+# Pin jax<0.5 and numpyro<0.16 for numpy<2.0 compatibility (GPy constraint)
+bayesian = [
+    "numpyro>=0.15.0,<0.16",
+    "jax>=0.4.20,<0.5",
+    "jaxlib>=0.4.20,<0.5",
+    "arviz>=0.18.0",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
@@ -94,7 +103,7 @@ dev = [
 
 # All optional dependencies combined
 all = [
-    "mengrowth-model[vae,dev]",
+    "mengrowth-model[vae,bayesian,dev]",
 ]
 
 [project.urls]
@@ -184,6 +193,9 @@ module = [
     "GPy.*",
     "statsmodels.*",
     "einops.*",
+    "numpyro.*",
+    "jax.*",
+    "arviz.*",
 ]
 ignore_missing_imports = true
 

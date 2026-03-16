@@ -54,8 +54,12 @@ VARIANCE DECOMPOSITION:
 | 1 | Stage 1 orchestrator | COMPLETE | experiments/stage1_volumetric/run_stage1.py |
 | 1 | Stage 1 tests | COMPLETE | tests/growth/test_stage1_pipeline.py (33 tests) |
 | 1 | **Stage 1 LOPO-CV** | **EVALUATED** | LME R²=0.028 (best), CI includes 0 |
-| 2 | Quantile transform | NOT STARTED | quantile_transform.py (new) |
-| 2 | Severity model | NOT STARTED | severity_model.py (new) |
+| 2 | Quantile transform | COMPLETE | stage2_severity/quantile_transform.py |
+| 2 | Severity model (MLE) | COMPLETE | stage2_severity/severity_model.py |
+| 2 | Severity model (Bayesian) | COMPLETE | stage2_severity/bayesian_severity_model.py |
+| 2 | Severity regression head | COMPLETE | stage2_severity/severity_regression.py |
+| 2 | Stage 2 tests | COMPLETE | test_stage2_severity.py + test_stage2_bayesian.py (48 tests) |
+| 2 | **Stage 2 LOPO-CV** | **EVALUATED** | R²=-3.54 (does not beat Stage 1 on ordinal time) |
 | 3 | LoRA adaptation | COMPLETE | experiments/lora/ |
 | 3 | SDP network | COMPLETE | src/growth/models/projection/ |
 | 3 | PCA + ARD GP pipeline | NOT STARTED | deep_feature_gp.py (new) |
@@ -170,7 +174,7 @@ Project root: `/home/mpascual/research/code/MenGrowth-Model/`. Agent environment
 | Experiment | Path | Stage | Status |
 |------------|------|-------|--------|
 | Volumetric baseline | `experiments/stage1_volumetric/` | 1 | EVALUATED (LME R²=0.028) |
-| Severity model | `experiments/stage2_severity/` | 2 | NOT STARTED |
+| Severity model | `experiments/stage2_severity/` | 2 | EVALUATED (R²=-3.54, ordinal time) |
 | LoRA ablation | `experiments/stage3_latent/lora/` | 3 | COMPLETE |
 | SDP training | `experiments/stage3_latent/sdp/` | 3 | COMPLETE |
 | Domain gap analysis | `experiments/stage3_latent/domain_gap/` | 3 | COMPLETE |
@@ -326,7 +330,7 @@ metadata/        {grade, age, sex}
 
 ## 12. Key Libraries
 
-PyTorch 2.0+, MONAI 1.3+, Lightning 2.0+, OmegaConf, peft (LoRA/DoRA), GPy>=1.13, statsmodels>=0.14, scipy>=1.9, scikit-learn, rich
+PyTorch 2.0+, MONAI 1.3+, Lightning 2.0+, OmegaConf, peft (LoRA/DoRA), GPy>=1.13, statsmodels>=0.14, scipy>=1.9, scikit-learn, rich, numpyro==0.15.3 + jax==0.4.30 (optional, for Bayesian severity model — pin for GPy/numpy<2.0 compat)
 
 ## 13. Legacy Note
 

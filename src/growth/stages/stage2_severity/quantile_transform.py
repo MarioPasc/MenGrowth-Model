@@ -5,11 +5,17 @@ Maps raw observation times and growth values to [0, 1] quantile space using
 empirical CDFs. This is a rank-based nonlinear transformation that destroys
 magnitude information — by design (see D23).
 
+Also provides inverse quantile transform for mapping predicted growth
+quantiles back to delta-log-volume space.
+
 Usage::
 
     qt = QuantileTransform()
     qt.fit(all_times, all_growths)
-    t_q, g_q = qt.transform(patient_times, patient_growths)
+    result = qt.transform(patient_times, patient_growths)
+
+    # Inverse: predicted quantile -> delta log-volume
+    delta_log_vol = qt.inverse_growth(q_predicted)
 """
 
 import logging
@@ -39,24 +45,21 @@ class QuantileTransform:
 
     Fits empirical CDFs on pooled training data, then transforms individual
     patients' observations to quantile space. The transform ensures:
-    - t_quantile ∈ (0, 1) for all observations
-    - q_growth ∈ [0, 1] with q(baseline) = 0 by convention
+    - t_quantile in (0, 1) for all observations
+    - q_growth in [0, 1] with q(baseline) = 0 by convention
 
     Warning:
         This is a rank-based transform that destroys magnitude information.
-        A 1 cm³ growth and a 100 cm³ growth may be adjacent in quantile space.
+        A 1 cm^3 growth and a 100 cm^3 growth may be adjacent in quantile space.
         This is intentional per the advisor's proposal (D23).
-
-    Args:
-        time_key: Whether to use ``"elapsed"`` (days/months from baseline) or
-            ``"ordinal"`` (timepoint index) for the time quantile.
     """
 
-    def __init__(self, time_key: str = "elapsed") -> None:
-        self.time_key = time_key
+    def __init__(self) -> None:
         self._fitted = False
         self._all_times: np.ndarray | None = None
         self._all_growths: np.ndarray | None = None
+        self._sorted_growths: np.ndarray | None = None
+        self._growth_ecdf_values: np.ndarray | None = None
 
     def fit(
         self,
@@ -65,10 +68,14 @@ class QuantileTransform:
     ) -> "QuantileTransform":
         """Fit the empirical CDFs on pooled training data.
 
+        Should receive only **non-baseline** observations (elapsed > 0).
+        Baseline observations (growth=0, elapsed=0) are handled separately
+        by the severity model.
+
         Args:
             all_times: Elapsed times from baseline for ALL training observations,
                 shape ``[N_total]``.
-            all_growths: Growth values (ΔV or log-ratio) for ALL training
+            all_growths: Growth values (delta log-volume) for ALL training
                 observations, shape ``[N_total]``.
 
         Returns:
@@ -76,6 +83,12 @@ class QuantileTransform:
         """
         self._all_times = np.asarray(all_times, dtype=np.float64)
         self._all_growths = np.asarray(all_growths, dtype=np.float64)
+
+        # Pre-compute sorted growths and their ECDF values for inverse_growth()
+        self._sorted_growths = np.sort(self._all_growths)
+        n = len(self._sorted_growths)
+        self._growth_ecdf_values = np.arange(1, n + 1) / (n + 1)
+
         self._fitted = True
         logger.info(
             f"QuantileTransform fitted on {len(self._all_times)} observations. "
@@ -106,11 +119,47 @@ class QuantileTransform:
         times = np.asarray(times, dtype=np.float64)
         growths = np.asarray(growths, dtype=np.float64)
 
-        # Compute quantiles by ranking within the fitted distribution
         t_q = self._ecdf(times, self._all_times)
         g_q = self._ecdf(growths, self._all_growths)
 
         return QuantileTransformResult(t_quantile=t_q, q_growth=g_q)
+
+    def inverse_growth(self, q: np.ndarray) -> np.ndarray:
+        """Inverse quantile transform: growth quantile -> delta log-volume.
+
+        Uses linear interpolation on the sorted empirical CDF of the
+        training growth values.
+
+        Args:
+            q: Growth quantiles in [0, 1], shape ``[n]``.
+
+        Returns:
+            Estimated delta log-volume values, shape ``[n]``.
+        """
+        assert self._fitted, "Call fit() before inverse_growth()"
+        q = np.asarray(q, dtype=np.float64)
+
+        return np.interp(
+            q,
+            self._growth_ecdf_values,
+            self._sorted_growths,
+            left=self._sorted_growths[0],
+            right=self._sorted_growths[-1],
+        )
+
+    @property
+    def growth_std(self) -> float:
+        """Standard deviation of growth values in the reference distribution."""
+        if self._all_growths is None or len(self._all_growths) == 0:
+            return 0.01
+        return float(np.std(self._all_growths))
+
+    @property
+    def n_reference(self) -> int:
+        """Number of reference observations used for fitting."""
+        if self._all_growths is None:
+            return 0
+        return len(self._all_growths)
 
     def fit_transform(
         self,
@@ -146,7 +195,6 @@ class QuantileTransform:
         combined = np.concatenate([reference, values])
         ranks = rankdata(combined, method="average")
         n = len(reference)
-        # Extract ranks of the query values (last m entries)
         query_ranks = ranks[n:]
         quantiles = query_ranks / (len(combined) + 1)
         return np.clip(quantiles, 0.001, 0.999)
