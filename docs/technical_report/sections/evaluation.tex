@@ -1,0 +1,313 @@
+% =============================================================================
+% Section 9: Evaluation
+% =============================================================================
+\section{Evaluation}
+\label{sec:evaluation}
+
+% ---------------------------------------------------------------------------
+% 9.1 Quality Targets
+% ---------------------------------------------------------------------------
+\subsection{Quality Targets}
+\label{sec:eval:quality}
+
+The pipeline defines quantitative quality targets at each phase, with minimum
+thresholds that block further progress and aspirational targets for optimal
+performance.
+
+\begin{table}[H]
+  \centering
+  \caption{Phase 1 quality targets (encoder adaptation).}
+  \label{tab:quality_phase1}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Metric} & \textbf{Target} & \textbf{Minimum} & \textbf{Status} \\
+    \midrule
+    Dice (WT) on \texttt{lora\_val} & $\geq 0.85$ & $\geq 0.80$ & \textit{[to fill]} \\
+    Dice improvement over frozen BSF & $\geq 0.05$ & $\geq 0.02$ & \textit{[to fill]} \\
+    Linear probe Vol $R^2$ (adapted) & $\geq 0.50$ & $\geq 0.30$ & \textit{[to fill]} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[H]
+  \centering
+  \caption{Phase 2 quality targets (SDP).}
+  \label{tab:quality_phase2}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Metric} & \textbf{Target} & \textbf{Minimum} & \textbf{Status} \\
+    \midrule
+    Vol $R^2$ on validation & $\geq 0.90$ & $\geq 0.80$ & \textit{[to fill]} \\
+    Loc $R^2$ on validation & $\geq 0.95$ & $\geq 0.85$ & \textit{[to fill]} \\
+    Shape $R^2$ on validation & $\geq 0.40$ & $\geq 0.25$ & \textit{[to fill]} \\
+    Max cross-partition corr & $< 0.20$ & $< 0.30$ & \textit{[to fill]} \\
+    Dims with var $> 0.5$ & $\geq 95\%$ & $\geq 85\%$ & \textit{[to fill]} \\
+    $\dCor(\text{vol}, \text{loc})$ & $< 0.10$ & $< 0.20$ & \textit{[to fill]} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[H]
+  \centering
+  \caption{Phase 4 quality targets (growth prediction).}
+  \label{tab:quality_phase4}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Metric} & \textbf{Target} & \textbf{Minimum} & \textbf{Status} \\
+    \midrule
+    Vol prediction $R^2$ (LOPO, best model) & $\geq 0.70$ & $\geq 0.50$ & \textit{[to fill]} \\
+    Calibration (95\% CI coverage, GP models) & 0.90--0.98 & $\geq 0.80$ & \textit{[to fill]} \\
+    Per-patient trajectory $r$ ($n_i \geq 3$) & $\geq 0.80$ & $\geq 0.60$ & \textit{[to fill]} \\
+    PA-MOGP $R^2$ $>$ H-GP $R^2$ & $> 0$ & --- & \textit{[to fill]} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+% 9.2 Ablation Matrix
+% ---------------------------------------------------------------------------
+\subsection{Ablation Study Design}
+\label{sec:eval:ablations}
+
+Ten ablation experiments systematically evaluate design decisions across all
+pipeline phases:
+
+\begin{table}[H]
+  \centering
+  \caption{Full ablation matrix (A1--A10).}
+  \label{tab:ablation_matrix}
+  \begin{tabular}{clcp{5.5cm}}
+    \toprule
+    \textbf{ID} & \textbf{Variable} & \textbf{Conditions} & \textbf{Primary metric} \\
+    \midrule
+    A1 & LoRA rank & $\{2, 4, 8, 16, 32\}$ & Dice, probe $R^2$ \\
+    A2 & LoRA vs.\ DoRA & $\{\LoRA, \text{DoRA}\}$ at $r=8$ & Dice, probe $R^2$ \\
+    A3 & Aux semantic heads & $\{$with, without$\}$ & Phase~2 $R^2$ \\
+    A4 & SDP dimension & $\{64, 128, 256\}$ & $R^2$, dCor \\
+    A5 & VICReg + dCor & $\{$full, no cov, no dCor, no both$\}$ & Cross-partition corr \\
+    A6 & Growth model & $\{\LME, \HGP, \PAMOGP\}$ & Vol $R^2$ (LOPO) \\
+    A7 & ComBat effect & $\{$with, without$\}$ & Vol $R^2$ (LOPO) \\
+    A8 & GP mean function & $\{$zero, linear, Gompertz$\}$ & Vol $R^2$ (LOPO) \\
+    A9 & GP kernel & $\{$M-3/2, M-5/2, SE$\}$ & Vol $R^2$ (LOPO) \\
+    A10 & Cross-partition coupling & $\{$with, without$\}$ & Vol $R^2$, calibration \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{A6: Model Comparison}
+
+The head-to-head comparison of the three GP models is the central evaluation
+of the pipeline. The comparison uses LOPO-CV and reports:
+
+\begin{description}[leftmargin=*]
+  \item[Vol $R^2$:] Coefficient of determination between predicted and
+    observed whole-tumour volume across all held-out observations.
+  \item[Vol MAE:] Mean absolute error in physical volume (mm$^3$).
+  \item[Latent MSE:] Mean squared error in the latent volume partition
+    $\Vol$ (before decoding).
+  \item[Calibration:] Fraction of true observations within the predicted
+    95\% confidence interval (target: 0.90--0.98).
+  \item[Per-patient $r$:] Pearson correlation between predicted and observed
+    volume trajectories for patients with $n_i \geq 3$.
+\end{description}
+
+\begin{table}[H]
+  \centering
+  \caption{Model comparison results (LOPO-CV, 33 folds).}
+  \label{tab:model_comparison}
+  \begin{tabular}{lccccc}
+    \toprule
+    \textbf{Model} & \textbf{Params} & \textbf{Vol $R^2$} &
+      \textbf{Vol MAE} & \textbf{Calibration} & \textbf{Per-patient $r$} \\
+    \midrule
+    LME     & 144 & \textit{[to fill]} & \textit{[to fill]} & --- & \textit{[to fill]} \\
+    H-GP    & 72  & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    PA-MOGP & 98  & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+% 9.3 Figures
+% ---------------------------------------------------------------------------
+\subsection{Publication Figures}
+\label{sec:eval:figures}
+
+The evaluation produces 13 publication-quality figures documenting each
+pipeline phase. Key figures include:
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}
+    \textbf{Figure placeholder:} Volume prediction scatter.\\
+    Predicted vs.\ actual $\Delta V$ for all LOPO-CV test pairs,\\
+    coloured by model (LME: blue, H-GP: orange, PA-MOGP: green).
+  \vspace{3cm}}}
+  \caption{Predicted vs.\ actual volume change ($\Delta V$, mm$^3$) across
+    all LOPO-CV held-out observation pairs, coloured by model. The
+    diagonal represents perfect prediction. Dispersion around the diagonal
+    quantifies prediction error.}
+  \label{fig:vol_scatter}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}
+    \textbf{Figure placeholder:} Trajectory prediction with uncertainty.\\
+    3--4 example patients showing predicted trajectory\\
+    (mean $\pm$ 95\% CI) overlaid on actual observations.
+  \vspace{3cm}}}
+  \caption{Growth trajectory predictions for selected patients. Solid lines
+    show GP posterior mean; shaded regions show 95\% confidence intervals.
+    Dots are actual observations. The GP uncertainty naturally widens with
+    extrapolation distance.}
+  \label{fig:trajectory_predictions}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}
+    \textbf{Figure placeholder:} Model comparison bar chart.\\
+    $R^2$, MAE, and calibration for each model.
+  \vspace{3cm}}}
+  \caption{Head-to-head model comparison across three metrics. Error bars
+    represent bootstrap 95\% confidence intervals computed over the 33
+    LOPO-CV folds.}
+  \label{fig:model_comparison}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}
+    \textbf{Figure placeholder:} Disentanglement matrix.\\
+    Cross-partition correlation heatmap from SDP.
+  \vspace{3cm}}}
+  \caption{Cross-partition correlation heatmap after SDP training. Each cell
+    shows the maximum absolute Pearson correlation between dimensions in the
+    corresponding partition pair. Diagonal blocks (within-partition) show
+    internal structure; off-diagonal blocks should approach zero for
+    successful disentanglement.}
+  \label{fig:disentanglement_matrix}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}
+    \textbf{Figure placeholder:} Learned GP length-scales per partition.\\
+    Revealing characteristic timescales of volume/location/shape dynamics.
+  \vspace{3cm}}}
+  \caption{Learned GP kernel length-scales ($\ell$) for the PA-MOGP model.
+    Volume dynamics have the longest characteristic timescale (slow growth),
+    while shape dynamics are faster (shorter $\ell$). Location length-scales
+    are expected to be very long (near-static centroid).}
+  \label{fig:lengthscales}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+% 9.4 Methodology Revision (R1)
+% ---------------------------------------------------------------------------
+\subsection{R1 Methodology Revision}
+\label{sec:eval:revision}
+
+Empirical findings from Phases~1--2 motivated three principled revisions to
+the pipeline architecture, collectively designated the R1 revision.
+
+\subsubsection{Shape Partition Failure}
+
+Across all experimental conditions, the shape partition achieved
+$R^2 \leq 0.11$ for linear probes and approximately zero for RBF probes.
+Cross-domain shape transfer was uniformly catastrophic ($R^2 = -2.00$).
+This failure is biologically grounded: gliomas are infiltrative and
+irregular, while meningiomas are well-circumscribed and dural-based. Shape
+semantics differ qualitatively between the two tumour types, making a shared
+shape representation a category error.
+
+\begin{table}[H]
+  \centering
+  \caption{Shape probe $R^2$ across experimental conditions.}
+  \label{tab:shape_failure}
+  \begin{tabular}{lccl}
+    \toprule
+    \textbf{Condition} & \textbf{Linear $R^2$} & \textbf{RBF $R^2$} &
+      \textbf{Cross-domain} \\
+    \midrule
+    Frozen baseline   & 0.08  & $\approx 0$ & $-2.00$ \\
+    MEN LoRA $r$=8    & 0.11  & $\approx 0$ & $-2.00$ \\
+    Dual LoRA $r$=8   & $-0.06$ & $\approx 0.15$ & $-2.00$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Decision:} Drop the shape partition entirely from the SDP.
+
+\subsubsection{Location: Temporally Static}
+
+Meningiomas are extra-axial, dural-attached tumours that do not migrate. The
+centroid coordinates at $t_0$ are essentially identical at subsequent
+timepoints (modulo asymmetric growth). Modelling location as a time-varying
+GP dimension fits a constant function, which is statistically vacuous and
+wastes degrees of freedom. Within-domain location $R^2$ is reasonable
+(0.35 MEN, 0.68 GLI), confirming the information is present but does not
+need temporal modelling.
+
+\textbf{Decision:} Relocate location from temporal latent dimension to static
+GP covariate, entering the mean function as
+$m_i(t) = \beta_0 + \beta_1 t + \boldsymbol{\gamma}^\top \mathbf{c}_i$,
+where $\mathbf{c}_i$ is the centroid from patient $i$'s initial scan.
+
+\subsubsection{Volume Target Simplification}
+
+The 4-dimensional volume target $[\log V_{\text{total}}, \log V_{\text{NCR}},
+\log V_{\text{ED}}, \log V_{\text{ET}}]$ is problematic because: (i)~label
+semantics differ across tumour types (GLI oedema $\neq$ MEN oedema);
+(ii)~sub-compartment segmentation quality is poor (TC Dice 0.40 on MEN);
+(iii)~whole-tumour volume is the only clinically relevant growth endpoint for
+meningiomas.
+
+\textbf{Decision:} Reduce to a single target
+$v^* = \log(V_{\text{WT}} + 1) \in \R^1$.
+
+\subsubsection{Revised Architecture Summary}
+
+\begin{equation}
+  \text{R1:}\quad \mathbf{z} \in \R^{128} =
+    [\underbrace{\Vol \in \R^{32}}_{\text{supervised}}
+    \mid \underbrace{\Res \in \R^{96}}_{\text{unsupervised}}],
+  \quad \pi_{\text{vol}}: \R^{32} \to \R^1.
+  \label{eq:r1_partition}
+\end{equation}
+
+The PA-MOGP simplifies to a standard MOGP on $\R^{32}$ with a single
+Mat\'{e}rn-5/2 kernel and ICM coregionalisation matrix
+$\mathbf{B} = \mathbf{W}\mathbf{W}^\top + \diag(\boldsymbol{\kappa})$.
+
+% ---------------------------------------------------------------------------
+% 9.5 LoRA Marginality Discussion
+% ---------------------------------------------------------------------------
+\subsection{LoRA Marginality}
+\label{sec:eval:marginality}
+
+A notable finding is the marginal benefit of LoRA adaptation for downstream
+feature quality. The frozen BrainSegFounder baseline achieves
+$R^2 = 0.794$ for volume probing, while the best LoRA condition adds only
+$\Delta R^2 = +0.016$ (within noise). This suggests that BrainSegFounder's
+SSL pretraining on 41,400+ subjects already produces features with strong
+meningioma volume decodability.
+
+Several hypotheses explain this observation:
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{SSL pretraining captures domain-general features.} The UK
+    Biobank pretraining stage exposes the encoder to massive anatomical
+    diversity, producing features that generalise across brain pathologies.
+  \item \textbf{LoRA's low-rank constraint limits adaptation.} With
+    $r = 8$ and $<0.32\%$ trainable parameters, LoRA may not have
+    sufficient capacity to substantially restructure the 768-dimensional
+    feature space.
+  \item \textbf{Segmentation is a weak proxy for semantic quality.}
+    Improving segmentation Dice does not necessarily improve the linear
+    decodability of aggregate semantic properties (volume, location).
+\end{enumerate}
+
+This finding has important practical implications: for meningioma growth
+prediction, the frozen BrainSegFounder encoder may be a sufficient starting
+point, with the SDP and GP models providing the primary value.

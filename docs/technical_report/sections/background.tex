@@ -1,0 +1,318 @@
+% =============================================================================
+% Section 2: Background and Related Work
+% =============================================================================
+\section{Background and Related Work}
+\label{sec:background}
+
+% ---------------------------------------------------------------------------
+% 2.1 Foundation Models for Brain MRI
+% ---------------------------------------------------------------------------
+\subsection{Foundation Models for Brain MRI}
+\label{sec:bg:foundation}
+
+The paradigm of pretraining large encoder--decoder architectures on massive,
+diverse datasets and subsequently fine-tuning on downstream tasks has
+transformed medical image analysis \cite{he2023foundation,moor2023foundation}.
+BrainSegFounder \cite{cox2024brainsegfounder} instantiates this paradigm for
+3D brain MRI segmentation through a three-stage training pipeline:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Self-supervised pretraining.} A SwinUNETR encoder
+    \cite{hatamizadeh2022swinunetr,tang2022self} is pretrained on 41,400+
+    brain MRI subjects from the UK Biobank using a combination of masked image
+    modelling, contrastive learning, and rotation prediction. This stage uses a
+    $96^3$ voxel region-of-interest (ROI) and produces general-purpose
+    anatomical features.
+
+  \item \textbf{Supervised pretraining.} The encoder is paired with the
+    SwinUNETR decoder and trained on the BraTS~2021 glioma segmentation
+    benchmark \cite{baid2021rsna} at $128^3$ ROI, producing tumour-specific
+    features.
+
+  \item \textbf{Per-fold fine-tuning.} Final fine-tuning on BraTS~2021 with
+    cross-validation yields the released checkpoints.
+\end{enumerate}
+
+\subsubsection{SwinUNETR Architecture}
+
+SwinUNETR combines the Swin Transformer \cite{liu2021swin} with a
+UNet-style encoder--decoder structure. The encoder consists of a patch
+embedding layer followed by four transformer stages with shifted window
+self-attention. For BSF-Tiny (the variant used in this work), the
+architectural parameters are:
+
+\begin{table}[H]
+  \centering
+  \caption{SwinUNETR encoder (BSF-Tiny) architecture. Input: $[B, 4, 128^3]$.}
+  \label{tab:swinunetr_arch}
+  \begin{tabular}{lcccc}
+    \toprule
+    \textbf{Stage} & \textbf{Output shape} & \textbf{Channels} & \textbf{Heads} & \textbf{Blocks} \\
+    \midrule
+    Patch embed & $[B, 48, 64^3]$  & 48  & --- & --- \\
+    Stage 1     & $[B, 96, 32^3]$  & 96  & 3   & 2 \\
+    Stage 2     & $[B, 192, 16^3]$ & 192 & 6   & 2 \\
+    Stage 3     & $[B, 384, 8^3]$  & 384 & 12  & 2 \\
+    Stage 4     & $[B, 768, 4^3]$  & 768 & 24  & 2 \\
+    encoder10   & $[B, 768, 4^3]$  & 768 & --- & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The bottleneck layer \texttt{encoder10} applies a residual convolutional
+block preserving the $768$-channel, $4^3$-spatial resolution from Stage~4.
+Global Average Pooling (GAP) over the spatial dimensions produces the feature
+vector $\mathbf{h} \in \R^{768}$ used throughout our pipeline.
+
+The segmentation decoder mirrors the encoder with skip connections, producing
+a 3-channel sigmoid output following the BraTS convention: Channel~0 encodes
+Tumour Core (TC), Channel~1 encodes Whole Tumour (WT), and Channel~2 encodes
+Enhancing Tumour (ET), using hierarchical overlapping labels rather than
+mutually exclusive classes.
+
+% ---------------------------------------------------------------------------
+% 2.2 Low-Rank Adaptation (LoRA)
+% ---------------------------------------------------------------------------
+\subsection{Low-Rank Adaptation}
+\label{sec:bg:lora}
+
+Low-Rank Adaptation (LoRA) \cite{hu2022lora} provides parameter-efficient
+fine-tuning by injecting trainable rank-$r$ decompositions into frozen
+pretrained weight matrices. For a pretrained weight matrix
+$\mathbf{W}_0 \in \R^{d \times k}$, LoRA parameterises the adapted weight as:
+\begin{equation}
+  \mathbf{W} = \mathbf{W}_0 + \frac{\alpha}{r}\, \mathbf{B}\mathbf{A},
+  \quad \mathbf{B} \in \R^{d \times r},\; \mathbf{A} \in \R^{r \times k},
+  \label{eq:lora}
+\end{equation}
+where $r \ll \min(d, k)$ is the rank, $\alpha$ is a scaling hyperparameter,
+$\mathbf{A}$ is initialised from $\mathcal{N}(0, \sigma^2)$, and
+$\mathbf{B} = \mathbf{0}$ so that the adapted model initially reproduces the
+pretrained model exactly. The number of trainable parameters per adapted layer
+is $r(d + k)$, compared to $dk$ for full fine-tuning.
+
+The theoretical foundation rests on the observation by Aghajanyan et al.\
+\cite{aghajanyan2021intrinsic} that pretrained language models have a low
+intrinsic dimensionality: the parameter space can be projected to a
+low-dimensional subspace without significant loss in fine-tuning performance.
+LoRA operationalises this insight by constraining the weight update to lie in a
+rank-$r$ subspace.
+
+\textbf{DoRA} \cite{liu2024dora} extends LoRA by decomposing the weight
+update into magnitude and direction components:
+\begin{equation}
+  \mathbf{W} = m \cdot \frac{\mathbf{W}_0 + \mathbf{B}\mathbf{A}}
+    {\|\mathbf{W}_0 + \mathbf{B}\mathbf{A}\|_c},
+  \label{eq:dora}
+\end{equation}
+where $m$ is a learnable magnitude vector and $\|\cdot\|_c$ denotes
+column-wise normalisation. This decomposition was shown to more closely
+approximate full fine-tuning behaviour in language models; we evaluate it as
+an ablation condition (A2, \cref{sec:eval:ablations}).
+
+% ---------------------------------------------------------------------------
+% 2.3 Supervised Disentangled Projection
+% ---------------------------------------------------------------------------
+\subsection{Disentangled Representation Learning}
+\label{sec:bg:disentanglement}
+
+Disentangled representations encode independent generative factors of
+variation in separate latent dimensions or subspaces. Higgins et al.\
+\cite{higgins2018towards} formalised this via group theory: a representation
+is disentangled with respect to a group decomposition
+$G = G_1 \times \cdots \times G_n$ if there exists a corresponding
+decomposition $Z = Z_1 \oplus \cdots \oplus Z_n$ where each $Z_i$ is affected
+only by $G_i$.
+
+The impossibility theorem of Locatello et al.\ \cite{locatello2019challenging}
+established that unsupervised disentanglement is theoretically impossible
+without inductive biases: for any generative model producing disentangled
+representations, there exists another model with identical marginal
+distribution but entangled latents. Their follow-up work
+\cite{locatello2020disentangling} demonstrated that as few as 100 labelled
+examples suffice to resolve this impossibility through supervision.
+
+These results motivate our Supervised Disentangled Projection (SDP) approach:
+rather than relying on VAE-based unsupervised disentanglement (which we
+empirically found to suffer from posterior collapse and KL distortion), we
+use explicit semantic supervision from segmentation-derived features to
+anchor each latent partition to a known generative factor.
+
+\subsubsection{VICReg Regularisation}
+
+VICReg \cite{bardes2022vicreg} defines three regularisation terms for
+representation learning. The \textit{variance} term prevents dimensional
+collapse via a hinge loss on per-dimension standard deviation:
+\begin{equation}
+  \mathcal{L}_{\text{var}}(\mathbf{Z}) = \frac{1}{d}\sum_{j=1}^{d}
+    \max\!\bigl(0,\; \gamma - \sqrt{\operatorname{Var}(z^{(j)}) + \epsilon}
+    \,\bigr),
+  \label{eq:vicreg_var}
+\end{equation}
+where $\gamma = 1$ is the target standard deviation. The \textit{covariance}
+term decorrelates dimensions by penalising off-diagonal elements of the batch
+covariance matrix $\mathbf{C}$:
+\begin{equation}
+  \mathcal{L}_{\text{cov}}(\mathbf{Z}) = \frac{1}{d}\sum_{i \neq j}
+    C_{ij}^2.
+  \label{eq:vicreg_cov}
+\end{equation}
+
+\subsubsection{Distance Correlation}
+
+VICReg's covariance penalty captures only linear dependencies. Distance
+correlation \cite{szekely2007measuring} detects all forms of statistical
+dependence between random vectors $X$ and $Y$ of potentially different
+dimensions:
+\begin{equation}
+  \dCor(X, Y) = \frac{\dCov(X, Y)}
+    {\sqrt{\dVar(X) \cdot \dVar(Y)}},
+  \label{eq:dcor}
+\end{equation}
+where $\dCov$ is computed from doubly-centred pairwise distance matrices.
+Critically, $\dCor(X, Y) = 0$ if and only if $X \perp\!\!\!\perp Y$ (for
+random vectors with finite first moments), providing a necessary and
+sufficient condition for statistical independence.
+
+\subsubsection{Spectral Normalisation}
+
+Spectral normalisation \cite{miyato2018spectral} constrains each linear layer
+$\mathbf{W}$ by dividing by its largest singular value
+$\sigma(\mathbf{W})$, yielding a weight matrix with spectral norm exactly~1.
+For an $L$-layer MLP with 1-Lipschitz activations (e.g., ReLU, GELU), this
+bounds the global Lipschitz constant: $\operatorname{Lip}(f) \leq
+\prod_{\ell=1}^{L} 1 = 1$. The contraction property
+$\|\mathbf{z}_1 - \mathbf{z}_2\| \leq \|\mathbf{h}_1 - \mathbf{h}_2\|$
+ensures that encoder feature noise is not amplified through the projection,
+which is essential for stable downstream GP prediction
+\cite{gouk2021regularisation}.
+
+% ---------------------------------------------------------------------------
+% 2.4 Gaussian Process Regression
+% ---------------------------------------------------------------------------
+\subsection{Gaussian Process Regression}
+\label{sec:bg:gp}
+
+A Gaussian process (GP) is a distribution over functions such that any finite
+collection of function values is jointly Gaussian
+\cite{rasmussen2006gaussian}:
+\begin{equation}
+  f(\mathbf{t}) \sim \GP\bigl(m(\mathbf{t}),\; k(\mathbf{t}, \mathbf{t}')\bigr),
+  \label{eq:gp_def}
+\end{equation}
+where $m(\mathbf{t})$ is the mean function and $k(\mathbf{t}, \mathbf{t}')$
+is the covariance (kernel) function. Given $n$ observations
+$\mathbf{y} = f(\mathbf{t}) + \boldsymbol{\epsilon}$ with
+$\boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \sigma_n^2 \mathbf{I})$,
+the predictive distribution at test inputs $\mathbf{t}_*$ is:
+\begin{align}
+  \mathbf{f}_* | \mathbf{t}_*, \mathbf{t}, \mathbf{y}
+    &\sim \mathcal{N}(\boldsymbol{\mu}_*, \boldsymbol{\Sigma}_*), \\
+  \boldsymbol{\mu}_* &= m(\mathbf{t}_*) + \mathbf{K}_*^\top
+    (\mathbf{K} + \sigma_n^2\mathbf{I})^{-1}(\mathbf{y} - m(\mathbf{t})),
+    \label{eq:gp_mean} \\
+  \boldsymbol{\Sigma}_* &= \mathbf{K}_{**} - \mathbf{K}_*^\top
+    (\mathbf{K} + \sigma_n^2\mathbf{I})^{-1}\mathbf{K}_*,
+    \label{eq:gp_var}
+\end{align}
+where $\mathbf{K} = k(\mathbf{t}, \mathbf{t})$,
+$\mathbf{K}_* = k(\mathbf{t}, \mathbf{t}_*)$, and
+$\mathbf{K}_{**} = k(\mathbf{t}_*, \mathbf{t}_*)$.
+
+\subsubsection{Mat\'{e}rn Kernels}
+
+The Mat\'{e}rn family of kernels provides control over the smoothness of
+the GP sample paths via the parameter $\nu$:
+\begin{equation}
+  k_{\nu}(\Delta t) = \sigma_f^2 \frac{2^{1-\nu}}{\Gamma(\nu)}
+    \left(\frac{\sqrt{2\nu}\,|\Delta t|}{\ell}\right)^\nu
+    K_\nu\!\left(\frac{\sqrt{2\nu}\,|\Delta t|}{\ell}\right),
+  \label{eq:matern}
+\end{equation}
+where $\ell$ is the length-scale, $\sigma_f^2$ the signal variance, and
+$K_\nu$ the modified Bessel function. For $\nu = 5/2$, the kernel yields
+twice-differentiable sample paths:
+\begin{equation}
+  k_{5/2}(\Delta t) = \sigma_f^2
+    \left(1 + \frac{\sqrt{5}\,|\Delta t|}{\ell}
+    + \frac{5\,\Delta t^2}{3\ell^2}\right)
+    \exp\!\left(-\frac{\sqrt{5}\,|\Delta t|}{\ell}\right).
+  \label{eq:matern52}
+\end{equation}
+This is our default temporal kernel for volume dynamics, encoding the prior
+belief that tumour volume evolves smoothly over time.
+
+\subsubsection{Multi-Output GPs and the Intrinsic Coregionalisation Model}
+
+Multi-Output Gaussian Processes (MOGPs) extend scalar GPs to vector-valued
+functions $\mathbf{f}: \R \to \R^D$, capturing correlations across output
+dimensions. The Intrinsic Coregionalisation Model (ICM) \cite{alvarez2012kernels}
+parameterises the cross-output covariance as a Kronecker product:
+\begin{equation}
+  \mathbf{K}(\mathbf{t}, \mathbf{t}') =
+    \mathbf{B} \otimes k_t(\mathbf{t}, \mathbf{t}'),
+  \label{eq:icm}
+\end{equation}
+where $\mathbf{B} \in \R^{D \times D}$ is a positive semi-definite
+coregionalisation matrix encoding inter-output correlations, and
+$k_t$ is a scalar temporal kernel shared across outputs. The Linear Model of
+Coregionalisation (LMC) generalises this to a sum over $Q$ latent functions:
+\begin{equation}
+  \mathbf{K}(\mathbf{t}, \mathbf{t}') =
+    \sum_{q=1}^{Q} \mathbf{B}_q \otimes k_q(\mathbf{t}, \mathbf{t}').
+  \label{eq:lmc}
+\end{equation}
+
+% ---------------------------------------------------------------------------
+% 2.5 Related Work
+% ---------------------------------------------------------------------------
+\subsection{Related Work}
+\label{sec:bg:related}
+
+\subsubsection{Brain Tumour Growth Prediction}
+
+Tumour growth prediction from longitudinal MRI has been addressed through
+several paradigms. Classical approaches fit parametric growth models
+(exponential, Gompertz, logistic) to volume trajectories
+\cite{nakasu2005serial,hashimoto2012natural}. Reaction--diffusion models
+\cite{swanson2000quantitative,hormuth2021image} incorporate spatial diffusion
+but require tissue-specific parameterisation and are computationally expensive.
+
+Recent deep learning approaches include spatio-temporal convolutional LSTMs
+\cite{zhang2020spatio} achieving 83.2\% Dice on glioma growth prediction,
+GP-GAN \cite{elazab2020gp} combining Gaussian processes with GANs, and neural
+fields conditioned on time \cite{chen2024vestibular} for vestibular schwannoma
+growth. Puglisi et al.\ \cite{puglisi2025brain} demonstrated that a linear
+mixed-effects model in a learned latent space produces clinically meaningful
+progression predictions for brain atrophy, trained on 11,730~MRIs.
+
+For meningiomas specifically, most existing work is limited to retrospective
+volumetric analysis \cite{hashimoto2012natural,ius2020management,
+nakamura2003natural}. To our knowledge, no prior work has applied foundation
+model-derived latent spaces with GP-based temporal modelling to meningioma
+growth prediction.
+
+\subsubsection{Latent Space Temporal Prediction}
+
+The Joint Embedding Predictive Architecture (JEPA) framework
+\cite{lecun2022path} advocates predicting in representation space rather than
+pixel space, avoiding the waste of capacity on irrelevant details. I-JEPA
+\cite{assran2023self} and V-JEPA \cite{bardes2024revisiting} validated this
+for images and video respectively. Longitudinal Self-Supervised Learning
+(LSSL) \cite{zhao2021longitudinal} disentangles brain-age factors from latent
+MRI representations on 811 ADNI subjects. Our pipeline aligns with this
+``predict in latent space'' principle while using GPs instead of neural
+predictors, providing closed-form uncertainty quantification for clinical
+decision support.
+
+\subsubsection{Domain Adaptation in Medical Imaging}
+
+Domain adaptation for medical image analysis has been addressed through
+adversarial training \cite{kamnitsas2017unsupervised}, style transfer
+\cite{chen2022maxstyle}, and more recently through parameter-efficient
+fine-tuning of foundation models \cite{dutt2023parameter}. Ben-David et al.\
+\cite{bendavid2010theory} established the theoretical framework relating
+domain divergence to target risk. Our work contributes empirical evidence on
+LoRA adaptation for 3D medical imaging foundation models, including
+dual-domain training that attempts to maintain glioma competence while
+acquiring meningioma specialisation.

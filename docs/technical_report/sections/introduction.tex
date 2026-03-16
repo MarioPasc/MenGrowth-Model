@@ -1,0 +1,174 @@
+% =============================================================================
+% Section 1: Introduction
+% =============================================================================
+\section{Introduction}
+\label{sec:introduction}
+
+% ---------------------------------------------------------------------------
+% 1.1 Clinical Motivation
+% ---------------------------------------------------------------------------
+\subsection{Clinical Motivation}
+\label{sec:intro:clinical}
+
+Meningiomas are the most common primary intracranial tumours, accounting for
+approximately 39\% of all central nervous system neoplasms, with an
+age-adjusted incidence rate of 9.51 per 100,000 population
+\cite{ostrom2023brain}. The majority are classified as WHO Grade~I (benign),
+and a substantial fraction are discovered incidentally on neuroimaging
+performed for unrelated indications \cite{vernooij2007incidental}. For these
+incidentally discovered meningiomas, clinical management hinges on a
+deceptively simple question: \emph{will this tumour grow?}
+
+Current clinical practice relies on serial MRI surveillance with manual
+volumetric assessment at intervals of 3--12 months
+\cite{hashimoto2012natural,ius2020management}. This approach has three
+fundamental limitations. First, manual volumetry is labour-intensive and
+subject to considerable inter-observer variability, with reported coefficient
+of variation exceeding 15\% for small tumours \cite{defined2016interobserver}.
+Second, the decision to intervene (surgery or radiotherapy) is typically made
+reactively---after significant growth has already occurred---rather than
+proactively based on predicted trajectories. Third, meningioma growth dynamics
+are heterogeneous: some tumours remain stable for decades, others exhibit
+steady linear growth, and a minority display accelerating or saltatory growth
+patterns \cite{hashimoto2012natural,nakamura2003natural}. No established
+imaging biomarker reliably predicts which pattern a given tumour will follow.
+
+Quantitative growth prediction from longitudinal MRI could transform
+meningioma management by enabling personalised surveillance schedules,
+early identification of aggressive growth patterns, and evidence-based
+timing of intervention. However, building such predictive models faces a
+data bottleneck: longitudinal meningioma MRI datasets are rare, typically
+small (tens of patients), and collected retrospectively across heterogeneous
+scanners and protocols.
+
+% ---------------------------------------------------------------------------
+% 1.2 Technical Challenge
+% ---------------------------------------------------------------------------
+\subsection{Technical Challenge}
+\label{sec:intro:technical}
+
+The central technical challenge is to build a growth prediction model from a
+longitudinal cohort of only 33~patients with 2--6~MRI studies each (100~total
+observations), while leveraging cross-sectional data from 1,000+ subjects to
+learn rich tumour representations. This requires solving three interrelated
+problems:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Domain adaptation.} Existing brain MRI foundation models are
+    pretrained on glioma data, which differs fundamentally from meningioma in
+    tumour morphology, location, and tissue composition. Direct application
+    of a glioma-trained encoder to meningioma data produces suboptimal feature
+    representations (see \cref{sec:domain_gap}).
+
+  \item \textbf{Structured representation learning.} Growth prediction
+    requires features that are not only discriminative but also
+    \emph{semantically structured}: tumour volume, spatial location, and
+    morphological shape should be disentangled into separate latent
+    subspaces amenable to interpretable temporal modelling.
+
+  \item \textbf{Small-sample temporal modelling.} With 33~patients and sparse,
+    irregularly-sampled time series, conventional deep learning approaches
+    (recurrent networks, Neural ODEs) are catastrophically overparameterised.
+    The modelling framework must provide calibrated uncertainty and degrade
+    gracefully with limited data.
+\end{enumerate}
+
+% ---------------------------------------------------------------------------
+% 1.3 Proposed Approach
+% ---------------------------------------------------------------------------
+\subsection{Proposed Approach}
+\label{sec:intro:approach}
+
+We address these challenges through a four-phase pipeline that progressively
+transforms raw multi-modal 3D MRI into patient-specific growth predictions
+with calibrated uncertainty:
+
+\begin{description}[leftmargin=*,labelwidth=!]
+  \item[Phase 1 --- LoRA Adaptation (\cref{sec:lora}).] We adapt
+    BrainSegFounder \cite{cox2024brainsegfounder}, a SwinUNETR
+    \cite{hatamizadeh2022swinunetr} foundation model pretrained via
+    self-supervised learning on 41,400+ brain MRI subjects, to the meningioma
+    domain using Low-Rank Adaptation (LoRA) \cite{hu2022lora}. LoRA injects
+    trainable low-rank matrices into the encoder's Stages~3--4, adapting
+    high-level features while preserving low-level anatomical representations.
+    Segmentation on BraTS-MEN~2024 \cite{labella2024brats} serves as the
+    proxy task, with optional auxiliary semantic heads providing multi-task
+    learning signal.
+
+  \item[Phase 2 --- Supervised Disentangled Projection (\cref{sec:sdp}).] A
+    lightweight projection network maps frozen encoder features
+    $\mathbf{h} \in \R^{768}$ to a structured latent space
+    $\mathbf{z} \in \R^{128}$ partitioned into semantically supervised
+    subspaces for volume, location, shape, and a residual component.
+    Training combines semantic regression, VICReg-style
+    \cite{bardes2022vicreg} variance--covariance regularisation, and distance
+    correlation \cite{szekely2007measuring} penalties via a four-phase
+    curriculum.
+
+  \item[Phase 3 --- Cohort Encoding (\cref{sec:encoding}).] All longitudinal
+    MRI studies from the Andalusian cohort are encoded through the frozen
+    pipeline, producing per-patient latent trajectories. ComBat harmonisation
+    \cite{johnson2007adjusting,fortin2018harmonization} is assessed and
+    applied if significant scanner-induced distributional shift is detected.
+
+  \item[Phase 4 --- Growth Prediction (\cref{sec:growth}).] A three-model
+    Gaussian process hierarchy of increasing complexity---Linear Mixed-Effects
+    (LME), Hierarchical GP (H-GP), and Partition-Aware Multi-Output GP
+    (PA-MOGP)---is fitted on the latent trajectories and evaluated via
+    Leave-One-Patient-Out Cross-Validation (LOPO-CV) across 33~folds.
+    Volume predictions are decoded through the frozen SDP semantic head and
+    compared against observed tumour volumes.
+\end{description}
+
+% ---------------------------------------------------------------------------
+% 1.4 Contributions
+% ---------------------------------------------------------------------------
+\subsection{Contributions}
+\label{sec:intro:contributions}
+
+This thesis makes the following contributions:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Domain adaptation analysis.} We provide a quantitative
+    characterisation of the glioma--meningioma domain gap in the
+    BrainSegFounder feature space using Maximum Mean Discrepancy, Centred
+    Kernel Alignment, and semantic linear probes (\cref{sec:domain_gap}).
+
+  \item \textbf{LoRA adaptation with semantic supervision.} We demonstrate
+    LoRA adaptation of a 3D medical imaging foundation model for meningioma
+    segmentation, with ablations across rank, adapter type (LoRA vs.\ DoRA),
+    auxiliary semantic heads, and single- vs.\ dual-domain training
+    (\cref{sec:lora}).
+
+  \item \textbf{Supervised Disentangled Projection.} We design and
+    theoretically justify a non-generative approach to structured latent space
+    construction, motivated by the impossibility of unsupervised
+    disentanglement \cite{locatello2019challenging} and the failure of
+    VAE-based alternatives in our experimental setting (\cref{sec:sdp}).
+
+  \item \textbf{GP hierarchy for latent growth prediction.} We propose a
+    principled replacement for Neural ODE-based temporal modelling, with
+    closed-form inference, calibrated uncertainty, and a parameter count
+    appropriate for the data regime (6--95 parameters vs.\ 3,100+ for the
+    Neural ODE) (\cref{sec:growth}).
+
+  \item \textbf{Empirical methodology revision.} We document how empirical
+    findings---including shape disentanglement failure ($R^2 \leq 0.11$),
+    temporal stationarity of meningioma location, and marginal LoRA benefit
+    ($\Delta R^2 = +0.016$)---motivated principled revisions to the pipeline
+    architecture (\cref{sec:evaluation}).
+\end{enumerate}
+
+% ---------------------------------------------------------------------------
+% 1.5 Document Structure
+% ---------------------------------------------------------------------------
+\subsection{Document Structure}
+
+The remainder of this report is organised as follows.
+\Cref{sec:background} reviews the theoretical foundations underlying each
+pipeline component. \Cref{sec:data} describes the datasets, preprocessing,
+and data splits. \Cref{sec:domain_gap} presents the domain gap analysis
+motivating LoRA adaptation. \Cref{sec:lora,sec:sdp,sec:encoding,sec:growth}
+detail Phases~1--4 respectively. \Cref{sec:evaluation} consolidates quality
+targets, ablation results, and model comparison. \Cref{sec:conclusion}
+discusses limitations and future directions.

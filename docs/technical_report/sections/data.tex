@@ -1,0 +1,221 @@
+% =============================================================================
+% Section 3: Data
+% =============================================================================
+\section{Data}
+\label{sec:data}
+
+This section describes the three datasets, the unified HDF5 storage schema,
+data splits, and the preprocessing pipeline.
+
+% ---------------------------------------------------------------------------
+% 3.1 Datasets
+% ---------------------------------------------------------------------------
+\subsection{Datasets}
+\label{sec:data:datasets}
+
+\subsubsection{BraTS-MEN 2024 (Cross-Sectional Meningioma)}
+
+The BraTS Meningioma 2024 challenge dataset \cite{labella2024brats} comprises
+1,000~subjects with pre-operative multi-parametric MRI (T1, T1ce, T2, FLAIR)
+and expert manual segmentations. Each subject has a single study (timepoint).
+Segmentation labels follow the BraTS convention: 0~(background), 1~(enhancing
+tumour, ET), 2~(non-enhancing tumour, NET), and 3~(cystic component). This
+dataset serves as the primary training source for Phases~1 and~2.
+
+\subsubsection{BraTS-GLI 2021 (Longitudinal Glioma)}
+
+The BraTS Glioma 2021 challenge dataset \cite{baid2021rsna} contains
+1,350~scans from 613~patients (1--10 timepoints per patient) with the same
+four MRI modalities. Glioma labels use: 0~(background), 1~(necrotic tumour
+core, NETC), 2~(peritumoral oedema, SNFH), 3~(enhancing tumour, ET), and
+4~(resection cavity, RC). This dataset is used for domain gap analysis
+(\cref{sec:domain_gap}) and dual-domain LoRA training
+(\cref{sec:lora:dual}).
+
+\subsubsection{Andalusian Longitudinal Cohort (MenGrowth)}
+
+A retrospective longitudinal cohort of 42~meningioma patients (137~total
+studies) collected across hospitals in Andalusia, Spain. After quality control,
+33~patients (100~studies) with 2--6~timepoints each are retained for growth
+prediction. Observation statistics are summarised in \cref{tab:andalusian_stats}.
+
+\begin{table}[H]
+  \centering
+  \caption{Andalusian longitudinal cohort statistics (after QC).}
+  \label{tab:andalusian_stats}
+  \begin{tabular}{lc}
+    \toprule
+    \textbf{Statistic} & \textbf{Value} \\
+    \midrule
+    Total patients ($N$) & 33 \\
+    Total studies ($S$) & 100 \\
+    Mean studies/patient ($\bar{n}$) & 3.03 \\
+    Std studies/patient ($\sigma_n$) & 1.17 \\
+    Range & [2, 6] \\
+    Patients with exactly 2 studies & 19 (57.6\%) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+% 3.2 HDF5 Schema
+% ---------------------------------------------------------------------------
+\subsection{Unified HDF5 Schema}
+\label{sec:data:h5}
+
+All three datasets are stored in a unified HDF5 v2.0 schema, enabling a
+single reader code path (\texttt{BraTSDatasetH5}) regardless of dataset type.
+The schema structure is:
+
+\begin{table}[H]
+  \centering
+  \caption{Unified HDF5 v2.0 schema. $N_s$: number of scans, $N_p$: number of
+  patients.}
+  \label{tab:h5_schema}
+  \begin{tabular}{llp{8cm}}
+    \toprule
+    \textbf{Key} & \textbf{Shape/Type} & \textbf{Description} \\
+    \midrule
+    \texttt{attrs} & dict & $\{$\texttt{n\_scans}, \texttt{n\_patients},
+      \texttt{roi\_size}, \texttt{spacing}, \texttt{channel\_order},
+      \texttt{version}=``2.0'', \texttt{dataset\_type}, \texttt{domain}$\}$ \\
+    \texttt{images} & $[N_s, 4, 192^3]$ float32 & Multi-modal MRI volumes \\
+    \texttt{segs} & $[N_s, 1, 192^3]$ int8 & Segmentation masks \\
+    \texttt{scan\_ids} & $[N_s]$ str & Unique scan identifiers \\
+    \texttt{patient\_ids} & $[N_s]$ str & Patient identifiers \\
+    \texttt{timepoint\_idx} & $[N_s]$ int32 & Per-patient timepoint index \\
+    \texttt{semantic/} & group & Precomputed features: \texttt{volume} $[N_s, 4]$, \texttt{location} $[N_s, 3]$, \texttt{shape} $[N_s, 3]$ \\
+    \texttt{longitudinal/} & group & CSR structure: \texttt{patient\_offsets} $[N_p+1]$, \texttt{patient\_list} $[N_p]$ \\
+    \texttt{splits/} & group & Patient-level index arrays: \texttt{lora\_train}, \texttt{lora\_val}, \texttt{test} \\
+    \texttt{metadata/} & group & \texttt{grade}, \texttt{age}, \texttt{sex} (when available) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+For cross-sectional data (BraTS-MEN), the longitudinal structure is trivial:
+each patient has exactly one scan at timepoint~0, so $N_s = N_p$ and
+\texttt{patient\_offsets} $= [0, 1, 2, \ldots, N]$. This design ensures that
+all timepoints of a patient are assigned to the same split, preventing
+patient-level data leakage.
+
+% ---------------------------------------------------------------------------
+% 3.3 Data Splits
+% ---------------------------------------------------------------------------
+\subsection{Data Splits}
+\label{sec:data:splits}
+
+Data splitting is performed at the patient level with seed 42 for
+reproducibility. \Cref{tab:splits} summarises the splits for each dataset.
+
+\begin{table}[H]
+  \centering
+  \caption{Data splits. BraTS-MEN splits are canonical; server configurations
+    may differ slightly (see \cref{sec:lora:config}).}
+  \label{tab:splits}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Split} & \textbf{BraTS-MEN} & \textbf{BraTS-GLI (patients)} & \textbf{MenGrowth} \\
+    \midrule
+    \texttt{lora\_train} & 750 & 430 ($\sim$950 scans) & 23 \\
+    \texttt{lora\_val}   & 100 & 60 ($\sim$130 scans)  & 3 \\
+    \texttt{test}        & 150 & 123 ($\sim$270 scans) & 7 \\
+    \midrule
+    \textbf{Total} & 1,000 & 613 (1,350 scans) & 33 (100 scans) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+For Phase~2 (SDP), the canonical specification defines an additional
+\texttt{sdp\_train} split of 225~subjects; however, the actual implementation
+uses the \texttt{lora\_train} pool since the SDP operates on frozen encoder
+features and there is no gradient contamination concern.
+
+% ---------------------------------------------------------------------------
+% 3.4 Preprocessing
+% ---------------------------------------------------------------------------
+\subsection{Preprocessing Pipeline}
+\label{sec:data:preprocessing}
+
+All volumes are spatially preprocessed to $192^3$ voxels at $1\,\text{mm}^3$
+isotropic spacing during HDF5 conversion. Intensity normalisation is performed
+at runtime. The critical channel ordering convention is
+$[\text{FLAIR}, \text{T1ce}, \text{T1}, \text{T2}]$, matching
+BrainSegFounder's training protocol---incorrect ordering causes near-zero
+Dice ($\sim 0.00$) even on the glioma training domain.
+
+\subsubsection{Training Transforms}
+
+The training pipeline follows the BrainSegFounder protocol with minor
+adaptations:
+\begin{enumerate}[leftmargin=*]
+  \item \texttt{CropForegroundd}: Crop to the non-zero brain region with
+    \texttt{k\_divisible}$=[128, 128, 128]$.
+  \item \texttt{SpatialPadd}: Pad to at least $128^3$.
+  \item \texttt{RandSpatialCropd}: Random crop to $128^3$.
+  \item \texttt{NormalizeIntensityd}: Per-channel, nonzero-voxel
+    normalisation.
+  \item Data augmentation: random flips (3 axes, $p=0.5$ each),
+    intensity scaling (factor 0.1, $p=1.0$), intensity shift (offset 0.1,
+    $p=1.0$).
+\end{enumerate}
+
+\subsubsection{Feature Extraction Transforms}
+
+For feature extraction and evaluation, a larger $192^3$ ROI is used (via
+\texttt{ResizeWithPadOrCropd}) to ensure 100\% tumour containment---the
+$128^3$ centre crop captures only 38.8\% of meningioma tumours fully due
+to their dural-based, peripheral location.
+
+\subsubsection{Inference Transforms}
+
+Full-resolution inference uses MONAI's sliding window inference with $128^3$
+patches, 50\% overlap, and Gaussian blending.
+
+% ---------------------------------------------------------------------------
+% 3.5 Semantic Features
+% ---------------------------------------------------------------------------
+\subsection{Semantic Features}
+\label{sec:data:semantic}
+
+Semantic features are precomputed from segmentation masks and stored in the
+HDF5 files. Three categories of features are extracted:
+
+\begin{description}[leftmargin=*]
+  \item[Volume (4 dims):] $[\log(V_{\text{total}}+1),\, \log(V_{\text{NCR}}+1),
+    \, \log(V_{\text{ED}}+1),\, \log(V_{\text{ET}}+1)]$, where volumes are in
+    mm$^3$. The log-transform stabilises the heavy-tailed distribution.
+
+  \item[Location (3 dims):] Centroid coordinates $(c_z, c_y, c_x)$ in mm,
+    computed as the centre of mass of the tumour segmentation mask.
+
+  \item[Shape (3 dims):] Sphericity $\in (0, 1]$, $\log(\text{surface area})$,
+    and solidity (ratio of tumour volume to convex hull volume), computed via
+    \texttt{compute\_shape\_array()}.
+\end{description}
+
+\begin{remark}
+  Following the R1 methodology revision (\cref{sec:eval:revision}), the
+  volume target is reduced to a single whole-tumour log-volume
+  $v^* = \log(V_{\text{WT}} + 1) \in \R^1$, and shape features are dropped
+  from the SDP due to persistent low $R^2$ ($\leq 0.11$ across all
+  conditions).
+\end{remark}
+
+% ---------------------------------------------------------------------------
+% 3.6 Label Conversion
+% ---------------------------------------------------------------------------
+\subsection{Segmentation Label Conversion}
+\label{sec:data:labels}
+
+Both datasets are converted to a unified 3-channel hierarchical overlapping
+representation for the segmentation loss:
+\begin{align}
+  \text{TC} &= \{x : \text{label}(x) \in S_{\text{TC}}\}, \\
+  \text{WT} &= \{x : \text{label}(x) > 0\}, \\
+  \text{ET} &= \{x : \text{label}(x) \in S_{\text{ET}}\},
+\end{align}
+where $S_{\text{TC}}$ and $S_{\text{ET}}$ are domain-dependent. For MEN:
+$S_{\text{TC}} = \{1, 2\}$, $S_{\text{ET}} = \{1\}$. For GLI:
+$S_{\text{TC}} = \{1, 3, 4\}$, $S_{\text{ET}} = \{3\}$. This conversion is
+implemented in \texttt{segmentation.py.\_convert\_target()} and ensures that
+the segmentation decoder output semantics are consistent across domains.

@@ -1,0 +1,171 @@
+% =============================================================================
+% MenGrowth-Model: Foundation Model Pipeline for Meningioma Growth Forecasting
+% BSc Thesis — Technical Report
+% =============================================================================
+\documentclass[12pt,a4paper]{article}
+
+% --- Encoding and fonts ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% --- Mathematics ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+
+% --- Tables and figures ---
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+\usepackage{float}
+
+% --- Layout ---
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% --- References and links ---
+\usepackage[colorlinks=true, linkcolor=blue!70!black, citecolor=green!50!black, urlcolor=blue!60!black]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+
+% --- Code listings ---
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+}
+
+% --- Algorithms ---
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+% --- Misc ---
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{siunitx}
+
+% --- Theorem environments ---
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+% --- Custom commands ---
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Vol}{\mathbf{z}_{\text{vol}}}
+\newcommand{\Loc}{\mathbf{z}_{\text{loc}}}
+\newcommand{\Shape}{\mathbf{z}_{\text{shape}}}
+\newcommand{\Res}{\mathbf{z}_{\text{res}}}
+\newcommand{\dCor}{\operatorname{dCor}}
+\newcommand{\dCov}{\operatorname{dCov}}
+\newcommand{\dVar}{\operatorname{dVar}}
+\newcommand{\KL}{\operatorname{KL}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\LOPO}{\text{LOPO}}
+\newcommand{\MOGP}{\text{MOGP}}
+\newcommand{\PAMOGP}{\text{PA-MOGP}}
+\newcommand{\LME}{\text{LME}}
+\newcommand{\HGP}{\text{H-GP}}
+\newcommand{\GP}{\mathcal{GP}}
+\newcommand{\LoRA}{\text{LoRA}}
+\newcommand{\SDP}{\text{SDP}}
+
+% =============================================================================
+% Title
+% =============================================================================
+\title{%
+  \textbf{Foundation Model Adaptation for Meningioma Growth Forecasting\\
+  from Multi-Modal 3D MRI}\\[0.8em]
+  \large A Gaussian Process Hierarchy over Disentangled Latent Trajectories
+}
+
+\author{%
+  Mario Pascual-Gonz\'{a}lez\\
+  \textit{Department of Computer Science}\\
+  \textit{Universidad de Granada}\\
+  \texttt{mariopascual@ugr.es}
+}
+
+\date{March 2026}
+
+% =============================================================================
+% Document
+% =============================================================================
+\begin{document}
+
+\maketitle
+
+% --- Abstract ---
+\begin{abstract}
+Meningiomas are the most prevalent primary intracranial tumours, yet predicting
+their growth trajectories from longitudinal MRI remains an open challenge due to
+heterogeneous growth dynamics and limited longitudinal data. We present a
+four-phase pipeline that adapts BrainSegFounder---a SwinUNETR foundation model
+pretrained on 41,400+ brain MRI subjects---to the meningioma domain. Phase~1
+applies Low-Rank Adaptation (LoRA) to the encoder's Stages~3--4 using
+segmentation as a proxy task on BraTS-MEN~2024 (1,000~subjects). Phase~2 trains
+a Supervised Disentangled Projection (SDP) that maps frozen encoder features
+$\mathbf{h} \in \R^{768}$ to a structured latent space
+$\mathbf{z} \in \R^{128}$ with semantically supervised partitions for tumour
+volume, location, and shape. Phase~3 encodes a longitudinal Andalusian cohort
+(42~patients, 137~studies) through the frozen pipeline with optional ComBat
+harmonisation. Phase~4 fits a three-model Gaussian process hierarchy---Linear
+Mixed-Effects (LME), Hierarchical GP (H-GP), and Partition-Aware Multi-Output
+GP (PA-MOGP)---evaluated via Leave-One-Patient-Out Cross-Validation across
+33~patients. The pipeline replaces a previously considered Neural ODE approach,
+which was abandoned due to catastrophic overparameterisation (3,100+~parameters
+for 112~observation pairs). We report domain gap analysis, LoRA ablation
+results including dual-domain adaptation experiments, and discuss methodological
+revisions motivated by empirical findings including the failure of shape
+disentanglement and the temporal stationarity of meningioma location.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+% --- Section 1: Introduction ---
+\input{sections/introduction}
+
+% --- Section 2: Background and Related Work ---
+\input{sections/background}
+
+% --- Section 3: Data ---
+\input{sections/data}
+
+% --- Section 4: Domain Gap Analysis ---
+\input{sections/domain_gap}
+
+% --- Section 5: Phase 1 — LoRA Encoder Adaptation ---
+\input{sections/lora_adaptation}
+
+% --- Section 6: Phase 2 — Supervised Disentangled Projection ---
+\input{sections/sdp}
+
+% --- Section 7: Phase 3 — Cohort Encoding and Harmonisation ---
+\input{sections/encoding}
+
+% --- Section 8: Phase 4 — GP-Based Growth Prediction ---
+\input{sections/growth_prediction}
+
+% --- Section 9: Evaluation ---
+\input{sections/evaluation}
+
+% --- Section 10: Conclusion ---
+\input{sections/conclusion}
+
+% =============================================================================
+% Bibliography
+% =============================================================================
+\bibliographystyle{unsrt}
+\bibliography{references}
+
+\end{document}

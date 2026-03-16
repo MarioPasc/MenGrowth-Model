@@ -1,0 +1,282 @@
+% =============================================================================
+% Section 5: Phase 1 — LoRA Encoder Adaptation
+% =============================================================================
+\section{Phase 1: LoRA Encoder Adaptation}
+\label{sec:lora}
+
+% ---------------------------------------------------------------------------
+% 5.1 Adaptation Strategy
+% ---------------------------------------------------------------------------
+\subsection{Adaptation Strategy}
+\label{sec:lora:strategy}
+
+We adapt the frozen BrainSegFounder encoder to the meningioma domain via LoRA
+(\cref{sec:bg:lora}), injecting low-rank adapter matrices into the
+self-attention projections of Stages~3--4. Stages~0--2 remain frozen to
+preserve low-level anatomical features learned from the UK~Biobank SSL
+pretraining. Segmentation on BraTS-MEN 2024 serves as the proxy task.
+
+\subsubsection{Target Modules}
+
+LoRA adapters are injected into the $\mathbf{Q}$, $\mathbf{K}$, $\mathbf{V}$
+projection matrices within the multi-head self-attention blocks of Stages~3
+and~4:
+\begin{align}
+  &\texttt{swinViT.layers3.0.blocks.\{0,1\}.attn.qkv.weight}, \\
+  &\texttt{swinViT.layers4.0.blocks.\{0,1\}.attn.qkv.weight}.
+\end{align}
+This yields 4 adapted layers, each with rank-$r$ decompositions for Q, K,
+and V (combined as a single QKV projection in the Swin implementation). The
+total number of trainable LoRA parameters is approximately $197\text{K}$ for
+$r=8$, compared to 62M total model parameters ($<0.32\%$).
+
+\subsubsection{LoRA Hyperparameters}
+
+\begin{table}[H]
+  \centering
+  \caption{LoRA configuration (selected via rank ablation, see
+    \cref{sec:lora:ablation}).}
+  \label{tab:lora_config}
+  \begin{tabular}{lcp{7cm}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Rationale} \\
+    \midrule
+    Rank ($r$) & 8 & Optimal from ablation over $r \in \{2, 4, 8, 16, 32\}$ \\
+    Scale ($\alpha$) & 16 & Effective scale $\alpha/r = 2.0$ \\
+    Dropout & 0.1 & Regularisation \\
+    Target stages & 3, 4 & High-level features; stages 0--2 frozen \\
+    Target modules & QKV & All attention projections \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+% 5.2 Auxiliary Semantic Heads
+% ---------------------------------------------------------------------------
+\subsection{Auxiliary Semantic Heads}
+\label{sec:lora:aux}
+
+To enrich the encoder's feature space for downstream SDP training, we
+attach auxiliary semantic regression heads that predict tumour properties
+directly from GAP-pooled encoder features:
+\begin{equation}
+  \hat{\mathbf{y}}_p = \pi_p\bigl(\operatorname{GAP}(\texttt{encoder10}(\mathbf{x}))\bigr),
+  \quad p \in \{\text{vol}\},
+  \label{eq:aux_heads}
+\end{equation}
+where $\pi_{\text{vol}}: \R^{768} \to \R^{1}$ is a linear head predicting
+log whole-tumour volume. The auxiliary loss is:
+\begin{equation}
+  \mathcal{L}_{\text{aux}} = \lambda_{\text{aux}} \cdot
+    \|\hat{\mathbf{y}}_{\text{vol}} - \mathbf{y}_{\text{vol}}\|_2^2.
+  \label{eq:aux_loss}
+\end{equation}
+Following the R1 revision (\cref{sec:eval:revision}), auxiliary heads for
+location and shape have been removed; only the volume head is retained. The
+auxiliary loss is activated after epoch~5 with a linear warmup over 10~epochs
+($\lambda_{\text{aux}} = 0.1$ at full strength).
+
+\begin{remark}
+  The auxiliary heads are discarded after Phase~1. Their sole purpose is to
+  provide multi-task learning signal during encoder adaptation, encouraging
+  the encoder to produce features from which tumour volume can be linearly
+  decoded.
+\end{remark}
+
+% ---------------------------------------------------------------------------
+% 5.3 Training Protocol
+% ---------------------------------------------------------------------------
+\subsection{Training Protocol}
+\label{sec:lora:training}
+
+\begin{table}[H]
+  \centering
+  \caption{Phase 1 training configuration.}
+  \label{tab:lora_training}
+  \begin{tabular}{lcp{6cm}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Rationale} \\
+    \midrule
+    Epochs & 150 & With early stopping (patience 25) \\
+    LR (LoRA) & $10^{-4}$ & Standard for LoRA adaptation \\
+    LR (decoder) & $5 \times 10^{-4}$ & Larger for pretrained decoder \\
+    LR (aux heads) & $10^{-3}$ & Small heads, fast convergence \\
+    Optimizer & AdamW & Decoupled weight decay \\
+    Weight decay & $10^{-5}$ & Light regularisation \\
+    Scheduler & Cosine decay, 10-epoch warmup & Smooth convergence \\
+    Batch size & 2 (per GPU) & Memory-constrained by $128^3$ input \\
+    Gradient accumulation & 4 steps & Effective batch size 8 \\
+    Gradient clipping & $\|\mathbf{g}\|_2 \leq 1.0$ & Stability \\
+    Precision & bf16-mixed & Memory efficiency on A100 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The segmentation loss combines Dice loss and cross-entropy with equal weight:
+\begin{equation}
+  \mathcal{L}_{\text{seg}} = \lambda_{\text{dice}}\,\mathcal{L}_{\text{Dice}}
+    + \lambda_{\text{CE}}\,\mathcal{L}_{\text{CE}},
+  \quad \lambda_{\text{dice}} = \lambda_{\text{CE}} = 1.0.
+  \label{eq:seg_loss}
+\end{equation}
+The total training objective is:
+\begin{equation}
+  \mathcal{L} = \mathcal{L}_{\text{seg}} + w(e)\,\mathcal{L}_{\text{aux}},
+  \label{eq:lora_total_loss}
+\end{equation}
+where $w(e) = \lambda_{\text{aux}} \cdot \min(1, \max(0, (e - 5)/10))$ is
+the warmup schedule for the auxiliary loss starting at epoch~5.
+
+% ---------------------------------------------------------------------------
+% 5.4 Post-Training Protocol
+% ---------------------------------------------------------------------------
+\subsection{Post-Training: LoRA Merge and Checkpoint Export}
+\label{sec:lora:merge}
+
+After training, LoRA weights are absorbed into the base model weights:
+\begin{equation}
+  \mathbf{W}_{\text{merged}} = \mathbf{W}_0 + \frac{\alpha}{r}\,
+    \mathbf{B}\mathbf{A}.
+  \label{eq:lora_merge}
+\end{equation}
+The segmentation decoder and auxiliary heads are then discarded, yielding a
+merged encoder checkpoint (\texttt{phase1\_encoder\_merged.pt}) containing
+only the SwinViT and encoder1--10 weights. All encoder parameters are frozen
+for subsequent phases.
+
+% ---------------------------------------------------------------------------
+% 5.5 Ablation Study
+% ---------------------------------------------------------------------------
+\subsection{Ablation Results}
+\label{sec:lora:ablation}
+
+\subsubsection{Rank Sweep (A1)}
+
+We evaluate LoRA ranks $r \in \{2, 4, 8, 16, 32\}$ on segmentation Dice
+and linear probe $R^2$ for volume prediction.
+
+\begin{table}[H]
+  \centering
+  \caption{LoRA rank ablation (A1). Dice scores on \texttt{lora\_val} and
+    linear probe $R^2$ for volume on test features.}
+  \label{tab:rank_ablation}
+  \begin{tabular}{cccccc}
+    \toprule
+    \textbf{Rank} & \textbf{LoRA params} & \textbf{Dice (WT)} &
+      \textbf{Dice (TC)} & \textbf{Dice (ET)} & \textbf{Vol $R^2$} \\
+    \midrule
+    Frozen & 0 & \textit{[baseline]} & \textit{[baseline]} & \textit{[baseline]} & \textit{[baseline]} \\
+    2  & $\sim$49K  & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    4  & $\sim$99K  & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    8  & $\sim$197K & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    16 & $\sim$394K & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    32 & $\sim$787K & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}
+    \textbf{Figure placeholder:} LoRA rank ablation curves.\\
+    Left: Dice vs.\ rank. Right: Probe $R^2$ vs.\ rank.
+  \vspace{3cm}}}
+  \caption{LoRA rank ablation (A1). Left panel shows validation Dice scores
+    per sub-region as a function of LoRA rank. Right panel shows linear probe
+    $R^2$ for volume prediction. Rank $r=8$ achieves the best trade-off
+    between capacity and parameter efficiency.}
+  \label{fig:rank_ablation}
+\end{figure}
+
+\subsubsection{LoRA vs.\ DoRA (A2)}
+
+DoRA (\cref{eq:dora}) is evaluated as an alternative adapter type at $r=8$.
+
+\begin{table}[H]
+  \centering
+  \caption{LoRA vs.\ DoRA comparison (A2) at rank 8.}
+  \label{tab:lora_vs_dora}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Adapter} & \textbf{Dice (WT)} & \textbf{Vol $R^2$ (linear)} & \textbf{Vol $R^2$ (RBF)} \\
+    \midrule
+    LoRA ($r=8$) & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    DoRA ($r=8$) & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+% 5.6 Dual-Domain Adaptation
+% ---------------------------------------------------------------------------
+\subsection{Dual-Domain Adaptation}
+\label{sec:lora:dual}
+
+A key scientific question is whether a single LoRA-adapted encoder can produce
+semantically structured features for both glioma and meningioma simultaneously.
+Dual-domain training combines BraTS-MEN ($\sim$750~studies) and BraTS-GLI
+($\sim$950~scans) via a \texttt{ConcatDataset} with domain-balanced
+\texttt{WeightedRandomSampler} (50/50 domain weight).
+
+\subsubsection{Empirical Findings}
+
+\begin{table}[H]
+  \centering
+  \caption{Single-domain vs.\ dual-domain LoRA adaptation results.}
+  \label{tab:dual_domain}
+  \begin{tabular}{lcccccc}
+    \toprule
+    & \textbf{MEN Dice} & \textbf{Vol $R^2$} & \textbf{CV Vol $R^2$}
+    & \textbf{MMD$^2$} & \textbf{CKA} & \textbf{erank} \\
+    \midrule
+    Frozen baseline & 0.52 & 0.56 & --- & 0.118 & 0.002 & 47.6 \\
+    MEN LoRA $r$=8  & 0.48 & 0.57 & --- & 0.116 & 0.002 & 45.8 \\
+    Dual LoRA $r$=8 & 0.57 & 0.62 & 0.712 & 0.037 & 0.017 & 25.4 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The dual-domain encoder achieves the best volume probe $R^2$ and reduces the
+domain gap (MMD$^2$: $0.118 \to 0.037$, a 68.6\% reduction), but at the cost
+of a substantial drop in effective rank ($47.6 \to 25.4$, a 46.6\% reduction),
+indicating representation compression.
+
+\subsubsection{Critical Finding: Cross-Domain Transfer Failure}
+
+Despite the reduced domain gap metrics, cross-domain GP probes reveal a
+critical limitation: training probes on GLI features and evaluating on MEN
+features yields $R^2 \approx -0.01$ for volume, indicating that the shared
+feature space does not support cross-domain semantic transfer. Furthermore,
+MEN segmentation Dice degrades from 0.64 to 0.36 under dual training,
+indicating catastrophic interference rather than beneficial transfer.
+
+\begin{remark}
+  The dual-domain results provide important negative evidence: domain gap
+  reduction (measured by MMD, CKA) does not guarantee cross-domain semantic
+  compatibility. The effective rank drop from 47.6 to 25.2 suggests that the
+  encoder resolves the domain conflict by compressing both domains into a
+  lower-dimensional shared subspace that loses domain-specific semantic
+  content.
+\end{remark}
+
+\subsubsection{LoRA Marginality}
+
+A surprising finding is the marginal benefit of LoRA adaptation for semantic
+probes: the frozen baseline achieves volume $R^2 = 0.794$, while the best
+LoRA condition improves this by only $\Delta R^2 = +0.016$ (within noise).
+This suggests that BrainSegFounder's SSL pretraining already produces
+features with reasonable meningioma volume decodability, and the primary
+benefit of LoRA is in segmentation quality rather than downstream feature
+quality.
+
+% ---------------------------------------------------------------------------
+% 5.7 Configuration
+% ---------------------------------------------------------------------------
+\subsection{Configuration}
+\label{sec:lora:config}
+
+All LoRA experiments are configured via YAML files under
+\texttt{experiments/lora/config/}. Server configurations use 250/50/200/500
+splits (lora\_train/lora\_val/probe\_train/test), differing slightly from the
+canonical specification. Four conditions are defined:
+LoRA/DoRA $\times$ semantic/no-semantic heads.

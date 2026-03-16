@@ -1,0 +1,313 @@
+% =============================================================================
+% Section 6: Phase 2 — Supervised Disentangled Projection
+% =============================================================================
+\section{Phase 2: Supervised Disentangled Projection}
+\label{sec:sdp}
+
+% ---------------------------------------------------------------------------
+% 6.1 Motivation
+% ---------------------------------------------------------------------------
+\subsection{Motivation}
+\label{sec:sdp:motivation}
+
+The encoder features $\mathbf{h} \in \R^{768}$ are high-dimensional and
+unstructured: semantic factors (volume, location, shape) are entangled across
+all 768~dimensions. Downstream GP-based growth prediction requires features
+that are (i)~\emph{semantically interpretable}: tumour volume should be
+decodable from a known subset of latent dimensions; (ii)~\emph{disentangled}:
+volume, location, and shape should occupy independent subspaces;
+(iii)~\emph{low-dimensional}: the GP covariance matrix scales as $O(D^2)$ in
+the output dimensionality $D$.
+
+The Supervised Disentangled Projection (SDP) addresses all three requirements
+through a lightweight MLP trained on frozen encoder features with a composite
+loss combining semantic supervision, collapse prevention, and independence
+regularisation.
+
+\subsubsection{Why Not a VAE?}
+
+Early experiments with a Semi-Supervised VAE (SemiVAE) were abandoned due to
+three failure modes: (i)~posterior collapse, where latent dimensions become
+uninformative despite extensive hyperparameter tuning (7-phase curriculum
+across 600~epochs); (ii)~KL distortion, where the $D_{\KL}(q \| p)$ penalty
+actively minimises the mutual information $I(x; z)$ between input and
+representation, destroying the rich foundation model features; and
+(iii)~reconstruction burden, where the decoder wastes capacity on
+pixel-level fidelity irrelevant to downstream growth prediction.
+
+The SDP replaces the generative objective with a discriminative one that
+directly optimises for the properties needed by the GP temporal model,
+following the theoretical mandate of Locatello et al.\
+\cite{locatello2019challenging}: supervised disentanglement resolves the
+impossibility of unsupervised approaches.
+
+% ---------------------------------------------------------------------------
+% 6.2 Architecture
+% ---------------------------------------------------------------------------
+\subsection{Architecture}
+\label{sec:sdp:architecture}
+
+The SDP consists of a projection network $g_\theta$ and per-partition semantic
+heads $\{\pi_p\}$:
+\begin{equation}
+  g_\theta: \R^{768} \to \R^{128}, \quad
+  g_\theta(\mathbf{h}) = \text{SN}(\mathbf{W}_2)\,
+    \sigma\bigl(\text{SN}(\mathbf{W}_1)\,
+    \text{LN}(\mathbf{h}) + \mathbf{b}_1\bigr) + \mathbf{b}_2,
+  \label{eq:sdp_forward}
+\end{equation}
+where $\text{LN}$ is LayerNorm, $\sigma$ is GELU with dropout $p=0.1$, and
+$\text{SN}(\cdot)$ denotes spectral normalisation applied to \emph{both}
+linear layers (\cref{sec:bg:disentanglement}). The architecture is:
+
+\begin{equation}
+  \underbrace{\mathbf{h} \in \R^{768}}_{\text{frozen encoder}}
+  \xrightarrow{\text{LN}}
+  \xrightarrow{\text{SN-Linear}(768, 512)}
+  \xrightarrow{\text{GELU + Drop}}
+  \xrightarrow{\text{SN-Linear}(512, 128)}
+  \underbrace{\mathbf{z} \in \R^{128}}_{\text{structured latent}}
+  \label{eq:sdp_pipeline}
+\end{equation}
+
+The total parameter count is approximately 459K
+($768 \times 512 + 512 + 512 \times 128 + 128$).
+
+% ---------------------------------------------------------------------------
+% 6.3 Partition Structure
+% ---------------------------------------------------------------------------
+\subsection{Latent Partition Structure}
+\label{sec:sdp:partitions}
+
+The 128-dimensional latent vector is partitioned into semantically supervised
+and unsupervised subspaces:
+
+\begin{table}[H]
+  \centering
+  \caption{Original SDP partition structure ($3+1$ partitions). See
+    \cref{sec:eval:revision} for the R1-revised $1+1$ structure.}
+  \label{tab:partitions}
+  \begin{tabular}{lcccc}
+    \toprule
+    \textbf{Partition} & \textbf{Dims} & \textbf{Indices} &
+      \textbf{Target dim} & \textbf{Semantic head} \\
+    \midrule
+    $\Vol$ (volume)   & 24 & $[0, 24)$    & 4 & $\pi_{\text{vol}}: \R^{24} \to \R^4$ \\
+    $\Loc$ (location) & 8  & $[24, 32)$   & 3 & $\pi_{\text{loc}}: \R^{8} \to \R^3$ \\
+    $\Shape$ (shape)  & 12 & $[32, 44)$   & 6 & $\pi_{\text{shape}}: \R^{12} \to \R^6$ \\
+    $\Res$ (residual) & 84 & $[44, 128)$  & --- & None (unsupervised) \\
+    \midrule
+    \textbf{Total}    & 128 & $[0, 128)$ & 13 & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Each supervised partition $p$ has a linear semantic head
+$\pi_p: \R^{d_p} \to \R^{k_p}$ that predicts ground-truth semantic features
+extracted from segmentation masks. The residual partition captures
+information not explained by the three supervised factors.
+
+\begin{remark}[R1 Revision]
+  Following empirical results (shape $R^2 \leq 0.11$, temporally static
+  meningioma location), the partition structure is revised to
+  $\mathbf{z} = [\Vol \in \R^{32} \mid \Res \in \R^{96}]$ with a single
+  volume head $\pi_{\text{vol}}: \R^{32} \to \R^1$ predicting
+  $\log(V_{\text{WT}} + 1)$. Location is relocated to a static GP covariate
+  (\cref{sec:eval:revision}).
+\end{remark}
+
+% ---------------------------------------------------------------------------
+% 6.4 Loss Function
+% ---------------------------------------------------------------------------
+\subsection{Composite Loss Function}
+\label{sec:sdp:loss}
+
+The SDP training objective combines four terms:
+\begin{equation}
+  \mathcal{L}_{\SDP} =
+    \underbrace{\sum_{p \in \mathcal{P}} \lambda_p\,
+      \|\hat{\mathbf{y}}_p - \mathbf{y}_p\|_2^2
+    }_{\text{Semantic regression}}
+  + \underbrace{\lambda_{\text{var}}\,
+      \mathcal{L}_{\text{var}}(\mathbf{z})
+    }_{\text{Collapse prevention}}
+  + \underbrace{\lambda_{\text{cov}}\,
+      \mathcal{L}_{\text{cov}}(\mathbf{z})
+    }_{\text{Linear independence}}
+  + \underbrace{\lambda_{\text{dCor}}\!
+      \sum_{\substack{i,j \in \mathcal{P} \\ i < j}}
+      \dCor(\mathbf{z}_i, \mathbf{z}_j)
+    }_{\text{Nonlinear independence}},
+  \label{eq:sdp_loss}
+\end{equation}
+where $\mathcal{P}$ is the set of supervised partitions,
+$\hat{\mathbf{y}}_p = \pi_p(\mathbf{z}_p)$, and each loss term serves a
+distinct purpose.
+
+\subsubsection{Semantic Regression}
+
+For each supervised partition, MSE loss anchors the partition's information
+content to a known semantic factor:
+\begin{equation}
+  \mathcal{L}_p^{\text{sem}} = \frac{1}{k_p}\,
+    \|\pi_p(\mathbf{z}_p) - \mathbf{y}_p\|_2^2.
+  \label{eq:sem_loss}
+\end{equation}
+Targets $\mathbf{y}_p$ are normalised to zero mean and unit variance using
+statistics computed on the training pool only (\cref{sec:sdp:normalisation}).
+
+\subsubsection{Variance Hinge Loss (Collapse Prevention)}
+
+The VICReg variance term (\cref{eq:vicreg_var}) is applied to all 128
+dimensions of $\mathbf{z}$, ensuring no dimension collapses to a constant.
+The threshold $\gamma = 1.0$ targets unit standard deviation per dimension.
+
+\subsubsection{Covariance Penalty (Linear Independence)}
+
+Cross-partition covariance is penalised:
+\begin{equation}
+  \mathcal{L}_{\text{cov}} = \frac{1}{d^2}
+    \sum_{\substack{i,j: \\ \text{part}(i) \neq \text{part}(j)}} C_{ij}^2,
+  \label{eq:cov_loss}
+\end{equation}
+where $\mathbf{C}$ is the batch covariance matrix and $\text{part}(i)$
+denotes the partition containing dimension $i$. Only cross-partition
+off-diagonal elements are penalised; within-partition correlations are
+permitted.
+
+\subsubsection{Distance Correlation (Nonlinear Independence)}
+
+For each pair of supervised partitions $(i, j)$, the distance correlation
+$\dCor(\mathbf{z}_i, \mathbf{z}_j)$ (\cref{eq:dcor}) captures nonlinear
+dependencies not detected by the covariance penalty. The empirical distance
+correlation is computed from $O(N^2)$ pairwise distance matrices, which for
+$N = 800$ (full-batch training) requires approximately 30~MB of GPU memory
+per partition pair.
+
+% ---------------------------------------------------------------------------
+% 6.5 Curriculum Training
+% ---------------------------------------------------------------------------
+\subsection{Curriculum Training Schedule}
+\label{sec:sdp:curriculum}
+
+Following the capacity-annealing principle from the disentanglement literature
+\cite{burgess2018understanding}, losses are activated in a staged curriculum:
+
+\begin{table}[H]
+  \centering
+  \caption{SDP curriculum training schedule (4 phases).}
+  \label{tab:curriculum}
+  \begin{tabular}{clp{7cm}}
+    \toprule
+    \textbf{Phase} & \textbf{Epochs} & \textbf{Active losses} \\
+    \midrule
+    Warm-up     & 0--9    & $\mathcal{L}_{\text{var}}$ only \\
+    Semantic    & 10--39  & $+ \mathcal{L}_{\text{vol}}, \mathcal{L}_{\text{loc}}, \mathcal{L}_{\text{shape}}$ \\
+    Independence & 40--59 & $+ \mathcal{L}_{\text{cov}}, \mathcal{L}_{\text{dCor}}$ \\
+    Full         & 60--100 & All losses at full strength \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The rationale is that semantic regression must first establish the partition
+structure before independence regularisation is imposed. Premature
+independence penalties can collapse dimensions before they have acquired
+semantic content.
+
+% ---------------------------------------------------------------------------
+% 6.6 Hyperparameters
+% ---------------------------------------------------------------------------
+\subsection{Hyperparameters}
+\label{sec:sdp:hyperparams}
+
+\begin{table}[H]
+  \centering
+  \caption{SDP training hyperparameters.}
+  \label{tab:sdp_hyperparams}
+  \begin{tabular}{lcp{6cm}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Rationale} \\
+    \midrule
+    $\lambda_{\text{vol}}$ & 20.0 & Highest weight; volume is primary target \\
+    $\lambda_{\text{loc}}$ & 12.0 & Moderate weight \\
+    $\lambda_{\text{shape}}$ & 15.0 & Higher than location (harder to learn) \\
+    $\lambda_{\text{cov}}$ & 5.0 & Cross-partition linear independence \\
+    $\lambda_{\text{var}}$ & 5.0 & Collapse prevention \\
+    $\lambda_{\text{dCor}}$ & 2.0 & Nonlinear independence \\
+    Learning rate & $10^{-3}$ & Standard for small MLPs \\
+    Optimizer & AdamW & Decoupled weight decay \\
+    Weight decay & 0.01 & Regularisation \\
+    Epochs & 100 & Sufficient for convergence \\
+    Batch size & 800 (full-batch) & Exact covariance/dCor estimates \\
+    Scheduler & Cosine, 5-epoch warmup & Smooth convergence \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The full-batch training is computationally trivial since the SDP operates on
+precomputed 768-dimensional feature vectors, not 3D volumes. Full-batch
+provides exact (not estimated) covariance and distance correlation statistics.
+
+% ---------------------------------------------------------------------------
+% 6.7 Normalisation Scope
+% ---------------------------------------------------------------------------
+\subsection{Normalisation Scope}
+\label{sec:sdp:normalisation}
+
+Target normalisation statistics ($\mu$, $\sigma$) are computed on the training
+pool (800~subjects) only and applied without recomputation to validation
+(100), test (150), and the Andalusian cohort. This prevents information
+leakage and ensures consistent scaling across all downstream uses of the
+semantic heads.
+
+% ---------------------------------------------------------------------------
+% 6.8 Lipschitz Analysis
+% ---------------------------------------------------------------------------
+\subsection{Lipschitz Continuity Analysis}
+\label{sec:sdp:lipschitz}
+
+With spectral normalisation on both linear layers and GELU activation
+(Lipschitz constant $\approx 1.13$), the global Lipschitz constant of the SDP
+is bounded by:
+\begin{equation}
+  \operatorname{Lip}(g_\theta) \leq
+    \underbrace{1}_{\text{LN}} \cdot
+    \underbrace{1}_{\text{SN}(\mathbf{W}_1)} \cdot
+    \underbrace{1.13}_{\text{GELU}} \cdot
+    \underbrace{1}_{\text{SN}(\mathbf{W}_2)} \approx 1.13.
+  \label{eq:lipschitz}
+\end{equation}
+This ensures that the projection is a near-contraction:
+$\|\mathbf{z}_1 - \mathbf{z}_2\| \leq 1.13\,\|\mathbf{h}_1 - \mathbf{h}_2\|$.
+Encoder feature noise is not amplified through the projection, yielding
+well-conditioned inputs for downstream GP models.
+
+% ---------------------------------------------------------------------------
+% 6.9 Quality Targets
+% ---------------------------------------------------------------------------
+\subsection{Quality Targets}
+\label{sec:sdp:targets}
+
+\begin{table}[H]
+  \centering
+  \caption{SDP quality targets (validation set).}
+  \label{tab:sdp_targets}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Metric} & \textbf{Minimum} & \textbf{Target} & \textbf{Blocking?} \\
+    \midrule
+    Volume $R^2$ & 0.80 & 0.90 & Yes \\
+    Location $R^2$ & 0.85 & 0.95 & Yes \\
+    Shape $R^2$ & 0.30 & 0.40 & Yes \\
+    Max cross-partition correlation & $< 0.30$ & $< 0.20$ & Yes \\
+    $\dCor(\text{vol}, \text{loc})$ & $< 0.20$ & $< 0.10$ & Yes \\
+    Dims with variance $> 0.5$ & $\geq 85\%$ & $\geq 95\%$ & Yes \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{remark}
+  The shape $R^2$ target of 0.30 was not achieved in any experimental
+  condition ($R^2 \leq 0.11$), motivating the R1 revision to drop the shape
+  partition entirely (\cref{sec:eval:revision}).
+\end{remark}

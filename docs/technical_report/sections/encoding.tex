@@ -1,0 +1,181 @@
+% =============================================================================
+% Section 7: Phase 3 — Cohort Encoding and Harmonisation
+% =============================================================================
+\section{Phase 3: Cohort Encoding and Harmonisation}
+\label{sec:encoding}
+
+% ---------------------------------------------------------------------------
+% 7.1 Overview
+% ---------------------------------------------------------------------------
+\subsection{Overview}
+\label{sec:enc:overview}
+
+Phase~3 encodes all MRI volumes from both the BraTS-MEN cross-sectional
+cohort and the Andalusian longitudinal cohort through the frozen
+encoder--SDP pipeline, producing per-subject latent vectors and per-patient
+temporal trajectories suitable for GP-based growth prediction.
+
+The pipeline is fully deterministic (no dropout, model in evaluation mode)
+and proceeds as:
+\begin{equation}
+  \mathbf{x} \in \R^{4 \times 192^3}
+  \xrightarrow{\text{SwinViT (frozen)}}
+  \xrightarrow{\texttt{encoder10}}
+  \xrightarrow{\text{GAP}}
+  \mathbf{h} \in \R^{768}
+  \xrightarrow{g_\theta\,\text{(frozen SDP)}}
+  \mathbf{z} \in \R^{128}.
+  \label{eq:encoding_pipeline}
+\end{equation}
+
+% ---------------------------------------------------------------------------
+% 7.2 Sliding Window Feature Extraction
+% ---------------------------------------------------------------------------
+\subsection{Sliding Window Feature Extraction}
+\label{sec:enc:sliding_window}
+
+For volumes larger than the $128^3$ training ROI, or to ensure consistent
+feature extraction regardless of tumour position, we employ a sliding window
+approach with tumour-weighted averaging:
+\begin{equation}
+  \mathbf{h} = \frac{\sum_{p=1}^{P} w_p \cdot \operatorname{GAP}
+    \bigl(\texttt{encoder10}(\mathbf{x}_p)\bigr)}
+    {\sum_{p=1}^{P} w_p},
+  \quad w_p = \frac{|\text{mask}_p \cap \text{tumour}|}{|\text{patch}_p|},
+  \label{eq:sliding_window}
+\end{equation}
+where $\mathbf{x}_p$ denotes patch $p$, and $w_p$ weights each patch's
+contribution by its tumour content fraction. Patches with no tumour
+($w_p = 0$) are excluded. This ensures that the feature vector is dominated
+by tumour-containing regions.
+
+In practice, the feature extraction transforms use the full $192^3$ ROI
+(see \cref{sec:data:preprocessing}), which provides 100\% tumour containment
+for meningiomas without requiring sliding window aggregation. The sliding
+window protocol is retained for robustness and for use with the Andalusian
+cohort where acquisition protocols may vary.
+
+% ---------------------------------------------------------------------------
+% 7.3 ComBat Harmonisation
+% ---------------------------------------------------------------------------
+\subsection{ComBat Harmonisation}
+\label{sec:enc:combat}
+
+Scanner-induced batch effects in multi-site MRI data can introduce spurious
+variance in the latent space that confounds temporal growth patterns. We
+assess and optionally apply ComBat harmonisation
+\cite{johnson2007adjusting,fortin2018harmonization} to the encoded latent
+vectors.
+
+\subsubsection{Assessment Protocol}
+
+Before applying ComBat, we assess the degree of scanner-induced shift using:
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{MMD between cohorts:} $\text{MMD}^2(\mathbf{z}_{\text{BraTS}},
+    \mathbf{z}_{\text{Andalusian}})$ with permutation test.
+  \item \textbf{UMAP visualisation:} Coloured by site/scanner, to visually
+    assess clustering by acquisition rather than biology.
+  \item \textbf{Kolmogorov--Smirnov tests:} Per-dimension KS tests between
+    sites.
+\end{enumerate}
+
+If the MMD permutation test $p$-value $< 0.05$, ComBat harmonisation is
+applied. Otherwise, harmonisation is skipped to avoid unnecessary smoothing
+of biological signal.
+
+\subsubsection{ComBat Formulation}
+
+ComBat models each latent dimension $j$ at site $s$ as:
+\begin{equation}
+  z_{ij} = \alpha_j + \mathbf{x}_i^\top \boldsymbol{\beta}_j
+    + \gamma_{sj} + \delta_{sj}\,\epsilon_{ij},
+  \label{eq:combat}
+\end{equation}
+where $\alpha_j$ is the overall mean, $\mathbf{x}_i$ are biological
+covariates (age, sex if available), $\gamma_{sj}$ and $\delta_{sj}$ are
+site-specific location and scale effects, and $\epsilon_{ij}$ is the
+residual. Empirical Bayes estimation of $\gamma$ and $\delta$ provides
+stable harmonisation even with small site sample sizes. The harmonised
+value is:
+\begin{equation}
+  z_{ij}^* = \frac{z_{ij} - \hat{\alpha}_j - \mathbf{x}_i^\top
+    \hat{\boldsymbol{\beta}}_j - \hat{\gamma}_{sj}}
+    {\hat{\delta}_{sj}} + \hat{\alpha}_j
+    + \mathbf{x}_i^\top\hat{\boldsymbol{\beta}}_j.
+  \label{eq:combat_corrected}
+\end{equation}
+
+\subsubsection{Scanner Consistency Verification}
+
+A critical prerequisite is verifying scanner consistency within each patient's
+longitudinal series. If a patient was scanned on different scanners across
+visits, standard ComBat (which assumes one site label per observation) may
+distort temporal trends. In this case, LongComBat \cite{beer2020longcombat},
+which explicitly models within-subject scanner changes in a mixed-effects
+framework, should be used instead.
+
+\begin{remark}
+  ComBat's temporal preservation property requires careful verification.
+  For a patient with timepoints $t_1, t_2$ scanned on the same scanner,
+  the temporal difference $\Delta\mathbf{z} = \mathbf{z}(t_2) - \mathbf{z}(t_1)$
+  should be preserved up to the site-specific scale factor $\hat{\delta}_s$.
+  This is tested explicitly in the verification protocol (\cref{sec:evaluation}).
+\end{remark}
+
+% ---------------------------------------------------------------------------
+% 7.4 Trajectory Construction
+% ---------------------------------------------------------------------------
+\subsection{Trajectory Construction}
+\label{sec:enc:trajectories}
+
+For each patient $i$ in the longitudinal cohort, we construct a temporal
+trajectory by:
+\begin{enumerate}[leftmargin=*]
+  \item Encoding all $n_i$ MRI studies through the frozen pipeline, yielding
+    $\{\mathbf{z}_i(t_{ij})\}_{j=1}^{n_i}$.
+  \item Computing time offsets $t_{ij}$ in months from the patient's first
+    scan: $t_{ij} = (\text{date}_{ij} - \text{date}_{i1}) / 30.44$.
+  \item Verifying temporal ordering: $t_{i1} < t_{i2} < \cdots < t_{in_i}$.
+  \item Extracting the partition subvectors:
+    $\Vol(t_{ij}) = \mathbf{z}_i(t_{ij})[0:24]$, etc.
+\end{enumerate}
+
+The output is a set of per-patient trajectories:
+\begin{equation}
+  \mathcal{T}_i = \bigl\{
+    \bigl(\mathbf{z}_i(t_{ij}),\; t_{ij}\bigr)
+  \bigr\}_{j=1}^{n_i}, \quad i = 1, \ldots, N.
+  \label{eq:trajectory}
+\end{equation}
+
+% ---------------------------------------------------------------------------
+% 7.5 Cohort Distribution Comparison
+% ---------------------------------------------------------------------------
+\subsection{Cohort Distribution Comparison}
+\label{sec:enc:distribution}
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}
+    \textbf{Figure placeholder:} Cohort distribution comparison.\\
+    UMAP of BraTS-MEN (blue) vs.\ Andalusian (red) latent vectors.\\
+    Left: before ComBat. Right: after ComBat (if applied).
+  \vspace{3cm}}}
+  \caption{UMAP comparison of BraTS-MEN ($n=1{,}000$) and Andalusian
+    ($n=137$) latent representations. The degree of overlap indicates
+    the compatibility of the two cohorts in the learned latent space.}
+  \label{fig:cohort_umap}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}
+    \textbf{Figure placeholder:} Patient trajectories in latent space.\\
+    2D UMAP with temporal arrows for 5--10 patients with $n_i \geq 3$.
+  \vspace{3cm}}}
+  \caption{Latent space trajectories for selected patients with $\geq 3$
+    timepoints. Arrows indicate temporal progression. Smooth, directed
+    trajectories suggest that the latent space captures meaningful temporal
+    dynamics.}
+  \label{fig:trajectories_umap}
+\end{figure}
