@@ -40,9 +40,9 @@ Usage:
 
     # Full conversion with metadata
     python scripts/convert_mengrowth_to_h5.py \
-        --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/preprocessed/MenGrowth-2025 \
+        --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v1/preprocessed_v1/MenGrowth-2025 \
         --output /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5 \
-        --metadata-csv /media/mpascual/PortableSSD/Meningiomas/MenGrowth/curated/dataset/metadata_enriched.csv
+        --metadata-csv /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v1/curated_v1/dataset/metadata_enriched.csv
 """
 
 from __future__ import annotations

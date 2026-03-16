@@ -39,7 +39,7 @@ Tests are tagged with markers defined in `pyproject.toml`. **Always use markers 
 | `experiments/utils/settings.py` | `pytest -m experiment` |
 | Unknown / broad changes | `pytest -m "not slow and not real_data"` |
 
-**Default safe run** (all fast tests, ~2 min, 370 tests):
+**Default safe run** (all fast tests, ~1.5 min, 512 tests):
 ```bash
 ~/.conda/envs/growth/bin/python -m pytest -m "not slow and not real_data" -v --tb=short
 ```

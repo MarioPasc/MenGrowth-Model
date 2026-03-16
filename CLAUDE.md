@@ -48,8 +48,12 @@ VARIANCE DECOMPOSITION:
 | 1 | ScalarGP | COMPLETE | src/growth/models/growth/scalar_gp.py |
 | 1 | LME | COMPLETE | src/growth/models/growth/lme_model.py |
 | 1 | HGP | COMPLETE | src/growth/models/growth/hgp_model.py |
-| 1 | Gompertz mean function | NOT STARTED | Add to hgp_model.py |
-| 1 | Bootstrap CIs | NOT STARTED | Add to lopo_evaluator.py |
+| 1 | Gompertz mean function | COMPLETE | hgp_model.py (mean_function="gompertz") |
+| 1 | Bootstrap CIs | COMPLETE | run_stage1.py + shared/bootstrap.py |
+| 1 | H5 trajectory loader | COMPLETE | stage1_volumetric/trajectory_loader.py |
+| 1 | Stage 1 orchestrator | COMPLETE | experiments/stage1_volumetric/run_stage1.py |
+| 1 | Stage 1 tests | COMPLETE | tests/growth/test_stage1_pipeline.py (33 tests) |
+| 1 | **Stage 1 LOPO-CV** | **EVALUATED** | LME R²=0.028 (best), CI includes 0 |
 | 2 | Quantile transform | NOT STARTED | quantile_transform.py (new) |
 | 2 | Severity model | NOT STARTED | severity_model.py (new) |
 | 3 | LoRA adaptation | COMPLETE | experiments/lora/ |
@@ -165,7 +169,7 @@ Project root: `/home/mpascual/research/code/MenGrowth-Model/`. Agent environment
 
 | Experiment | Path | Stage | Status |
 |------------|------|-------|--------|
-| Volumetric baseline | `experiments/stage1_volumetric/` | 1 | IN PROGRESS |
+| Volumetric baseline | `experiments/stage1_volumetric/` | 1 | EVALUATED (LME R²=0.028) |
 | Severity model | `experiments/stage2_severity/` | 2 | NOT STARTED |
 | LoRA ablation | `experiments/stage3_latent/lora/` | 3 | COMPLETE |
 | SDP training | `experiments/stage3_latent/sdp/` | 3 | COMPLETE |
