@@ -202,6 +202,8 @@ class HierarchicalGPModel(GrowthModel):
         if len(patients) == 0:
             raise ValueError("Cannot fit with zero patients")
 
+        # GPy's optimize_restarts() uses the global numpy RNG; cannot use
+        # np.random.default_rng() here without patching GPy internals.
         np.random.seed(self.seed)
         self._obs_dim = patients[0].obs_dim
         n_total = sum(p.n_timepoints for p in patients)

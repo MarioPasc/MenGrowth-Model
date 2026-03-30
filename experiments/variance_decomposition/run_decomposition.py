@@ -175,10 +175,17 @@ def _run_lopo_for_model(
         else:
             preds[idx] = float("nan")
 
-    # Fill failed folds with population mean
-    if np.any(np.isnan(preds)):
+    # Fill failed folds with population mean (may bias ΔR² upward)
+    nan_mask = np.isnan(preds)
+    if np.any(nan_mask):
+        n_nan = int(np.sum(nan_mask))
+        failed_ids = [patients[i].patient_id for i in np.where(nan_mask)[0]]
+        logger.warning(
+            f"Imputing {n_nan} failed folds with population mean "
+            f"(patients: {failed_ids}). This may bias ΔR² upward."
+        )
         mean_pred = np.nanmean(preds)
-        preds = np.where(np.isnan(preds), mean_pred, preds)
+        preds = np.where(nan_mask, mean_pred, preds)
 
     return preds
 

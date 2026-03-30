@@ -108,27 +108,33 @@
 Meningiomas are the most prevalent primary intracranial tumours, yet predicting
 their growth trajectories from longitudinal MRI remains an open challenge due to
 heterogeneous growth dynamics and limited longitudinal data. We address the
-question: at what level of model complexity does additional sophistication stop
-improving out-of-sample prediction when the longitudinal cohort contains only
-$N = 31$--$58$ patients? We organise the investigation as a three-stage
-complexity ladder. Stage~1 (volumetric baseline) segments tumours, extracts
-whole-tumour volume, and models scalar volume trajectories with GP and LME
-models. Stage~2 (latent severity) introduces a single patient-specific severity
-parameter $s_i \in [0, 1]$ via a nonlinear mixed-effects model connected to
-Item Response Theory and reduced Gompertz dynamics. Stage~3 (representation
-learning) applies BrainSegFounder---a SwinUNETR foundation model pretrained on
-41,400+ subjects---adapted via Low-Rank Adaptation (LoRA), followed by a
-Supervised Disentangled Projection (SDP) and PCA-compressed GP prediction with
-ARD kernels. A cross-cutting variance decomposition quantifies the marginal
-$\Delta R^2$ of each stage via Leave-One-Patient-Out Cross-Validation, with
-paired permutation tests and BCa bootstrap confidence intervals. Each stage
-must earn its place: the complexity ladder advances only when the next stage
-demonstrates statistically significant improvement. We report the first
-out-of-sample prediction benchmarks for meningioma growth, domain gap analysis
-for the glioma-to-meningioma transfer, LoRA ablation results, and discuss
-methodology revisions motivated by empirical findings including the failure of
-shape disentanglement and the marginal benefit of LoRA adaptation ($\Delta R^2
-= +0.016$) for downstream feature quality.
+question: \emph{at what level of model complexity does additional sophistication
+stop improving out-of-sample prediction when the longitudinal cohort contains
+only $N = 30$ patients?} We organise the investigation as a three-stage
+complexity ladder where each stage must earn its place by demonstrably
+outperforming the previous one under Leave-One-Patient-Out Cross-Validation
+(LOPO-CV). Stage~1 (volumetric baseline) segments tumours via a
+domain-adapted BrainSegFounder encoder, extracts whole-tumour volume, and models
+scalar log-volume trajectories with Gaussian Process (GP), Linear Mixed-Effects
+(LME), and Hierarchical GP models. Stage~2 (latent severity) introduces a
+patient-specific severity parameter via a nonlinear mixed-effects model.
+Stage~3 (representation learning) tests whether deep foundation model features
+add predictive value beyond volume.
+
+Our central finding is that \textbf{parsimony prevails}: the best model is a
+simple LME on volumes from a decoder-adapted BrainSegFounder segmentation,
+achieving $R^2 = 0.387$ with 90\% calibration coverage. Stage~2 fails to
+improve over Stage~1 ($R^2 = -3.54$), largely due to the ordinal time
+representation available in our cohort. Stage~3 is not attempted, as the
+Stage~2 gate is not passed. We further report that segmentation source is a
+stronger determinant of prediction quality than model complexity: the same LME
+model yields $R^2 = 0.028$ on manual segmentations versus $R^2 = 0.387$ on
+automated segmentations, and that LoRA adaptation achieves only marginal
+improvement ($\Delta R^2 = +0.016$) for downstream feature quality while
+catastrophically degrading segmentation (Dice $= 0.003$). These findings
+establish the first out-of-sample prediction benchmarks for meningioma growth
+and demonstrate that the complexity ladder framework effectively identifies the
+appropriate level of model sophistication for small longitudinal cohorts.
 \end{abstract}
 
 \newpage

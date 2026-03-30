@@ -169,6 +169,15 @@ class LOPOEvaluator:
             failed_folds=failed_folds,
         )
 
+        # Per-fold timing summary
+        if fold_results:
+            fit_times = [fr.fit_time_s for fr in fold_results]
+            logger.info(
+                f"LOPO-CV fit times: mean={np.mean(fit_times):.3f}s, "
+                f"std={np.std(fit_times):.3f}s, max={np.max(fit_times):.3f}s, "
+                f"total={np.sum(fit_times):.1f}s"
+            )
+
         logger.info(
             f"LOPO-CV complete: {len(fold_results)}/{n_patients} folds succeeded. "
             f"Metrics: {aggregate_metrics}"

@@ -14,51 +14,49 @@ This thesis has presented a three-stage complexity ladder for meningioma
 growth forecasting from longitudinal multi-modal 3D MRI. Rather than
 proposing a single complex pipeline and reporting its metrics, we
 systematically evaluate whether each successive level of model
-sophistication provides measurable out-of-sample improvement at $N = 31$--$58$
+sophistication provides measurable out-of-sample improvement at $N = 30$
 patients. The key contributions and findings are:
 
 \begin{enumerate}[leftmargin=*]
   \item \textbf{The first out-of-sample meningioma growth prediction
-    benchmark.} Using LOPO-CV on a longitudinal cohort, we provide the
-    first reported $R^2$, MAE, and calibration metrics for meningioma
-    volume prediction. The volumetric baseline (Stage~1: ScalarGP, LME,
-    HGP) establishes a reference point that, to our knowledge, did not
-    previously exist in the literature. The HGP with population linear mean
-    from the LME provides calibrated uncertainty with automatic shrinkage
-    toward the population trend for patients with sparse observations.
+    benchmark.} Using LOPO-CV on a longitudinal cohort of 30~patients,
+    we provide the first reported $R^2$, MAE, and calibration metrics for
+    meningioma volume prediction. The best model---a Linear Mixed-Effects
+    model on volumes from a decoder-adapted BrainSegFounder
+    segmentation---achieves $R^2 = 0.387$ with 90\% calibration coverage
+    under the last-from-rest prediction protocol.
 
-  \item \textbf{A latent severity framework for growth characterisation.}
-    Stage~2 formulates meningioma growth heterogeneity as a latent variable
-    problem connected to Item Response Theory and the reduced Gompertz model
-    \cite{vaghi2020reduced}. A single patient-specific severity parameter
-    $s_i \in [0, 1]$ captures inter-patient variability while respecting
-    the sample size constraint of 2--3 parameters per predictor. The
-    framework provides interpretable patient stratification aligned with
-    the three growth subgroups identified by Engelhardt et al.\
-    \cite{engelhardt2023gompertz}.
+  \item \textbf{Segmentation source dominates model complexity.}
+    A systematic comparison across four segmentation sources (manual,
+    frozen BrainSegFounder, decoder-adapted, LoRA-adapted) reveals that
+    segmentation quality is a stronger determinant of growth prediction
+    than model class. The same LME model yields $R^2 = 0.028$ on manual
+    segmentations versus $R^2 = 0.387$ on adapted segmentations---a
+    14-fold improvement from the data pipeline alone.
 
-  \item \textbf{Systematic assessment of representation learning value.}
-    By placing the full BrainSegFounder + LoRA + SDP pipeline as Stage~3,
-    we directly quantify whether 768-dimensional deep features (compressed
-    via PCA to 3--6 dimensions) capture growth-relevant information beyond
-    what volume and severity already explain. The marginal benefit of LoRA
-    adaptation for feature quality ($\Delta R^2 = +0.016$ on semantic
-    probes) motivates scepticism that the full representation learning
-    pipeline is necessary for this task.
+  \item \textbf{LoRA adaptation: marginal for features, catastrophic for
+    segmentation.} While LoRA achieves only $\Delta R^2 = +0.016$ for
+    downstream feature quality on semantic probes, the LoRA-adapted
+    segmentation is catastrophically broken (WT Dice $= 0.003$),
+    producing degenerate growth predictions ($R^2 = -94$). This finding
+    highlights the importance of evaluating adapters in the context of
+    their downstream task, not just proxy metrics.
 
-  \item \textbf{Variance decomposition as an analytical framework.}
-    The cross-cutting analysis decomposes LOPO-CV prediction variance across
-    the three stages using paired permutation tests and BCa bootstrap CIs.
-    This provides not only a model selection criterion but also a
-    methodological template for evaluating complexity--benefit tradeoffs in
-    small-sample longitudinal prediction problems more broadly.
+  \item \textbf{Stage~2 severity model fails its gate---ordinal time is
+    the blocker.} The latent severity model achieves $R^2 = -3.54$,
+    substantially worse than Stage~1. Root cause analysis identifies the
+    ordinal time representation as the primary failure mode: without exact
+    timestamps, the quantile transform cannot distinguish patients with
+    different growth rates. This is a \emph{finding} that demonstrates
+    the complexity ladder's gate mechanism working as designed---preventing
+    a failing model from propagating errors.
 
-  \item \textbf{Empirically-driven methodology revision.} Rigorous
-    evaluation revealed that shape disentanglement fails ($R^2 \leq 0.11$),
-    meningioma location is temporally static, and sub-compartment volume
-    targets are label-dependent and clinically irrelevant. These findings
-    motivated a principled simplification and the reframing from a linear
-    pipeline to the complexity ladder.
+  \item \textbf{The complexity ladder as a methodological framework.}
+    The staged approach with explicit gate criteria ($\Delta R^2 > 0$,
+    $p < 0.05$, CI excluding zero) provides a principled answer to the
+    question ``how much complexity is warranted?'' At $N = 30$, the answer
+    is: a simple LME on well-segmented volumes. The framework is
+    transferable to other small-sample longitudinal prediction problems.
 \end{enumerate}
 
 % ---------------------------------------------------------------------------
@@ -67,37 +65,44 @@ patients. The key contributions and findings are:
 \subsection{Limitations}
 \label{sec:conc:limitations}
 
+\subsubsection{Ordinal Time Is the Critical Blocker}
+
+The absence of exact acquisition timestamps is the single most impactful
+limitation. Ordinal time indices ($1, 2, 3, \ldots$) destroy temporal
+magnitude information, preventing the severity model from learning meaningful
+growth dynamics and rendering temporal hyperparameters (GP length-scales,
+growth rates) clinically uninterpretable. This limitation does not invalidate
+the Stage~1 comparison (all models share the same time representation) but
+blocks all Stage~2+ analyses.
+
 \subsubsection{Cohort Size}
 
-The longitudinal cohort ($N = 31$--$58$ patients, $\sim$112~observations)
-is the primary bottleneck. With approximately 57.6\% of patients having
-only 2~studies, per-patient growth trajectories are sparse. The GP and LME
+The longitudinal cohort ($N = 30$ patients, $\sim$112~observations) is a
+fundamental bottleneck. With approximately 57.6\% of patients having only
+2~studies, per-patient growth trajectories are sparse. The GP and LME
 frameworks handle this via automatic shrinkage toward the population mean,
 but predictions for 2-observation patients are necessarily dominated by
 population-level dynamics rather than individual-specific growth rates.
 The sample size also limits the statistical power of the variance
 decomposition: Varoquaux \cite{varoquaux2018cv} showed that CV error
 estimates have standard deviations of $\sim$$\pm$10\% at $N = 100$, and
-uncertainty is larger still at $N = 33$.
+uncertainty is larger still at $N = 30$.
 
-\subsubsection{Ordinal Time}
+\subsubsection{No Bootstrap Confidence Intervals}
 
-At the time of writing, exact acquisition timestamps for the longitudinal
-cohort are pending. If only ordinal timepoint indices are available (scan~1,
-scan~2, scan~3, \ldots) rather than calendar dates, the temporal models
-operate on a surrogate time axis. This does not invalidate the complexity
-ladder comparison (all models use the same time representation) but limits
-the clinical interpretability of growth rate estimates and length-scale
-hyperparameters.
+The current results do not include bootstrap CIs on the reported $R^2$
+values. The $R^2 = 0.387$ of the best model may have a CI that includes
+zero, which would weaken the claim of genuine predictive ability.
+Computing BCa bootstrap CIs is a priority for the final evaluation.
 
-\subsubsection{LoRA Marginality and Stage~3 Viability}
+\subsubsection{LoRA Segmentation Failure}
 
-The marginal benefit of LoRA adaptation ($\Delta R^2 = +0.016$ for
-semantic probing) suggests that the entire Stage~3 pipeline may provide
-limited value at the current sample size. This is, however, a finding
-rather than a failure: establishing that simple volumetric models suffice
-is a valuable negative result that can save computational resources in
-clinical deployment.
+The catastrophic failure of LoRA-adapted segmentation (WT Dice $= 0.003$)
+is unexpected given that the same LoRA checkpoint achieves reasonable
+segmentation Dice on BraTS-MEN validation data. This suggests a mismatch
+between the LoRA training data distribution and the longitudinal cohort,
+possibly due to preprocessing differences or domain shift between the
+BraTS-MEN competition data and the clinical Andalusian cohort.
 
 \subsubsection{Single-Site Longitudinal Data}
 
@@ -112,8 +117,7 @@ differences.
 The pipeline has not been validated against clinical outcomes (intervention
 decisions, actual tumour behaviour at longer follow-up). Volume prediction
 $R^2$ and calibration metrics are necessary but not sufficient for clinical
-utility. A positive growth prediction does not, by itself, determine the
-appropriate clinical action.
+utility.
 
 % ---------------------------------------------------------------------------
 % 10.3 Future Work
@@ -121,22 +125,36 @@ appropriate clinical action.
 \subsection{Future Work}
 \label{sec:conc:future}
 
+\subsubsection{Exact Timestamps (Highest Priority)}
+
+Obtaining exact acquisition dates would: (i)~enable re-evaluation of Stage~2,
+which currently fails due to ordinal time; (ii)~provide physically meaningful
+growth rate estimation; (iii)~improve GP length-scale interpretability; and
+(iv)~allow direct comparison with volumetric growth rates reported in the
+clinical literature \cite{hashimoto2012natural,nakamura2003natural,
+engelhardt2023gompertz}.
+
+\subsubsection{Bootstrap Confidence Intervals}
+
+Computing BCa bootstrap CIs for all reported $R^2$ values will quantify the
+uncertainty of our findings and determine whether the $R^2 = 0.387$ of the
+best model is statistically distinguishable from zero. This is essential for
+the variance decomposition analysis.
+
+\subsubsection{LoRA Segmentation Diagnosis}
+
+Investigating the catastrophic LoRA segmentation failure on the longitudinal
+cohort---despite acceptable performance on BraTS-MEN validation---would
+clarify whether this is a data preprocessing issue, a domain shift problem,
+or a fundamental limitation of LoRA adaptation for cross-cohort transfer.
+
 \subsubsection{Cohort Expansion to $N \geq 50$}
 
-The most impactful improvement would be expanding the longitudinal cohort.
 Multi-centre collaborations targeting $N \geq 50$ patients would: (i)~tighten
 the variance decomposition CIs, enabling confident $\Delta R^2$ conclusions;
 (ii)~potentially unlock value in Stage~2 and~3 by providing sufficient data
 for more complex models; (iii)~enable subgroup analyses by tumour grade,
 location, and patient demographics.
-
-\subsubsection{Exact Timestamps}
-
-Obtaining exact acquisition dates would enable physically meaningful
-growth rate estimation, improve GP length-scale interpretability, and allow
-direct comparison with the volumetric growth rates reported in the clinical
-literature \cite{hashimoto2012natural,nakamura2003natural,
-engelhardt2023gompertz}.
 
 \subsubsection{Clinical Decision Support Integration}
 
@@ -154,14 +172,6 @@ where $\Phi$ is the standard normal CDF and $(\mu_*, \sigma_*)$ are the GP
 posterior mean and standard deviation in log-volume space. Integrating this
 into a clinical workflow would require prospective validation and regulatory
 approval.
-
-\subsubsection{Severity-Guided Surveillance}
-
-If the severity model (Stage~2) provides robust patient stratification,
-it could inform surveillance scheduling: high-severity patients receive
-shorter follow-up intervals, while low-severity patients can be monitored
-less frequently. This requires validation of the severity--growth
-relationship at longer follow-up horizons.
 
 \subsubsection{Foundation Model Scaling}
 

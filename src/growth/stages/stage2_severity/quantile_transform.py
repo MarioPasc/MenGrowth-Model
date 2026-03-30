@@ -22,7 +22,6 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.stats import rankdata
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +89,19 @@ class QuantileTransform:
         self._growth_ecdf_values = np.arange(1, n + 1) / (n + 1)
 
         self._fitted = True
+
+        n_unique_growth = len(np.unique(self._all_growths))
+        from scipy.stats import skew as _skew
+
+        growth_skewness = float(_skew(self._all_growths))
         logger.info(
             f"QuantileTransform fitted on {len(self._all_times)} observations. "
             f"Time range: [{self._all_times.min():.1f}, {self._all_times.max():.1f}], "
             f"Growth range: [{self._all_growths.min():.3f}, {self._all_growths.max():.3f}]"
+        )
+        logger.info(
+            f"  Unique growth values: {n_unique_growth}/{len(self._all_growths)}, "
+            f"growth skewness: {growth_skewness:.3f}"
         )
         return self
 
@@ -182,8 +190,14 @@ class QuantileTransform:
     def _ecdf(values: np.ndarray, reference: np.ndarray) -> np.ndarray:
         """Compute empirical CDF quantiles of values w.r.t. reference distribution.
 
-        Uses rankdata with method='average' and the (rank) / (n+1) convention
-        to produce values in (0, 1).
+        Uses searchsorted with the ``rank / (n + 1)`` convention where
+        ``n = len(reference)``, ensuring consistency with the ECDF values
+        stored by ``fit()`` (which also use denominator ``n + 1``).
+
+        The previous implementation concatenated query + reference and ranked
+        jointly, producing a denominator of ``(n + m + 1)`` that shifted with
+        query size — causing a systematic scale mismatch with
+        ``inverse_growth()``.
 
         Args:
             values: Values to transform, shape ``[m]``.
@@ -192,9 +206,11 @@ class QuantileTransform:
         Returns:
             Quantiles in (0, 1), shape ``[m]``.
         """
-        combined = np.concatenate([reference, values])
-        ranks = rankdata(combined, method="average")
-        n = len(reference)
-        query_ranks = ranks[n:]
-        quantiles = query_ranks / (len(combined) + 1)
+        sorted_ref = np.sort(reference)
+        n = len(sorted_ref)
+        # Number of reference values <= each query value
+        ranks = np.searchsorted(sorted_ref, values, side="right")
+        # Use (rank + 0.5) / (n + 1) for continuity correction, consistent
+        # with the Hazen plotting position used in fit()
+        quantiles = (ranks + 0.5) / (n + 1)
         return np.clip(quantiles, 0.001, 0.999)

@@ -53,17 +53,18 @@ VARIANCE DECOMPOSITION:
 | 1 | H5 trajectory loader | COMPLETE | stage1_volumetric/trajectory_loader.py |
 | 1 | Stage 1 orchestrator | COMPLETE | experiments/stage1_volumetric/run_stage1.py |
 | 1 | Stage 1 tests | COMPLETE | tests/growth/test_stage1_pipeline.py (33 tests) |
-| 1 | **Stage 1 LOPO-CV** | **EVALUATED** | LME R²=0.028 (best), CI includes 0 |
+| 1 | **Stage 1 LOPO-CV** | **EVALUATED** | LME R²=0.387 (BSF-adapted best), R²=0.028 (manual) |
+| 1 | Segmentation comparison | **EVALUATED** | 4 sources × 3 models, decoder-adapted wins |
 | 2 | Quantile transform | COMPLETE | stage2_severity/quantile_transform.py |
 | 2 | Severity model (MLE) | COMPLETE | stage2_severity/severity_model.py |
 | 2 | Severity model (Bayesian) | COMPLETE | stage2_severity/bayesian_severity_model.py |
 | 2 | Severity regression head | COMPLETE | stage2_severity/severity_regression.py |
 | 2 | Stage 2 tests | COMPLETE | test_stage2_severity.py + test_stage2_bayesian.py (48 tests) |
-| 2 | **Stage 2 LOPO-CV** | **EVALUATED** | R²=-3.54 (does not beat Stage 1 on ordinal time) |
+| 2 | **Stage 2 LOPO-CV** | **GATE FAILED** | R²=-3.54 (ordinal time blocker) |
 | 3 | LoRA adaptation | COMPLETE | experiments/lora/ |
 | 3 | SDP network | COMPLETE | src/growth/models/projection/ |
-| 3 | PCA + ARD GP pipeline | NOT STARTED | deep_feature_gp.py (new) |
-| — | Variance decomposition | NOT STARTED | variance_decomposition.py (new) |
+| 3 | PCA + ARD GP pipeline | BLOCKED | Stage 2 gate not passed |
+| — | Variance decomposition | BLOCKED | Requires all stages evaluated |
 | — | Data infrastructure | COMPLETE | BraTSDatasetH5, HDF5 v2.0 |
 | — | LOPO-CV evaluator | COMPLETE | src/growth/evaluation/lopo_evaluator.py |
 
@@ -113,12 +114,12 @@ VARIANCE DECOMPOSITION:
 
 The project follows a **3-stage complexity ladder**. Each stage must earn its place: Stage K+1 is only justified if it demonstrably outperforms Stage K under LOPO-CV.
 
-| Stage | Spec | Key Question | Pass Criterion |
-|-------|------|-------------|----------------|
-| 1 | `docs/stages/stage_1_volumetric_baseline.md` | How well does volume alone predict growth? | R²_log > 0 with bootstrap CI excluding 0 |
-| 2 | `docs/stages/stage_2_severity_model.md` | Does a latent severity improve over volume? | R²_severity > R²_baseline (p < 0.05) |
-| 3 | `docs/stages/stage_3_representation_learning.md` | Do deep features add signal beyond severity? | R²_deep > R²_severity (p < 0.05) |
-| — | `docs/stages/variance_decomposition.md` | What fraction of variance does each stage explain? | ΔR² table with CIs |
+| Stage | Spec | Key Question | Pass Criterion | Gate Status |
+|-------|------|-------------|----------------|-------------|
+| 1 | `docs/stages/stage_1_volumetric_baseline.md` | How well does volume alone predict growth? | R²_log > 0 with bootstrap CI excluding 0 | **PASS** (R²=0.387 adapted) |
+| 2 | `docs/stages/stage_2_severity_model.md` | Does a latent severity improve over volume? | R²_severity > R²_baseline (p < 0.05) | **FAIL** (R²=-3.54) |
+| 3 | `docs/stages/stage_3_representation_learning.md` | Do deep features add signal beyond severity? | R²_deep > R²_severity (p < 0.05) | BLOCKED |
+| — | `docs/stages/variance_decomposition.md` | What fraction of variance does each stage explain? | ΔR² table with CIs | BLOCKED |
 
 **Before starting any stage**, read its spec document and the `RESEARCH_PLAN.md` + `PLAN_OF_ACTION_v1.md` for full context.
 
@@ -173,12 +174,24 @@ Project root: `/home/mpascual/research/code/MenGrowth-Model/`. Agent environment
 
 | Experiment | Path | Stage | Status |
 |------------|------|-------|--------|
-| Volumetric baseline | `experiments/stage1_volumetric/` | 1 | EVALUATED (LME R²=0.028) |
-| Severity model | `experiments/stage2_severity/` | 2 | EVALUATED (R²=-3.54, ordinal time) |
+| Volumetric baseline | `experiments/stage1_volumetric/` | 1 | EVALUATED (LME R²=0.387 adapted, 0.028 manual) |
+| Segmentation comparison | External: see §5.6 | 1 | EVALUATED (4 sources × 3 models) |
+| Severity model | `experiments/stage2_severity/` | 2 | GATE FAILED (R²=-3.54, ordinal time) |
 | LoRA ablation | `experiments/stage3_latent/lora/` | 3 | COMPLETE |
 | SDP training | `experiments/stage3_latent/sdp/` | 3 | COMPLETE |
 | Domain gap analysis | `experiments/stage3_latent/domain_gap/` | 3 | COMPLETE |
-| Variance decomposition | `experiments/variance_decomposition/` | Cross | NOT STARTED |
+| Variance decomposition | `experiments/variance_decomposition/` | Cross | BLOCKED |
+
+### 5.6 External Results
+
+Stage 1 results (4-source × 3-model comparison) are stored externally:
+```
+/media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/
+  segment_volume_prediction/BrainSegFounder_GP_predict_volume_change/
+    model_comparison.json         # Full 12-config ranking
+    growth_prediction/{source}/   # Per-source LOPO results
+    segmentation/volume_summary.json  # Dice scores per source
+```
 
 ### 5.4 When to Use What
 
@@ -266,7 +279,7 @@ Full standards in `.claude/rules/coding-standards.md`. The essentials:
 
 - **Framework:** pytest via `~/.conda/envs/growth/bin/python -m pytest`
 - **Markers:** `phase0`, `phase1`, `phase2`, `evaluation`, `experiment`, `unit`, `slow`, `real_data`
-- **Safe default:** `pytest -m "not slow and not real_data" -v --tb=short` (~2 min, 479 tests)
+- **Safe default:** `pytest -m "not slow and not real_data" -v --tb=short` (~2 min, 548 tests)
 - **By area:** `pytest -m phase1`, `pytest -m evaluation`, etc.
 
 | Files changed in... | Run |

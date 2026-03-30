@@ -89,7 +89,12 @@ def extract_per_patient_errors(lopo_results: LOPOResults) -> dict[str, dict]:
     for fr in lopo_results.fold_results:
         if "last_from_rest" not in fr.predictions:
             continue
-        for p in fr.predictions["last_from_rest"]:
+        preds = fr.predictions["last_from_rest"]
+        assert len(preds) == 1, (
+            f"last_from_rest should return exactly 1 prediction per fold, "
+            f"got {len(preds)} for patient {fr.patient_id}"
+        )
+        for p in preds:
             err = p["pred_mean"] - p["actual"]
             errors[fr.patient_id] = {
                 "error": float(err),
@@ -163,6 +168,10 @@ def compute_bootstrap_cis_with_distribution(
             preds.append(p["pred_mean"])
 
     if len(actuals) < 3:
+        logger.warning(
+            f"Only {len(actuals)} predictions available (need >= 3 for bootstrap CIs). "
+            f"Returning empty CIs."
+        )
         return {}, {}
 
     y_true = np.array(actuals)
@@ -252,12 +261,23 @@ def serialize_trajectories(trajectories: list[PatientTrajectory]) -> list[dict]:
 
 
 def build_run_metadata(config: dict, stage_name: str) -> dict:
-    """Build run metadata with config snapshot, timestamp, git hash."""
+    """Build run metadata with config snapshot, timestamp, git hash, and environment."""
+    import sys
+
     meta: dict = {
         "stage": stage_name,
         "timestamp": datetime.datetime.now().isoformat(),
         "config": config,
+        "python_version": sys.version,
     }
+
+    # Key package versions (best-effort)
+    for pkg in ("numpy", "scipy", "GPy", "statsmodels", "torch", "monai"):
+        try:
+            mod = __import__(pkg)
+            meta.setdefault("package_versions", {})[pkg] = getattr(mod, "__version__", "unknown")
+        except ImportError:
+            pass
 
     # Git hash (best-effort)
     try:
@@ -290,7 +310,7 @@ def save_stage_results(
     bootstrap_n: int = 2000,
     bootstrap_seed: int = 42,
     extra_data: dict | None = None,
-) -> None:
+) -> dict[str, BootstrapResult] | None:
     """Save comprehensive results for one model.
 
     Creates the standard output directory structure with all raw data

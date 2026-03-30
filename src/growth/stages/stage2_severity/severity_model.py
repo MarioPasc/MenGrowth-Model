@@ -216,6 +216,12 @@ class SeverityModel(GrowthModel):
             f"theta={theta_opt}, severity range=[{s_opt.min():.3f}, {s_opt.max():.3f}], "
             f"severity std={s_opt.std():.3f}"
         )
+        logger.info(
+            f"Severity percentiles: "
+            f"25%={np.percentile(s_opt, 25):.3f}, "
+            f"median={np.median(s_opt):.3f}, "
+            f"75%={np.percentile(s_opt, 75):.3f}"
+        )
 
         # 4. Compute residual std from training data
         self._residual_std = self._compute_residual_std(patient_quantiles, theta_opt, s_opt)

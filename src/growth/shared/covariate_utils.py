@@ -130,6 +130,16 @@ def collect_covariates(
         f"{n_with_covs}/{len(filtered_patients)} patients have values"
     )
 
+    # Per-covariate diagnostics
+    if cov_values:
+        all_vecs = np.array(list(cov_values.values()))
+        for j, name in enumerate(used_names):
+            col = all_vecs[:, j]
+            logger.debug(
+                f"  Covariate '{name}': mean={col.mean():.3f}, std={col.std():.3f}, "
+                f"range=[{col.min():.3f}, {col.max():.3f}]"
+            )
+
     return cov_values, used_names, filtered_patients
 
 

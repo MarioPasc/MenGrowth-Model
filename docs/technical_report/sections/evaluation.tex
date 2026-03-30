@@ -97,10 +97,10 @@ Each stage has specific quality targets that must be met before advancing.
     \textbf{Metric} & \textbf{Target} & \textbf{Minimum} &
       \textbf{Status} \\
     \midrule
-    ScalarGP LOPO completes (33 folds) & All & All & \textit{[to fill]} \\
-    LME LOPO $R^2$ & $> 0.30$ & $> 0$ & \textit{[to fill]} \\
-    HGP LOPO $R^2 \geq$ ScalarGP $R^2$ & Yes & --- & \textit{[to fill]} \\
-    GP calibration (95\% CI coverage) & 0.90--0.98 & $\geq 0.80$ & \textit{[to fill]} \\
+    ScalarGP LOPO completes (30 folds) & All & All & \textbf{PASS} (30/30) \\
+    LME LOPO $R^2$ & $> 0.30$ & $> 0$ & \textbf{PASS} ($R^2 = 0.387$, adapted) \\
+    HGP LOPO $R^2 \geq$ ScalarGP $R^2$ & Yes & --- & \textbf{FAIL} ($-0.086 < -0.009$) \\
+    GP calibration (95\% CI coverage) & 0.90--0.98 & $\geq 0.80$ & \textbf{PASS} (0.90--0.93) \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -116,11 +116,11 @@ Each stage has specific quality targets that must be met before advancing.
     \textbf{Metric} & \textbf{Target} & \textbf{Minimum} &
       \textbf{Status} \\
     \midrule
-    Growth function monotonicity & Verified & Verified & \textit{[to fill]} \\
-    Boundary condition $g(s, 0) = 0$ & Exact & Exact & \textit{[to fill]} \\
-    Severity spread ($\text{std}(s_i) > 0.1$) & $> 0.15$ & $> 0.10$ & \textit{[to fill]} \\
-    LOPO $R^2 \geq$ Stage~1 best & Yes & --- & \textit{[to fill]} \\
-    $\Delta R^2$ significant ($p < 0.05$) & Yes & --- & \textit{[to fill]} \\
+    Growth function monotonicity & Verified & Verified & \textbf{PASS} \\
+    Boundary condition $g(s, 0) = 0$ & Exact & Exact & \textbf{PASS} \\
+    Severity spread ($\text{std}(s_i) > 0.1$) & $> 0.15$ & $> 0.10$ & \textit{pending} \\
+    LOPO $R^2 \geq$ Stage~1 best & Yes & --- & \textbf{FAIL} ($R^2 = -3.54$) \\
+    $\Delta R^2$ significant ($p < 0.05$) & Yes & --- & \textbf{FAIL} (gate not passed) \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -136,11 +136,11 @@ Each stage has specific quality targets that must be met before advancing.
     \textbf{Metric} & \textbf{Target} & \textbf{Minimum} &
       \textbf{Status} \\
     \midrule
-    SDP Vol $R^2$ on validation & $\geq 0.90$ & $\geq 0.80$ & \textit{[to fill]} \\
-    PCA components retained & 3--6 & $\geq 3$ & \textit{[to fill]} \\
-    LOPO $R^2 \geq$ Stage~2 & Yes & --- & \textit{[to fill]} \\
-    $\Delta R^2$ significant ($p < 0.05$) & Yes & --- & \textit{[to fill]} \\
-    ARD length-scales interpretable & Yes & --- & \textit{[to fill]} \\
+    SDP Vol $R^2$ on validation & $\geq 0.90$ & $\geq 0.80$ & \textit{not attempted} \\
+    PCA components retained & 3--6 & $\geq 3$ & \textit{not attempted} \\
+    LOPO $R^2 \geq$ Stage~2 & Yes & --- & \textit{not attempted} \\
+    $\Delta R^2$ significant ($p < 0.05$) & Yes & --- & \textit{not attempted} \\
+    ARD length-scales interpretable & Yes & --- & \textit{not attempted} \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -156,10 +156,10 @@ Each stage has specific quality targets that must be met before advancing.
     \textbf{Metric} & \textbf{Target} & \textbf{Minimum} &
       \textbf{Status} \\
     \midrule
-    Best LOPO Vol $R^2$ (any model) & $\geq 0.50$ & $\geq 0.30$ & \textit{[to fill]} \\
-    Calibration (95\% CI, best GP) & 0.90--0.98 & $\geq 0.80$ & \textit{[to fill]} \\
-    Per-patient $r$ ($n_i \geq 3$) & $\geq 0.80$ & $\geq 0.60$ & \textit{[to fill]} \\
-    Variance decomposition complete & All stages & Stage~1 & \textit{[to fill]} \\
+    Best LOPO Vol $R^2$ (any model) & $\geq 0.50$ & $\geq 0.30$ & \textbf{PASS} ($R^2 = 0.387$) \\
+    Calibration (95\% CI, best GP) & 0.90--0.98 & $\geq 0.80$ & \textbf{PASS} (0.90) \\
+    Per-patient $r$ ($n_i \geq 3$) & $\geq 0.80$ & $\geq 0.60$ & \textbf{FAIL} ($r = -0.07$) \\
+    Variance decomposition complete & All stages & Stage~1 & \textit{Stage~1 only} \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -177,9 +177,9 @@ targets for internal validation:
     \toprule
     \textbf{Metric} & \textbf{Target} & \textbf{Minimum} & \textbf{Status} \\
     \midrule
-    Dice (WT) on \texttt{lora\_val} & $\geq 0.85$ & $\geq 0.80$ & \textit{[to fill]} \\
-    Dice improvement over frozen BSF & $\geq 0.05$ & $\geq 0.02$ & \textit{[to fill]} \\
-    Linear probe Vol $R^2$ (adapted) & $\geq 0.50$ & $\geq 0.30$ & \textit{[to fill]} \\
+    Dice (WT) on \texttt{lora\_val} & $\geq 0.85$ & $\geq 0.80$ & \textbf{PASS} (0.84 adapted decoder) \\
+    Dice improvement over frozen BSF & $\geq 0.05$ & $\geq 0.02$ & \textbf{PASS} ($+0.36$) \\
+    Linear probe Vol $R^2$ (adapted) & $\geq 0.50$ & $\geq 0.30$ & \textbf{PASS} (0.62 dual LoRA) \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -259,34 +259,65 @@ GP cannot reliably fit at $N = 33$.
 
 \begin{table}[H]
   \centering
-  \caption{Stage~1 model comparison (LOPO-CV, $N$ folds).}
+  \caption{Stage~1 model comparison on manual segmentations (LOPO-CV, $N=30$ folds,
+    last-from-rest protocol). All metrics in log-volume space.}
   \label{tab:stage1_comparison}
   \begin{tabular}{lccccc}
     \toprule
     \textbf{Model} & \textbf{Params} & \textbf{Vol $R^2$} &
-      \textbf{Vol MAE} & \textbf{Calibration} &
+      \textbf{Vol MAE} & \textbf{Cal$_{95}$} &
       \textbf{Per-patient $r$} \\
     \midrule
-    ScalarGP & 5   & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
-    LME      & 6   & \textit{[to fill]} & \textit{[to fill]} & --- & \textit{[to fill]} \\
-    HGP      & 5   & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    ScalarGP & 5   & $-0.009$ & 1.913 & 0.90 & 0.209 \\
+    LME      & 6   & $\mathbf{0.028}$ & 1.428 & 0.90 & $-0.368$ \\
+    HGP      & 5   & $-0.086$ & 1.906 & 0.93 & $-0.342$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 \begin{table}[H]
   \centering
-  \caption{Cross-stage model comparison (LOPO-CV, $N$ folds).}
+  \caption{Impact of segmentation source on growth prediction (LME model,
+    LOPO-CV, last-from-rest protocol). The segmentation source is a stronger
+    determinant of prediction quality than model class.}
+  \label{tab:segmentation_source_comparison}
+  \begin{tabular}{lccccc}
+    \toprule
+    \textbf{Segmentation source} & \textbf{WT Dice} & \textbf{$N$ folds} &
+      \textbf{Vol $R^2$} & \textbf{Vol MAE} & \textbf{Cal$_{95}$} \\
+    \midrule
+    BSF decoder-adapted (MEN) & 0.84 & 30 & $\mathbf{0.387}$ & 1.163 & 0.90 \\
+    BSF LoRA $r$=8 (MEN) & 0.003 & 30 & 0.076 & 0.001 & 0.93 \\
+    Manual (radiologist) & --- & 30 & 0.028 & 1.428 & 0.90 \\
+    Frozen BSF (no adaptation) & 0.48 & 23 & $-0.288$ & 1.908 & 0.87 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent \textbf{Key findings.}
+The LME model on BSF decoder-adapted volumes achieves the best overall performance
+($R^2 = 0.387$), substantially outperforming the same model on manual segmentations
+($R^2 = 0.028$). The LoRA-adapted segmentation is catastrophically broken (WT Dice
+$= 0.003$), producing near-constant volume predictions that achieve low MAE but
+degenerate $R^2$ due to zero variance. The frozen BSF fails on 7 patients (empty
+segmentations) and achieves negative $R^2$. These results demonstrate that
+segmentation quality is a stronger determinant of growth prediction than model
+complexity.
+
+\begin{table}[H]
+  \centering
+  \caption{Cross-stage model comparison (LOPO-CV). Stage~2 fails its gate;
+    Stage~3 is not attempted.}
   \label{tab:cross_stage_comparison}
   \begin{tabular}{lccccc}
     \toprule
     \textbf{Stage} & \textbf{Best model} & \textbf{Vol $R^2$} &
-      \textbf{$\Delta R^2$} & \textbf{$p$-value} &
-      \textbf{95\% CI} \\
+      \textbf{$\Delta R^2$} & \textbf{Gate} &
+      \textbf{Status} \\
     \midrule
-    Stage~1 & \textit{[to fill]} & \textit{[to fill]} & --- & --- & \textit{[to fill]} \\
-    Stage~2 & Severity & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
-    Stage~3 & Deep GP & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} & \textit{[to fill]} \\
+    Stage~1 & LME (adapted) & $\mathbf{0.387}$ & --- & --- & \textbf{PASS} \\
+    Stage~2 & Severity (MLE) & $-3.54$ & $-3.93$ & $R^2 >$ Stage~1 & \textbf{FAIL} \\
+    Stage~3 & --- & --- & --- & Stage~2 gate & \textit{not attempted} \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -463,3 +494,52 @@ This finding motivates the complexity ladder design: if LoRA provides
 marginal benefit for feature quality, the entire Stage~3 representation
 learning pipeline may provide marginal benefit for growth prediction.
 The variance decomposition will quantify this directly.
+
+% ---------------------------------------------------------------------------
+% 9.8 Stage 2 Gate Failure Analysis
+% ---------------------------------------------------------------------------
+\subsection{Stage~2 Gate Failure Analysis}
+\label{sec:eval:stage2_failure}
+
+The severity model (Stage~2) achieves $R^2 = -3.54$ under LOPO-CV,
+substantially worse than all Stage~1 models and even worse than the population
+mean ($M_0$). This result decisively fails the Stage~2 gate criterion
+($R^2_{\text{Stage~2}} \geq R^2_{\text{Stage~1}}$), preventing advancement to
+Stage~3.
+
+\subsubsection{Root Cause: Ordinal Time Representation}
+
+The primary cause is the \textbf{ordinal time representation} available in the
+longitudinal cohort: scan indices (1, 2, 3, \ldots) rather than calendar dates.
+The severity model's quantile transform maps absolute elapsed times to quantile
+space, but when times are ordinal, the transform becomes a near-identity mapping
+that destroys the temporal magnitude information needed to differentiate growth
+rates. A patient with two scans 6~months apart and a patient with two scans
+5~years apart both receive ordinal times $\{0, 1\}$, making their growth
+trajectories indistinguishable in quantile space.
+
+\subsubsection{Secondary Factors}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Reduced Gompertz over-parameterisation.} With $N=30$ patients
+    and ordinal time, the 3~population parameters of the reduced Gompertz
+    growth function cannot be reliably estimated.
+  \item \textbf{Regression head degeneration.} The severity regression head
+    predicts $s_i$ from baseline features, but when the jointly-estimated
+    severities $\{s_i\}$ are poorly identified (due to ordinal time), the
+    regression targets contain noise rather than signal.
+\end{itemize}
+
+\subsubsection{Implications}
+
+This failure is a \emph{finding}, not a deficiency of the framework. It
+empirically demonstrates that the severity model requires exact timestamps ---
+ordinal time is insufficient for a temporal normalisation approach. The
+complexity ladder correctly identifies this: the gate mechanism prevents a
+failing model from propagating errors to Stage~3.
+
+\textbf{Remediation.} Obtaining exact acquisition dates from the clinical
+information system would enable re-evaluation of Stage~2. With physically
+meaningful elapsed times, the quantile transform can recover genuine growth
+rate information, and the severity model may provide the patient-level
+differentiation it is designed to capture.

@@ -44,6 +44,7 @@ class SeverityRegressionHead:
         self.lambda_reg = lambda_reg
         self._weights: np.ndarray | None = None
         self._bias: float = 0.5
+        self._feature_means: np.ndarray | None = None
         self._fitted = False
 
     def extract_features(self, patient: PatientTrajectory) -> dict[str, float]:
@@ -102,11 +103,15 @@ class SeverityRegressionHead:
             )
             self._weights = None
             self._bias = float(np.mean(severities))
+            self._feature_means = np.zeros(len(self.feature_names))
             self._fitted = True
             return
 
         X = np.array(X_list)
         y = np.array(y_list)
+
+        # Store per-feature means for NaN imputation at predict time
+        self._feature_means = np.mean(X, axis=0)
 
         # Ridge regression: w = (X^T X + lambda I)^{-1} X^T y
         # Augmented with bias column
@@ -148,8 +153,13 @@ class SeverityRegressionHead:
         feats = self.extract_features(patient)
         vec = np.array([feats[name] for name in self.feature_names])
 
-        # Replace NaN with 0 (centered features won't bias prediction much)
-        vec = np.nan_to_num(vec, nan=0.0)
+        # Impute NaN with training feature means (not 0, which would be far
+        # from typical values — e.g. log_volume=0 means zero-volume tumor)
+        nan_mask = np.isnan(vec)
+        if np.any(nan_mask) and self._feature_means is not None:
+            nan_names = [n for n, m in zip(self.feature_names, nan_mask) if m]
+            logger.debug(f"Imputing NaN features with training means: {nan_names}")
+            vec = np.where(nan_mask, self._feature_means, vec)
 
         s_hat = float(np.dot(self._weights, vec) + self._bias)
         return float(np.clip(s_hat, 0.01, 0.99))
@@ -166,7 +176,10 @@ class SeverityRegressionHead:
         if not self._fitted or self._weights is None:
             return float(np.clip(self._bias, 0.01, 0.99))
 
-        vec = np.array([features.get(name, 0.0) for name in self.feature_names])
-        vec = np.nan_to_num(vec, nan=0.0)
+        defaults = self._feature_means if self._feature_means is not None else np.zeros(len(self.feature_names))
+        vec = np.array([features.get(name, defaults[i]) for i, name in enumerate(self.feature_names)])
+        nan_mask = np.isnan(vec)
+        if np.any(nan_mask):
+            vec = np.where(nan_mask, defaults, vec)
         s_hat = float(np.dot(self._weights, vec) + self._bias)
         return float(np.clip(s_hat, 0.01, 0.99))
