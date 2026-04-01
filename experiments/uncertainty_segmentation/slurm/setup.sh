@@ -15,6 +15,12 @@ echo "=========================================="
 echo "Config: ${CONFIG_PATH}"
 echo ""
 
+# Activate conda for pre-flight
+if command -v conda >/dev/null 2>&1; then
+    source "$(conda info --base)/etc/profile.d/conda.sh" || true
+    conda activate "${CONDA_ENV}" 2>/dev/null || source activate "${CONDA_ENV}"
+fi
+
 FAIL=0
 
 # 1. Config exists
