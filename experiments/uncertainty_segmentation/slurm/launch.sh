@@ -58,6 +58,8 @@ fi
 # ========================================================================
 echo "Resolving merged configuration..."
 
+MERGED_OUTPUT=""
+MERGE_RC=0
 MERGED_OUTPUT=$(python3 -c "
 from omegaconf import OmegaConf
 import os, sys, pathlib
@@ -67,7 +69,7 @@ base_path = '${BASE_CONFIG}'
 override_path = '${PICASSO_OVERRIDE}'
 
 if not os.path.exists(base_path):
-    print(f'[FAIL] Base config not found: {base_path}', file=sys.stderr)
+    print(f'FAIL Base config not found: {base_path}')
     sys.exit(1)
 
 cfg = OmegaConf.load(base_path)
@@ -89,13 +91,21 @@ pathlib.Path(run_dir).mkdir(parents=True, exist_ok=True)
 OmegaConf.save(cfg, f'{run_dir}/config_snapshot.yaml', resolve=True)
 
 print(f'RESULT {M} {run_dir}')
-" 2>&1)
+" 2>&1) || MERGE_RC=$?
 
 echo "${MERGED_OUTPUT}" | grep -v "^RESULT" || true
-RESULT_LINE=$(echo "${MERGED_OUTPUT}" | grep "^RESULT")
+
+if [ "${MERGE_RC}" -ne 0 ]; then
+    echo "[FAIL] Config resolution failed (exit code ${MERGE_RC}):"
+    echo "${MERGED_OUTPUT}"
+    exit 1
+fi
+
+RESULT_LINE=$(echo "${MERGED_OUTPUT}" | grep "^RESULT" || true)
 
 if [ -z "${RESULT_LINE}" ]; then
-    echo "[FAIL] Config resolution failed. Check output above."
+    echo "[FAIL] Config resolution produced no RESULT. Output was:"
+    echo "${MERGED_OUTPUT}"
     exit 1
 fi
 
