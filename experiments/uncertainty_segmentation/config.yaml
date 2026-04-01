@@ -1,0 +1,117 @@
+# experiments/uncertainty_segmentation/config.yaml
+# LoRA-Ensemble for Uncertainty-Aware Meningioma Segmentation
+#
+# Reference: Mühlematter et al. (2024), arXiv:2405.14438
+
+# =============================================================================
+# Experiment metadata
+# =============================================================================
+experiment:
+  name: "lora_ensemble_uncertainty"
+  description: "LoRA-Ensemble (M adapters, shared backbone) for uncertainty-aware segmentation"
+  output_dir: ./results/uncertainty_segmentation
+
+# =============================================================================
+# Paths (override in config/picasso/ for server)
+# =============================================================================
+paths:
+  # BrainSegFounder checkpoint (finetuned on BraTS — includes pretrained decoder)
+  checkpoint_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/checkpoints/BrainSegFounder_finetuned_BraTS
+  checkpoint_filename: finetuned_model_fold_0.pt
+
+  # BraTS-MEN 2024 HDF5 (training data for LoRA adapters)
+  men_h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_MEN.h5
+
+  # MenGrowth longitudinal HDF5 (inference-only, no labels)
+  mengrowth_h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5
+
+# =============================================================================
+# Ensemble configuration
+# =============================================================================
+ensemble:
+  n_members: 5              # M: number of LoRA adapters (tunable: 3, 5, 7, 10)
+  base_seed: 42             # seed_m = base_seed + member_id for m in 0..M-1
+
+# =============================================================================
+# LoRA configuration (fixed rank per run)
+# =============================================================================
+lora:
+  rank: 8                   # r (fixed for all members in this run)
+  alpha: 16                 # alpha (scaling = alpha/r = 2.0)
+  dropout: 0.1              # LoRA dropout
+  target_stages: [3, 4]     # SwinViT stages to adapt
+  use_dora: false           # DoRA variant (Weight-Decomposed LoRA)
+
+# =============================================================================
+# Training configuration (each member trained independently)
+# =============================================================================
+training:
+  epochs: 100
+  batch_size: 2             # Per-GPU batch size (A100 40GB)
+  val_batch_size: 1
+  learning_rate:
+    encoder: 1.0e-4         # LoRA adapter LR
+    decoder: 1.0e-4         # Decoder LR
+  weight_decay: 1.0e-5
+  early_stopping:
+    patience: 15
+    min_delta: 0.001
+    monitor: "val_dice_mean"
+  gradient_clip: 1.0
+  num_workers: 4
+  pin_memory: true
+  warmup_epochs: 5
+  use_amp: false            # bf16 mixed precision
+  grad_accum_steps: 1
+
+  # Model configuration
+  decoder_type: "original"  # Use full SwinUNETR decoder (not lightweight head)
+  freeze_decoder: false     # Train decoder alongside LoRA adapters
+  out_channels: 3           # Segmentation output channels (TC, WT, ET)
+
+# =============================================================================
+# Loss configuration
+# =============================================================================
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+
+# =============================================================================
+# Data configuration
+# =============================================================================
+data:
+  modalities: ["t2f", "t1c", "t1n", "t2w"]   # CRITICAL: FLAIR, T1ce, T1, T2
+  roi_size: [128, 128, 128]                   # Training ROI
+  val_roi_size: [128, 128, 128]               # Validation ROI (128 for speed)
+  inference_roi_size: [192, 192, 192]         # Full-resolution inference
+  spacing: [1.0, 1.0, 1.0]
+  train_split: "lora_train"
+  val_split: "lora_val"
+  test_split: "test"
+  augment_train: true
+
+# =============================================================================
+# Inference configuration (ensemble prediction)
+# =============================================================================
+inference:
+  sw_roi_size: [128, 128, 128]    # Sliding window patch size
+  sw_batch_size: 4                # Patches per forward pass
+  sw_overlap: 0.5                 # Overlap fraction
+  sw_mode: "gaussian"             # Blending mode
+  save_ensemble_masks: true               # Save WT hard mask + multi-label NIfTI for all scans
+  save_per_member_masks_all: false        # Save per-member WT masks for ALL scans (large!)
+  save_sample_predictions: true           # Save full spatial data for N sample scans
+  n_sample_scans: 5                       # Number of sample scans for detailed saving
+  sample_scan_strategy: "spread"          # "spread" (evenly spaced) or "first"
+
+# =============================================================================
+# Evaluation configuration
+# =============================================================================
+evaluation:
+  compute_ece: true               # Expected Calibration Error
+  ece_n_bins: 15                  # Number of bins for ECE
+  compute_brier: true             # Brier score
+  compute_reliability: true       # Reliability diagram data
+  n_bootstrap: 10000              # Bootstrap iterations for CIs
+  alpha: 0.05                     # Significance level
+  subsample_voxels_step: 8        # Voxel subsampling for calibration (memory)

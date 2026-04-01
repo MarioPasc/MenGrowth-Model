@@ -1,0 +1,19 @@
+# experiments/uncertainty_segmentation/config/picasso/config_picasso.yaml
+# Picasso-specific path overrides for LoRA-Ensemble
+#
+# Usage: merge with base config via OmegaConf
+#   config = OmegaConf.merge(base_config, picasso_config)
+
+experiment:
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/results/uncertainty_segmentation
+
+paths:
+  checkpoint_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS
+  checkpoint_filename: finetuned_model_fold_0.pt
+  men_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_MEN.h5
+  mengrowth_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/MenGrowth.h5
+
+training:
+  num_workers: 16
+  use_amp: true
+  batch_size: 2

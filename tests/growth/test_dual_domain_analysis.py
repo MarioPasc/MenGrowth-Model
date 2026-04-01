@@ -173,13 +173,13 @@ class TestMetricCollection:
     """Tests for collect_all_metrics."""
 
     def test_collects_all_conditions(self, synthetic_config: dict) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import collect_all_metrics
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import collect_all_metrics
 
         metrics = collect_all_metrics(synthetic_config)
         assert set(metrics.keys()) == {"baseline", "men_r8", "dual_r8"}
 
     def test_dice_metrics_present(self, synthetic_config: dict) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import collect_all_metrics
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import collect_all_metrics
 
         metrics = collect_all_metrics(synthetic_config)
         for cond in ("baseline", "men_r8", "dual_r8"):
@@ -190,7 +190,7 @@ class TestMetricCollection:
             assert 0 <= m["dice_gli_dice_mean"] <= 1
 
     def test_probe_metrics_present(self, synthetic_config: dict) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import collect_all_metrics
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import collect_all_metrics
 
         metrics = collect_all_metrics(synthetic_config)
         for cond in ("baseline", "men_r8", "dual_r8"):
@@ -200,7 +200,7 @@ class TestMetricCollection:
             assert "probe_men_r2_shape_linear" in m
 
     def test_domain_gap_metrics_present(self, synthetic_config: dict) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import collect_all_metrics
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import collect_all_metrics
 
         metrics = collect_all_metrics(synthetic_config)
         for cond in ("baseline", "men_r8", "dual_r8"):
@@ -210,7 +210,7 @@ class TestMetricCollection:
             assert "dgap_combined_effective_rank" in m
 
     def test_training_log_metrics(self, synthetic_config: dict) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import collect_all_metrics
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import collect_all_metrics
 
         metrics = collect_all_metrics(synthetic_config)
         for cond in ("baseline", "men_r8", "dual_r8"):
@@ -220,7 +220,7 @@ class TestMetricCollection:
 
     def test_handles_missing_files(self, tmp_path: Path) -> None:
         """Metric collection should handle missing files gracefully."""
-        from experiments.lora.analysis.dual_domain_analysis import collect_all_metrics
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import collect_all_metrics
 
         config = {
             "experiment": {"output_dir": str(tmp_path)},
@@ -242,7 +242,7 @@ class TestSummaryGeneration:
     """Tests for summary table and JSON export."""
 
     def test_summary_csv_generated(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             generate_summary_table,
         )
@@ -257,7 +257,7 @@ class TestSummaryGeneration:
         assert "Winner" in df.columns
 
     def test_summary_json_generated(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             generate_summary_json,
         )
@@ -272,7 +272,7 @@ class TestSummaryGeneration:
         assert set(summary["conditions"]) == {"baseline", "men_r8", "dual_r8"}
 
     def test_summary_json_is_valid(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             generate_summary_json,
         )
@@ -295,7 +295,7 @@ class TestFigureGeneration:
     """Tests for individual figure generation functions."""
 
     def test_f1_segmentation(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             fig_f1_segmentation,
         )
@@ -310,7 +310,7 @@ class TestFigureGeneration:
         assert (tmp_path / "F1_segmentation.png").stat().st_size > 0
 
     def test_f2_probes(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             fig_f2_probes,
         )
@@ -324,7 +324,7 @@ class TestFigureGeneration:
         assert (tmp_path / "F2_probes.pdf").exists()
 
     def test_f3_domain_gap(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             fig_f3_domain_gap,
         )
@@ -337,7 +337,7 @@ class TestFigureGeneration:
         assert (tmp_path / "F3_domain_gap.png").exists()
 
     def test_f4_variance_spectrum(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import fig_f4_variance_spectrum
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import fig_f4_variance_spectrum
         from experiments.utils.settings import apply_ieee_style
 
         apply_ieee_style()
@@ -346,7 +346,7 @@ class TestFigureGeneration:
         assert (tmp_path / "F4_variance_spectrum.png").exists()
 
     def test_f6_training_dynamics(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import fig_f6_training_dynamics
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import fig_f6_training_dynamics
         from experiments.utils.settings import apply_ieee_style
 
         apply_ieee_style()
@@ -355,7 +355,7 @@ class TestFigureGeneration:
         assert (tmp_path / "F6_training_dynamics.png").exists()
 
     def test_f10_radar(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             fig_f10_radar,
         )
@@ -377,7 +377,7 @@ class TestHTMLReport:
     """Tests for the self-contained HTML report."""
 
     def test_html_report_generated(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             generate_html_report,
             generate_summary_table,
@@ -395,7 +395,7 @@ class TestHTMLReport:
         assert report_path.stat().st_size > 0
 
     def test_html_contains_key_sections(self, synthetic_config: dict, tmp_path: Path) -> None:
-        from experiments.lora.analysis.dual_domain_analysis import (
+        from experiments.stage3_latent.lora.analysis.dual_domain_analysis import (
             collect_all_metrics,
             generate_html_report,
             generate_summary_table,

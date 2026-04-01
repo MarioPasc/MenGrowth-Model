@@ -9,7 +9,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from experiments.lora.engine.model_factory import BaselineOriginalDecoderModel
+from experiments.stage3_latent.lora.engine.model_factory import BaselineOriginalDecoderModel
 
 pytestmark = [pytest.mark.phase1, pytest.mark.unit]
 
