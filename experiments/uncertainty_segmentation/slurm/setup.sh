@@ -2,17 +2,30 @@
 # experiments/uncertainty_segmentation/slurm/setup.sh
 # Pre-flight validation for LoRA-Ensemble SLURM jobs.
 #
-# Usage: bash experiments/uncertainty_segmentation/slurm/setup.sh [config_path]
+# Usage:
+#   bash experiments/uncertainty_segmentation/slurm/setup.sh [config_path] [override_path]
+#
+# If config_path is the picasso override, the base config is auto-detected
+# and merged. You can also pass both explicitly:
+#   bash setup.sh base_config.yaml picasso_override.yaml
 
 set -euo pipefail
 
-CONFIG_PATH="${1:-experiments/uncertainty_segmentation/config.yaml}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BASE_CONFIG="${MODULE_DIR}/config.yaml"
+
+CONFIG_PATH="${1:-${BASE_CONFIG}}"
+OVERRIDE_PATH="${2:-}"
 CONDA_ENV="${CONDA_ENV_NAME:-growth}"
 
 echo "=========================================="
 echo "LORA-ENSEMBLE PRE-FLIGHT CHECKS"
 echo "=========================================="
-echo "Config: ${CONFIG_PATH}"
+echo "Config:   ${CONFIG_PATH}"
+if [ -n "${OVERRIDE_PATH}" ]; then
+    echo "Override: ${OVERRIDE_PATH}"
+fi
 echo ""
 
 # Activate conda for pre-flight
@@ -47,17 +60,32 @@ from experiments.uncertainty_segmentation.engine.volume_extraction import extrac
 print('  [OK]   Python imports')
 " 2>/dev/null || { echo "  [FAIL] Python imports failed"; FAIL=1; }
 
-# 4. Verify critical paths from config
+# 4. Verify critical paths from MERGED config
 python -c "
-import yaml
+from omegaconf import OmegaConf
 from pathlib import Path
+import os
 
-with open('${CONFIG_PATH}') as f:
-    cfg = yaml.safe_load(f)
+# Load base config
+base_path = '${BASE_CONFIG}'
+config_path = '${CONFIG_PATH}'
+override_path = '${OVERRIDE_PATH}'
 
-ckpt_dir = Path(cfg['paths']['checkpoint_dir'])
-ckpt_file = ckpt_dir / cfg['paths']['checkpoint_filename']
-h5_file = Path(cfg['paths']['men_h5_file'])
+# Determine merge strategy
+if config_path != base_path and os.path.exists(base_path):
+    # Passed config is not the base — treat as override on top of base
+    cfg = OmegaConf.merge(OmegaConf.load(base_path), OmegaConf.load(config_path))
+elif override_path and os.path.exists(override_path):
+    # Explicit base + override
+    cfg = OmegaConf.merge(OmegaConf.load(config_path), OmegaConf.load(override_path))
+else:
+    # Single standalone config (must be complete)
+    cfg = OmegaConf.load(config_path)
+
+# Check paths
+ckpt_dir = Path(cfg.paths.checkpoint_dir)
+ckpt_file = ckpt_dir / cfg.paths.checkpoint_filename
+h5_file = Path(cfg.paths.men_h5_file)
 
 if ckpt_file.exists():
     print(f'  [OK]   Checkpoint: {ckpt_file}')
@@ -71,8 +99,11 @@ else:
     print(f'  [FAIL] H5 file not found: {h5_file}')
     exit(1)
 
-n = cfg['ensemble']['n_members']
-print(f'  [OK]   Ensemble: {n} members')
+n = cfg.ensemble.n_members
+r = cfg.lora.rank
+s = cfg.ensemble.base_seed
+print(f'  [OK]   Ensemble: M={n}, r={r}, seed={s}')
+print(f'  [OK]   Run dir: {cfg.experiment.output_dir}/r{r}_M{n}_s{s}/')
 " || FAIL=1
 
 # 5. GPU check (if available)
