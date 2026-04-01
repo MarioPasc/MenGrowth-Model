@@ -9,12 +9,15 @@
 #
 # Usage (from Picasso login node):
 #   cd /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
-#   bash experiments/uncertainty_segmentation/slurm/launch.sh [config_path]
+#   bash experiments/uncertainty_segmentation/slurm/launch.sh
+#   # or with explicit picasso override:
+#   bash experiments/uncertainty_segmentation/slurm/launch.sh config/picasso/config_picasso.yaml
 # =============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 echo "=========================================="
@@ -28,13 +31,18 @@ echo ""
 # ========================================================================
 export REPO_SRC="${REPO_SRC:-${REPO_ROOT}}"
 export CONDA_ENV_NAME="${CONDA_ENV_NAME:-growth}"
-export CONFIG_PATH="${1:-${REPO_SRC}/experiments/uncertainty_segmentation/config.yaml}"
 
-PICASSO_OVERRIDE="${REPO_SRC}/experiments/uncertainty_segmentation/config/picasso/config_picasso.yaml"
+# Base config is ALWAYS the full config.yaml
+BASE_CONFIG="${MODULE_DIR}/config.yaml"
+PICASSO_OVERRIDE="${MODULE_DIR}/config/picasso/config_picasso.yaml"
+
+# Accept optional argument: either the base config or the picasso override
+# In both cases, we always merge base + picasso override if override exists
+export CONFIG_PATH="${1:-${BASE_CONFIG}}"
 
 echo "Configuration:"
 echo "  Repo:        ${REPO_SRC}"
-echo "  Base config: ${CONFIG_PATH}"
+echo "  Base config: ${BASE_CONFIG}"
 echo "  Override:    ${PICASSO_OVERRIDE}"
 echo "  Conda env:   ${CONDA_ENV_NAME}"
 echo ""
@@ -52,17 +60,23 @@ echo "Resolving merged configuration..."
 
 MERGED_OUTPUT=$(python3 -c "
 from omegaconf import OmegaConf
-import os, pathlib
+import os, sys, pathlib
 
-base = OmegaConf.load('${CONFIG_PATH}')
+# Always start from the complete base config
+base_path = '${BASE_CONFIG}'
 override_path = '${PICASSO_OVERRIDE}'
+
+if not os.path.exists(base_path):
+    print(f'[FAIL] Base config not found: {base_path}', file=sys.stderr)
+    sys.exit(1)
+
+cfg = OmegaConf.load(base_path)
 if os.path.exists(override_path):
     override = OmegaConf.load(override_path)
-    cfg = OmegaConf.merge(base, override)
-    print('[config] Merged with picasso override', flush=True)
+    cfg = OmegaConf.merge(cfg, override)
+    print('[config] Merged base + picasso override')
 else:
-    cfg = base
-    print('[config] Using base config only', flush=True)
+    print('[config] Using base config only (no picasso override found)')
 
 r = cfg.lora.rank
 M = cfg.ensemble.n_members
@@ -74,15 +88,22 @@ run_dir = f'{out}/r{r}_M{M}_s{s}'
 pathlib.Path(run_dir).mkdir(parents=True, exist_ok=True)
 OmegaConf.save(cfg, f'{run_dir}/config_snapshot.yaml', resolve=True)
 
-# Output: N_MEMBERS RUN_DIR (parsed by bash)
 print(f'RESULT {M} {run_dir}')
 " 2>&1)
 
 echo "${MERGED_OUTPUT}" | grep -v "^RESULT" || true
 RESULT_LINE=$(echo "${MERGED_OUTPUT}" | grep "^RESULT")
+
+if [ -z "${RESULT_LINE}" ]; then
+    echo "[FAIL] Config resolution failed. Check output above."
+    exit 1
+fi
+
 read -r _ N_MEMBERS RUN_DIR <<< "${RESULT_LINE}"
 
 export RUN_DIR
+# Export the snapshot config for workers (complete, resolved)
+export CONFIG_PATH="${RUN_DIR}/config_snapshot.yaml"
 
 SLURM_LOG_DIR="${RUN_DIR}/logs"
 mkdir -p "${SLURM_LOG_DIR}"
@@ -90,6 +111,7 @@ mkdir -p "${SLURM_LOG_DIR}"
 echo ""
 echo "Resolved:"
 echo "  Run dir:  ${RUN_DIR}"
+echo "  Config:   ${CONFIG_PATH}"
 echo "  Members:  ${N_MEMBERS}"
 echo "  Logs:     ${SLURM_LOG_DIR}"
 echo ""
