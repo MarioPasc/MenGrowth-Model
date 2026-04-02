@@ -135,21 +135,45 @@ bash "${SCRIPT_DIR}/setup.sh" "${CONFIG_PATH}"
 echo ""
 
 # ========================================================================
+# Helper: extract numeric job ID from sbatch output.
+# Picasso wraps sbatch in a Lua script, so output may be:
+#   "Submitted batch job 12345"
+#   "Submitted batch job 12345 on cluster picasso"
+# We extract the FIRST sequence of digits after "job".
+# ========================================================================
+extract_job_id() {
+    local sbatch_output="$1"
+    local job_id
+    job_id=$(echo "$sbatch_output" | grep -oP 'job\s+\K[0-9]+' | head -1)
+    if [ -z "$job_id" ]; then
+        # Fallback: extract any number from the output
+        job_id=$(echo "$sbatch_output" | grep -oP '[0-9]+' | head -1)
+    fi
+    echo "$job_id"
+}
+
+# ========================================================================
 # STEP 1: Training array job
 # ========================================================================
 ARRAY_MAX=$((N_MEMBERS - 1))
 echo "Submitting STEP 1: training array job (${N_MEMBERS} members)..."
 
-TRAIN_JOB_RAW=$(sbatch --parsable \
+TRAIN_OUTPUT=$(sbatch \
     --array="0-${ARRAY_MAX}" \
     --job-name="lora_ens_train" \
     --output="${SLURM_LOG_DIR}/train_%a_%j.out" \
     --error="${SLURM_LOG_DIR}/train_%a_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}",RUN_DIR="${RUN_DIR}" \
-    "${SCRIPT_DIR}/train_worker.sh")
+    "${SCRIPT_DIR}/train_worker.sh" 2>&1)
 
-TRAIN_JOB_ID="${TRAIN_JOB_RAW%%[_;]*}"
+TRAIN_JOB_ID=$(extract_job_id "${TRAIN_OUTPUT}")
+echo "  sbatch output: ${TRAIN_OUTPUT}"
 echo "  Train job ID: ${TRAIN_JOB_ID} (array 0-${ARRAY_MAX})"
+
+if [ -z "${TRAIN_JOB_ID}" ]; then
+    echo "[FAIL] Could not extract train job ID"
+    exit 1
+fi
 echo ""
 
 # ========================================================================
@@ -157,15 +181,22 @@ echo ""
 # ========================================================================
 echo "Submitting STEP 2: evaluation job (dependent on ${TRAIN_JOB_ID})..."
 
-EVAL_JOB_ID=$(sbatch --parsable \
+EVAL_OUTPUT=$(sbatch \
     --dependency="afterok:${TRAIN_JOB_ID}" \
     --job-name="lora_ens_eval" \
     --output="${SLURM_LOG_DIR}/evaluate_%j.out" \
     --error="${SLURM_LOG_DIR}/evaluate_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}",RUN_DIR="${RUN_DIR}" \
-    "${SCRIPT_DIR}/evaluate_worker.sh")
+    "${SCRIPT_DIR}/evaluate_worker.sh" 2>&1)
 
+EVAL_JOB_ID=$(extract_job_id "${EVAL_OUTPUT}")
+echo "  sbatch output: ${EVAL_OUTPUT}"
 echo "  Eval job ID: ${EVAL_JOB_ID}"
+
+if [ -z "${EVAL_JOB_ID}" ]; then
+    echo "[FAIL] Could not extract eval job ID"
+    exit 1
+fi
 echo ""
 
 # ========================================================================
@@ -173,15 +204,22 @@ echo ""
 # ========================================================================
 echo "Submitting STEP 3: inference job (dependent on ${EVAL_JOB_ID})..."
 
-INFER_JOB_ID=$(sbatch --parsable \
+INFER_OUTPUT=$(sbatch \
     --dependency="afterok:${EVAL_JOB_ID}" \
     --job-name="lora_ens_infer" \
     --output="${SLURM_LOG_DIR}/inference_%j.out" \
     --error="${SLURM_LOG_DIR}/inference_%j.err" \
     --export=ALL,CONFIG_PATH="${CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}",RUN_DIR="${RUN_DIR}" \
-    "${SCRIPT_DIR}/inference_worker.sh")
+    "${SCRIPT_DIR}/inference_worker.sh" 2>&1)
 
+INFER_JOB_ID=$(extract_job_id "${INFER_OUTPUT}")
+echo "  sbatch output: ${INFER_OUTPUT}"
 echo "  Infer job ID: ${INFER_JOB_ID}"
+
+if [ -z "${INFER_JOB_ID}" ]; then
+    echo "[FAIL] Could not extract inference job ID"
+    exit 1
+fi
 echo ""
 
 # ========================================================================
