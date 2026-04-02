@@ -148,7 +148,7 @@ def compute_icc(
     """
     n, k = data.shape
     if k < 2:
-        return 1.0
+        return float("nan")
 
     # Grand mean
     grand_mean = data.mean()

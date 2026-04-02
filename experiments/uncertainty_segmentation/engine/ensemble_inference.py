@@ -21,6 +21,7 @@ import dataclasses
 import logging
 import math
 import statistics
+import time
 from pathlib import Path
 
 import torch
@@ -67,6 +68,7 @@ class EnsemblePrediction:
         n_members: Number of ensemble members used.
         per_member_probs: Per-member probability maps (None unless requested).
         per_member_masks: Per-member WT masks (None unless requested).
+        inference_time_sec: Total inference time for this scan (seconds).
     """
 
     mean_probs: torch.Tensor
@@ -86,6 +88,7 @@ class EnsemblePrediction:
     n_members: int
     per_member_probs: list[torch.Tensor] | None = None
     per_member_masks: list[torch.Tensor] | None = None
+    inference_time_sec: float = 0.0
 
 
 # =============================================================================
@@ -228,6 +231,7 @@ class EnsemblePredictor:
         Returns:
             EnsemblePrediction with all statistics on CPU.
         """
+        scan_start = time.time()
         images = images.to(self.device)
         M = len(self.available_members)
         assert M >= 1, "No trained ensemble members available"
@@ -277,7 +281,8 @@ class EnsemblePredictor:
 
             # Volume from WT channel (ch1) hard mask
             wt_mask = probs_m[1] > 0.5
-            vol_m = float(wt_mask.sum().item())  # 1mm³ isotropic → mm³
+            # Voxel count == mm³ (H5 pre-resampled to 1mm isotropic)
+            vol_m = float(wt_mask.sum().item())
             per_member_volumes.append(vol_m)
 
             # Optionally save per-member spatial data on CPU
@@ -327,6 +332,9 @@ class EnsemblePredictor:
             statistics.median([abs(lv - logvol_median) for lv in log_volumes])
         )
 
+        scan_time = time.time() - scan_start
+        logger.info(f"  Scan inference: {scan_time:.1f}s ({scan_time/M:.1f}s/member)")
+
         return EnsemblePrediction(
             mean_probs=mean_probs.cpu(),
             var_probs=var_probs.cpu(),
@@ -345,4 +353,5 @@ class EnsemblePredictor:
             n_members=M,
             per_member_probs=collected_probs if save_per_member else None,
             per_member_masks=collected_masks if save_per_member else None,
+            inference_time_sec=scan_time,
         )

@@ -29,7 +29,7 @@ paths:
 # Ensemble configuration
 # =============================================================================
 ensemble:
-  n_members: 5              # M: number of LoRA adapters (tunable: 3, 5, 7, 10)
+  n_members: 10             # M: number of LoRA adapters (primary: 10; ablation: 5, 15)
   base_seed: 42             # seed_m = base_seed + member_id for m in 0..M-1
 
 # =============================================================================
@@ -47,7 +47,7 @@ lora:
 # =============================================================================
 training:
   epochs: 100
-  batch_size: 2             # Per-GPU batch size (A100 40GB)
+  batch_size: 1             # Per-GPU batch size (local RTX 4060 8GB)
   val_batch_size: 1
   learning_rate:
     encoder: 1.0e-4         # LoRA adapter LR
@@ -61,8 +61,11 @@ training:
   num_workers: 4
   pin_memory: true
   warmup_epochs: 5
-  use_amp: false            # bf16 mixed precision
-  grad_accum_steps: 1
+  use_amp: true             # bf16 mixed precision (safe for bf16, no GradScaler needed)
+  grad_accum_steps: 4       # effective batch size = 1 × 4 = 4
+  plateau_patience: 7       # LR reduction patience (after warmup)
+  plateau_factor: 0.5
+  plateau_min_lr: 1.0e-7
 
   # Model configuration
   decoder_type: "original"  # Use full SwinUNETR decoder (not lightweight head)
@@ -89,6 +92,8 @@ data:
   val_split: "lora_val"
   test_split: "test"
   augment_train: true
+  augment_gaussian_noise: true                # Sensor noise (inter-scanner variability)
+  augment_gaussian_smooth: true               # Resolution variation across scanners
 
 # =============================================================================
 # Inference configuration (ensemble prediction)

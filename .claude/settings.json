@@ -1,4 +1,5 @@
 {
+  "settings": {"CLAUDE_CODE_NO_FLICKER": 1 },
   "permissions": {
     "allow": [
       "Bash(*)",

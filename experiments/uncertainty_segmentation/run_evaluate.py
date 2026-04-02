@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -75,20 +76,35 @@ def run_full_evaluation(
     test_predictions_dir = resolved_run_dir / "predictions" / "brats_men_test"
     test_predictions_dir.mkdir(parents=True, exist_ok=True)
 
+    eval_start = time.time()
     summary: dict = {}
+    n_members = config.ensemble.n_members
+
+    logger.info(
+        f"\n{'=' * 60}\n"
+        f"LORA-ENSEMBLE EVALUATION PIPELINE\n"
+        f"  Run dir:  {resolved_run_dir}\n"
+        f"  Members:  {n_members}\n"
+        f"  Device:   {device}\n"
+        f"  Steps:    1→Per-member  2→Ensemble  3→Baseline  "
+        f"4→Stats  5→Convergence  6→Curves\n"
+        f"{'=' * 60}"
+    )
 
     # --- Step 1: Per-member evaluation (R2, R6) ---
     per_member_path = eval_dir / "per_member_test_dice.csv"
     if not skip_per_member:
+        step_start = time.time()
         logger.info("=" * 60)
-        logger.info("STEP 1: Per-member test-set evaluation")
+        logger.info("STEP 1/6: Per-member test-set evaluation")
         logger.info("=" * 60)
         per_member_df = evaluate_per_member(
             config, device=device, run_dir=run_dir,
             predictions_dir=test_predictions_dir,
         )
         per_member_df.to_csv(per_member_path, index=False)
-        logger.info(f"Saved: {per_member_path} ({len(per_member_df)} rows)")
+        step_time = time.time() - step_start
+        logger.info(f"Saved: {per_member_path} ({len(per_member_df)} rows) [{step_time/60:.1f}min]")
         summary["per_member_rows"] = len(per_member_df)
     elif per_member_path.exists():
         per_member_df = pd.read_csv(per_member_path)
@@ -99,27 +115,32 @@ def run_full_evaluation(
 
     # --- Step 2: Ensemble evaluation (per-subject) ---
     ensemble_path = eval_dir / "ensemble_test_dice.csv"
+    step_start = time.time()
     logger.info("=" * 60)
-    logger.info("STEP 2: Ensemble evaluation (per-subject)")
+    logger.info("STEP 2/6: Ensemble evaluation (per-subject)")
     logger.info("=" * 60)
     ensemble_df, calibration_data = evaluate_ensemble_per_subject(
         config, device=device, run_dir=run_dir, collect_calibration=True,
         predictions_dir=test_predictions_dir,
     )
     ensemble_df.to_csv(ensemble_path, index=False)
-    logger.info(f"Saved: {ensemble_path} ({len(ensemble_df)} rows)")
+    step_time = time.time() - step_start
+    logger.info(f"Saved: {ensemble_path} ({len(ensemble_df)} rows) [{step_time/60:.1f}min]")
 
     summary["ensemble_dice_wt_mean"] = float(ensemble_df["dice_wt"].mean())
     summary["ensemble_dice_wt_std"] = float(ensemble_df["dice_wt"].std())
 
     # --- Step 3: Baseline evaluation (R3) ---
     if not skip_baseline:
+        step_start = time.time()
         logger.info("=" * 60)
-        logger.info("STEP 3: Baseline evaluation (frozen BrainSegFounder)")
+        logger.info("STEP 3/6: Baseline evaluation (frozen BrainSegFounder)")
         logger.info("=" * 60)
         baseline_df = evaluate_baseline(
             config, device=device, run_dir=run_dir, force=force_baseline
         )
+        step_time = time.time() - step_start
+        logger.info(f"  Baseline WT Dice: {baseline_df['dice_wt'].mean():.4f} [{step_time/60:.1f}min]")
         summary["baseline_dice_wt_mean"] = float(baseline_df["dice_wt"].mean())
     elif (eval_dir / "baseline_test_dice.csv").exists():
         baseline_df = pd.read_csv(eval_dir / "baseline_test_dice.csv")
@@ -130,8 +151,9 @@ def run_full_evaluation(
 
     # --- Step 4: Statistical summary (R5, R9) ---
     if not skip_stats and per_member_df is not None and baseline_df is not None:
+        step_start = time.time()
         logger.info("=" * 60)
-        logger.info("STEP 4: Statistical summary")
+        logger.info("STEP 4/6: Statistical summary + calibration")
         logger.info("=" * 60)
         n_bootstrap = config.evaluation.get("n_bootstrap", 10_000)
         alpha = config.evaluation.get("alpha", 0.05)
@@ -192,13 +214,30 @@ def run_full_evaluation(
                     f"d={wt['cohens_d']:.3f}"
                 )
 
+        # Paired differences CSV (for thesis figures)
+        if baseline_df is not None:
+            common_scans = set(ensemble_df["scan_id"]) & set(baseline_df["scan_id"])
+            if common_scans:
+                ens_aligned = ensemble_df[ensemble_df["scan_id"].isin(common_scans)].sort_values("scan_id")
+                bas_aligned = baseline_df[baseline_df["scan_id"].isin(common_scans)].sort_values("scan_id")
+                paired = pd.DataFrame({
+                    "scan_id": ens_aligned["scan_id"].values,
+                    "dice_tc_delta": ens_aligned["dice_tc"].values - bas_aligned["dice_tc"].values,
+                    "dice_wt_delta": ens_aligned["dice_wt"].values - bas_aligned["dice_wt"].values,
+                    "dice_et_delta": ens_aligned["dice_et"].values - bas_aligned["dice_et"].values,
+                })
+                paired_path = eval_dir / "paired_differences.csv"
+                paired.to_csv(paired_path, index=False)
+                logger.info(f"Saved: {paired_path} ({len(paired)} scan deltas)")
+
         summary["statistical_summary"] = stats_summary
     else:
         logger.info("Statistical summary skipped (missing per-member or baseline data)")
 
     # --- Step 5: Convergence analysis ---
+    step_start = time.time()
     logger.info("=" * 60)
-    logger.info("STEP 5: Convergence analysis")
+    logger.info("STEP 5/6: Convergence analysis")
     logger.info("=" * 60)
 
     from .engine.convergence_analysis import compute_convergence_curve, compute_convergence_summary
@@ -214,25 +253,58 @@ def run_full_evaluation(
                 convergence_df.to_csv(out_path, index=False)
                 logger.info(f"Volume convergence saved: {out_path}")
 
-    # Dice convergence from per-member evaluation
+    # Dice convergence from per-member evaluation (all channels)
     if per_member_df is not None:
-        pivot = per_member_df.pivot_table(
-            index="scan_id", columns="member_id", values="dice_wt"
-        ).dropna()
-        if pivot.shape[1] >= 2:
-            all_curves = []
-            for scan_id, row_data in pivot.iterrows():
-                curve = compute_convergence_curve(row_data.tolist())
-                curve["scan_id"] = scan_id
-                all_curves.append(curve)
-            dice_convergence = pd.concat(all_curves, ignore_index=True)
-            out_path = eval_dir / "convergence_dice_wt.csv"
-            dice_convergence.to_csv(out_path, index=False)
-            logger.info(f"Dice convergence saved: {out_path}")
+        for ch in ["dice_wt", "dice_tc", "dice_et"]:
+            pivot = per_member_df.pivot_table(
+                index="scan_id", columns="member_id", values=ch
+            ).dropna()
+            if pivot.shape[1] >= 2:
+                all_curves = []
+                for scan_id, row_data in pivot.iterrows():
+                    curve = compute_convergence_curve(row_data.tolist())
+                    curve["scan_id"] = scan_id
+                    all_curves.append(curve)
+                dice_convergence = pd.concat(all_curves, ignore_index=True)
+                out_path = eval_dir / f"convergence_{ch}.csv"
+                dice_convergence.to_csv(out_path, index=False)
+                logger.info(f"Dice convergence ({ch}) saved: {out_path}")
 
+    # --- Step 6: Aggregated training curves ---
     logger.info("=" * 60)
-    logger.info("EVALUATION COMPLETE")
+    logger.info("STEP 6/6: Aggregated training curves")
     logger.info("=" * 60)
+
+    adapters_dir = resolved_run_dir / "adapters"
+    training_logs = sorted(adapters_dir.glob("member_*/training_log.csv"))
+    if training_logs:
+        all_logs = []
+        for log_csv in training_logs:
+            member_id = int(log_csv.parent.name.split("_")[1])
+            member_log = pd.read_csv(log_csv)
+            member_log["member_id"] = member_id
+            all_logs.append(member_log)
+        combined = pd.concat(all_logs, ignore_index=True)
+        # Aggregate by epoch: mean and std across members
+        agg_cols = [c for c in combined.columns if c not in ("epoch", "member_id")]
+        agg = combined.groupby("epoch")[agg_cols].agg(["mean", "std"]).reset_index()
+        agg.columns = ["epoch"] + [f"{col}_{stat}" for col, stat in agg.columns[1:]]
+        agg_path = eval_dir / "aggregated_training_curves.csv"
+        agg.to_csv(agg_path, index=False)
+        logger.info(f"Aggregated {len(training_logs)} training logs: {agg_path}")
+    else:
+        logger.info("No training logs found for aggregation")
+
+    total_eval_time = time.time() - eval_start
+    logger.info(
+        f"\n{'=' * 60}\n"
+        f"EVALUATION COMPLETE\n"
+        f"  Total time: {total_eval_time / 60:.1f} min ({total_eval_time / 3600:.1f} h)\n"
+        f"  Ensemble WT Dice: {summary.get('ensemble_dice_wt_mean', 'N/A')}\n"
+        f"  Baseline WT Dice: {summary.get('baseline_dice_wt_mean', 'N/A')}\n"
+        f"  Output: {eval_dir}\n"
+        f"{'=' * 60}"
+    )
 
     return summary
 

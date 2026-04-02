@@ -154,7 +154,7 @@ def evaluate_per_member(
             # Dice
             dice = _compute_dice_per_channel(pred_binary, gt_binary)
 
-            # WT volume
+            # Voxel count == mm³ (H5 pre-resampled to 1mm isotropic)
             vol_pred = float(pred_binary[1].sum().item())
 
             # Save per-member mask for BraTS-MEN test (thesis figures)

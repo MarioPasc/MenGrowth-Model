@@ -580,15 +580,15 @@ class TestStatisticalAnalysis:
         icc = compute_icc(data)
         assert icc > 0.5  # Should show substantial agreement
 
-    def test_icc_single_rater(self) -> None:
-        """ICC = 1.0 for single rater (degenerate case)."""
+    def test_icc_single_rater_returns_nan(self) -> None:
+        """ICC is undefined for single rater — returns NaN."""
         from experiments.uncertainty_segmentation.engine.statistical_analysis import (
             compute_icc,
         )
 
         data = np.array([[0.8], [0.6], [0.9]])
         icc = compute_icc(data)
-        assert icc == 1.0
+        assert math.isnan(icc)
 
 
 # =============================================================================
@@ -958,3 +958,113 @@ class TestBugFixes:
         vol_ensemble_mask = float(mask.sum().item())
         assert vol_ensemble_mask == 64.0
         assert vol_ensemble_mask != vol_mean  # They should differ in general
+
+
+# =============================================================================
+# v1.3 Tests: Audit Fixes
+# =============================================================================
+
+
+class TestAuditFixes:
+    """Verify bug fixes from v1.3 pre-launch audit."""
+
+    def test_min_delta_early_stopping(self) -> None:
+        """Early stopping respects min_delta: small improvements don't reset patience."""
+        # Simulate the early stopping logic from train_member.py
+        min_delta = 0.01
+        best_score = 0.80
+        patience_counter = 0
+        patience = 3
+
+        # Improvement below min_delta → should NOT reset patience
+        val_dice = 0.805  # +0.005 < 0.01
+        if val_dice > best_score + min_delta:
+            best_score = val_dice
+            patience_counter = 0
+        else:
+            patience_counter += 1
+        assert patience_counter == 1
+        assert best_score == 0.80  # unchanged
+
+        # Improvement above min_delta → SHOULD reset patience
+        val_dice = 0.815  # +0.015 > 0.01
+        if val_dice > best_score + min_delta:
+            best_score = val_dice
+            patience_counter = 0
+        else:
+            patience_counter += 1
+        assert patience_counter == 0  # reset
+        assert best_score == 0.815  # updated
+
+    def test_icc_negative_correlation(self) -> None:
+        """ICC can be negative (members disagree more than expected by chance)."""
+        from experiments.uncertainty_segmentation.engine.statistical_analysis import (
+            compute_icc,
+        )
+
+        # Anti-correlated raters: when one is high, the other is low
+        data = np.array([
+            [0.9, 0.1],
+            [0.1, 0.9],
+            [0.8, 0.2],
+            [0.2, 0.8],
+        ])
+        icc = compute_icc(data)
+        assert icc < 0  # Should be negative
+
+    def test_inference_time_field_exists(self) -> None:
+        """EnsemblePrediction has inference_time_sec field."""
+        from experiments.uncertainty_segmentation.engine.ensemble_inference import (
+            EnsemblePrediction,
+        )
+
+        result = EnsemblePrediction(
+            mean_probs=torch.zeros(3, 4, 4, 4),
+            var_probs=torch.zeros(3, 4, 4, 4),
+            predictive_entropy=torch.zeros(3, 4, 4, 4),
+            mutual_information=torch.zeros(3, 4, 4, 4),
+            ensemble_mask=torch.zeros(4, 4, 4, dtype=torch.bool),
+            per_member_volumes=[100.0],
+            volume_mean=100.0,
+            volume_std=0.0,
+            log_volume_mean=math.log(101),
+            log_volume_std=0.0,
+            volume_median=100.0,
+            volume_mad=0.0,
+            log_volume_median=math.log(101),
+            log_volume_mad=0.0,
+            n_members=1,
+            inference_time_sec=5.3,
+        )
+        assert result.inference_time_sec == 5.3
+
+    def test_gaussian_augmentation_imports(self) -> None:
+        """Gaussian noise and smooth augmentations are importable."""
+        from monai.transforms import RandGaussianNoised, RandGaussianSmoothd
+
+        # Verify they can be instantiated
+        noise = RandGaussianNoised(keys=["image"], prob=0.15, std=0.05)
+        smooth = RandGaussianSmoothd(
+            keys=["image"], sigma_x=(0.5, 1.0), prob=0.1
+        )
+        assert noise is not None
+        assert smooth is not None
+
+    def test_augmentation_pipeline_with_gaussian(self) -> None:
+        """Training transforms include Gaussian noise/smooth when enabled."""
+        from src.growth.data.transforms import get_h5_train_transforms
+
+        # With gaussian augmentations disabled (default)
+        pipeline_default = get_h5_train_transforms(augment=True)
+        n_default = len(pipeline_default.transforms)
+
+        # With gaussian augmentations enabled
+        pipeline_aug = get_h5_train_transforms(
+            augment=True,
+            include_gaussian_noise=True,
+            include_gaussian_smooth=True,
+        )
+        n_aug = len(pipeline_aug.transforms)
+
+        # Should have 2 more transforms
+        assert n_aug == n_default + 2

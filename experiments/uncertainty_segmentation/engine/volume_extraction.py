@@ -143,6 +143,9 @@ def extract_ensemble_volumes(
             row[f"vol_m{m_idx}"] = vol
             row[f"logvol_m{m_idx}"] = math.log(vol + 1)
 
+        # Timing
+        row["inference_time_sec"] = round(result.inference_time_sec, 1)
+
         # Mean uncertainty statistics
         row["mean_entropy"] = float(result.predictive_entropy.mean().item())
         row["mean_mi"] = float(result.mutual_information.mean().item())

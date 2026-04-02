@@ -16,4 +16,5 @@ paths:
 training:
   num_workers: 16
   use_amp: true
-  batch_size: 2
+  batch_size: 4             # A100 40GB fits bs=4 with AMP (~15GB peak)
+  grad_accum_steps: 1       # No accumulation needed at bs=4

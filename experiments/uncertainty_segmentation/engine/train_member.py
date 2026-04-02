@@ -146,7 +146,11 @@ def create_optimizer(
         optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
     )
     plateau_scheduler = ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=10, min_lr=1e-7
+        optimizer,
+        mode="max",
+        factor=config.training.get("plateau_factor", 0.5),
+        patience=config.training.get("plateau_patience", 7),
+        min_lr=config.training.get("plateau_min_lr", 1e-7),
     )
 
     return optimizer, {
@@ -187,8 +191,12 @@ def validate(
     total_loss = 0.0
     all_dice: list[torch.Tensor] = []
     num_batches = 0
+    n_total = len(dataloader)
+    log_interval = max(1, n_total // 3)  # Log ~3 times per val pass
 
-    for batch in tqdm(dataloader, desc="Val", leave=False, disable=not _INTERACTIVE):
+    for step, batch in enumerate(
+        tqdm(dataloader, desc="Val", leave=False, disable=not _INTERACTIVE)
+    ):
         images = batch["image"].to(device)
         segs = batch["seg"].to(device)
 
@@ -202,6 +210,12 @@ def validate(
         dice = dice_metric(pred.float(), segs, domain="MEN")
         all_dice.append(dice.cpu())
         num_batches += 1
+
+        if not _INTERACTIVE and (step + 1) % log_interval == 0:
+            logger.info(
+                f"  [val] {step + 1}/{n_total} batches "
+                f"({100 * (step + 1) / n_total:.0f}%)"
+            )
 
     if num_batches == 0:
         return {
@@ -253,6 +267,8 @@ def train_epoch(
 
     total_loss = 0.0
     num_batches = 0
+    n_total = len(dataloader)
+    log_interval = max(1, n_total // 5)  # Log ~5 times per epoch
     trainable_params = [p for p in model.parameters() if p.requires_grad]
 
     for step, batch in enumerate(
@@ -278,6 +294,15 @@ def train_epoch(
 
         total_loss += loss.item()
         num_batches += 1
+
+        # Periodic logging for non-interactive environments (SLURM)
+        if not _INTERACTIVE and (step + 1) % log_interval == 0:
+            avg_loss = total_loss / num_batches
+            logger.info(
+                f"  [train] {step + 1}/{n_total} batches "
+                f"({100 * (step + 1) / n_total:.0f}%) | "
+                f"loss={avg_loss:.4f}"
+            )
 
     return {"loss": total_loss / max(1, num_batches)}
 
@@ -375,6 +400,23 @@ def train_single_member(
     )
     logging.getLogger().addHandler(log_handler)
 
+    try:
+        return _train_member_inner(config, member_id, device, seed_m,
+                                   resolved_run_dir, member_dir)
+    finally:
+        logging.getLogger().removeHandler(log_handler)
+        log_handler.close()
+
+
+def _train_member_inner(
+    config: DictConfig,
+    member_id: int,
+    device: str,
+    seed_m: int,
+    resolved_run_dir: Path,
+    member_dir: Path,
+) -> dict[str, float]:
+    """Inner training logic (separated for try/finally handler cleanup)."""
     # 3. Create model (LoRA init is seeded by seed_m)
     logger.info("Creating model...")
     model = create_ensemble_member_model(config, device)
@@ -397,6 +439,8 @@ def train_single_member(
         val_roi_size=tuple(config.data.val_roi_size),
         val_batch_size=config.training.val_batch_size,
         persistent_workers=config.training.num_workers > 0,
+        include_gaussian_noise=config.data.get("augment_gaussian_noise", False),
+        include_gaussian_smooth=config.data.get("augment_gaussian_smooth", False),
     )
 
     logger.info(
@@ -417,6 +461,7 @@ def train_single_member(
     # 7. Training configuration
     epochs = config.training.epochs
     patience = config.training.early_stopping.patience
+    min_delta = config.training.early_stopping.get("min_delta", 0.0)
     gradient_clip = config.training.gradient_clip
     use_amp = config.training.get("use_amp", False)
     grad_accum_steps = config.training.get("grad_accum_steps", 1)
@@ -426,7 +471,7 @@ def train_single_member(
     csv_columns = [
         "epoch", "train_loss",
         "val_loss", "val_dice_mean", "val_dice_tc", "val_dice_wt", "val_dice_et",
-        "lr",
+        "lr", "epoch_time_sec",
     ]
     with open(log_path, "w", newline="") as f:
         csv.writer(f).writerow(csv_columns)
@@ -437,10 +482,24 @@ def train_single_member(
     patience_counter = 0
     start_time = time.time()
 
-    logger.info(f"Starting training for {epochs} epochs (patience={patience})...")
+    logger.info(
+        f"\n{'=' * 60}\n"
+        f"TRAINING CONFIG — member {member_id}\n"
+        f"  Epochs: {epochs} (patience={patience}, min_delta={min_delta})\n"
+        f"  Batch size: {config.training.batch_size} × {grad_accum_steps} accum "
+        f"= effective {config.training.batch_size * grad_accum_steps}\n"
+        f"  AMP: {use_amp} | LR: encoder={config.training.learning_rate.encoder}, "
+        f"decoder={config.training.learning_rate.decoder}\n"
+        f"  Warmup: {scheduler_info['warmup_epochs']} epochs → "
+        f"Plateau patience: {config.training.get('plateau_patience', 7)}\n"
+        f"  Train scans: {len(train_loader.dataset)} | "
+        f"Val scans: {len(val_loader.dataset)}\n"
+        f"{'=' * 60}"
+    )
 
     for epoch in range(epochs):
-        logger.info(f"\nEpoch {epoch + 1}/{epochs}")
+        epoch_start = time.time()
+        logger.info(f"\n--- Epoch {epoch + 1}/{epochs} ---")
 
         # Train
         train_metrics = train_epoch(
@@ -463,28 +522,46 @@ def train_single_member(
             scheduler_info["plateau"].step(val_metrics["dice_mean"])
         current_lr = optimizer.param_groups[0]["lr"]
 
+        # Timing & ETA
+        epoch_time = time.time() - epoch_start
+        elapsed_total = time.time() - start_time
+        avg_epoch_time = elapsed_total / (epoch + 1)
+        remaining_epochs = epochs - (epoch + 1)
+        eta_sec = avg_epoch_time * remaining_epochs
+
+        # GPU memory (if available)
+        gpu_mem_str = ""
+        if torch.cuda.is_available():
+            allocated = torch.cuda.max_memory_allocated() / 1e9
+            reserved = torch.cuda.max_memory_reserved() / 1e9
+            gpu_mem_str = f" | GPU: {allocated:.1f}/{reserved:.1f}GB"
+
         # Log
         logger.info(
-            f"  Train loss: {train_metrics['loss']:.4f} | "
-            f"Val Dice: {val_metrics['dice_mean']:.4f} "
-            f"(TC={val_metrics['dice_tc']:.4f} "
-            f"WT={val_metrics['dice_wt']:.4f} "
-            f"ET={val_metrics['dice_et']:.4f}) | "
-            f"LR: {current_lr:.2e}"
+            f"  Loss: {train_metrics['loss']:.4f} → "
+            f"Dice: {val_metrics['dice_mean']:.4f} "
+            f"(TC={val_metrics['dice_tc']:.3f} "
+            f"WT={val_metrics['dice_wt']:.3f} "
+            f"ET={val_metrics['dice_et']:.3f}) | "
+            f"LR: {current_lr:.1e}{gpu_mem_str}"
         )
-
-        # Write CSV
+        logger.info(
+            f"  Best: {best_score:.4f} | "
+            f"Patience: {patience_counter}/{patience} | "
+            f"Epoch: {epoch_time:.0f}s | "
+            f"ETA: {eta_sec / 60:.0f}min"
+        )
         csv_row = [
             epoch + 1, train_metrics["loss"],
             val_metrics["loss"], val_metrics["dice_mean"],
             val_metrics["dice_tc"], val_metrics["dice_wt"], val_metrics["dice_et"],
-            current_lr,
+            current_lr, round(epoch_time, 1),
         ]
         with open(log_path, "a", newline="") as f:
             csv.writer(f).writerow(csv_row)
 
         # Checkpoint & early stopping
-        if val_metrics["dice_mean"] > best_score:
+        if val_metrics["dice_mean"] > best_score + min_delta:
             best_score = val_metrics["dice_mean"]
             best_metrics = {
                 "epoch": epoch + 1,
@@ -503,8 +580,17 @@ def train_single_member(
     # 10. Save training summary
     total_time = time.time() - start_time
     logger.info(
-        f"\nTraining complete in {total_time / 60:.1f} min. "
-        f"Best Dice: {best_score:.4f} at epoch {best_metrics.get('epoch', 0)}"
+        f"\n{'=' * 60}\n"
+        f"TRAINING COMPLETE — member {member_id}\n"
+        f"  Duration: {total_time / 60:.1f} min ({total_time / 3600:.1f} h)\n"
+        f"  Best Dice: {best_score:.4f} at epoch {best_metrics.get('epoch', 0)}\n"
+        f"    TC={best_metrics.get('dice_tc', 0):.4f}  "
+        f"WT={best_metrics.get('dice_wt', 0):.4f}  "
+        f"ET={best_metrics.get('dice_et', 0):.4f}\n"
+        f"  Total epochs: {epoch + 1}/{epochs} "
+        f"({'early stopped' if patience_counter >= patience else 'completed'})\n"
+        f"  Output: {member_dir}\n"
+        f"{'=' * 60}"
     )
 
     summary = {
@@ -523,9 +609,5 @@ def train_single_member(
     }
     with open(member_dir / "training_summary.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=False)
-
-    # Cleanup
-    logging.getLogger().removeHandler(log_handler)
-    log_handler.close()
 
     return best_metrics

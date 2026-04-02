@@ -1,0 +1,22 @@
+# Minimal smoke test config — 2 epochs, 1 member, minimal VRAM
+# Usage: python -m experiments.uncertainty_segmentation.run_train \
+#          --config experiments/uncertainty_segmentation/config.yaml \
+#          --config-override experiments/uncertainty_segmentation/config/smoke_test.yaml \
+#          --member-id 0
+
+ensemble:
+  n_members: 1
+
+training:
+  epochs: 2
+  batch_size: 1
+  val_batch_size: 1
+  use_amp: true
+  grad_accum_steps: 1
+  num_workers: 2
+  early_stopping:
+    patience: 99        # Don't early-stop during smoke test
+  warmup_epochs: 1
+
+experiment:
+  output_dir: /tmp/lora_ensemble_smoke_test

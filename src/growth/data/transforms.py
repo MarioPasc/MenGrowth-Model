@@ -17,6 +17,8 @@ from monai.transforms import (
     EnsureTyped,
     NormalizeIntensityd,
     RandFlipd,
+    RandGaussianNoised,
+    RandGaussianSmoothd,
     RandRotate90d,
     RandScaleIntensityd,
     RandShiftIntensityd,
@@ -76,10 +78,16 @@ def get_augmentation_transforms(
     include_flip: bool = True,
     include_rotate: bool = True,
     include_intensity: bool = True,
+    include_gaussian_noise: bool = False,
+    include_gaussian_smooth: bool = False,
     flip_prob: float = 0.5,
     rotate_prob: float = 0.5,
     intensity_scale: float = 0.1,
     intensity_shift: float = 0.1,
+    gaussian_noise_std: float = 0.05,
+    gaussian_noise_prob: float = 0.15,
+    gaussian_smooth_sigma: tuple[float, float] = (0.5, 1.0),
+    gaussian_smooth_prob: float = 0.1,
 ) -> list:
     """Get data augmentation transforms.
 
@@ -90,10 +98,16 @@ def get_augmentation_transforms(
         include_flip: Include random flipping along each axis.
         include_rotate: Include random 90-degree rotations.
         include_intensity: Include intensity augmentation (image only).
+        include_gaussian_noise: Include Gaussian noise (inter-scanner variability).
+        include_gaussian_smooth: Include Gaussian smoothing (resolution variation).
         flip_prob: Probability for each flip.
         rotate_prob: Probability for rotation.
         intensity_scale: Scale factor range for intensity scaling.
         intensity_shift: Offset range for intensity shifting.
+        gaussian_noise_std: Std dev for Gaussian noise.
+        gaussian_noise_prob: Probability for Gaussian noise.
+        gaussian_smooth_sigma: Range of sigma for Gaussian smoothing.
+        gaussian_smooth_prob: Probability for Gaussian smoothing.
 
     Returns:
         List of MONAI augmentation transforms.
@@ -133,6 +147,28 @@ def get_augmentation_transforms(
             )
         )
 
+    # Gaussian noise — simulates inter-scanner variability
+    if include_gaussian_noise:
+        transforms.append(
+            RandGaussianNoised(
+                keys=[image_key],
+                prob=gaussian_noise_prob,
+                std=gaussian_noise_std,
+            )
+        )
+
+    # Gaussian smoothing — simulates resolution variation across scanners
+    if include_gaussian_smooth:
+        transforms.append(
+            RandGaussianSmoothd(
+                keys=[image_key],
+                sigma_x=gaussian_smooth_sigma,
+                sigma_y=gaussian_smooth_sigma,
+                sigma_z=gaussian_smooth_sigma,
+                prob=gaussian_smooth_prob,
+            )
+        )
+
     return transforms
 
 
@@ -163,6 +199,8 @@ def get_finalize_transforms(
 def get_h5_train_transforms(
     roi_size: tuple[int, int, int] = DEFAULT_ROI_SIZE,
     augment: bool = True,
+    include_gaussian_noise: bool = False,
+    include_gaussian_smooth: bool = False,
 ) -> Compose:
     """Get training transforms for pre-preprocessed H5 data.
 
@@ -178,6 +216,8 @@ def get_h5_train_transforms(
     Args:
         roi_size: Target spatial size for random crop.
         augment: Whether to apply data augmentation.
+        include_gaussian_noise: Include Gaussian noise augmentation.
+        include_gaussian_smooth: Include Gaussian smoothing augmentation.
 
     Returns:
         MONAI Compose transform pipeline.
@@ -211,6 +251,8 @@ def get_h5_train_transforms(
                 image_key=IMAGE_KEY,
                 seg_key=SEG_KEY,
                 include_seg=True,
+                include_gaussian_noise=include_gaussian_noise,
+                include_gaussian_smooth=include_gaussian_smooth,
             )
         )
 

@@ -306,6 +306,8 @@ def create_dataloaders(
     val_roi_size: tuple[int, int, int] | None = None,
     val_batch_size: int | None = None,
     persistent_workers: bool = False,
+    include_gaussian_noise: bool = False,
+    include_gaussian_smooth: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     """Create train and validation DataLoaders from an H5 file.
 
@@ -324,6 +326,8 @@ def create_dataloaders(
         val_batch_size: Override batch size for validation loader. If None,
             defaults to ``batch_size``.
         persistent_workers: Keep workers alive across epochs.
+        include_gaussian_noise: Include Gaussian noise augmentation.
+        include_gaussian_smooth: Include Gaussian smoothing augmentation.
 
     Returns:
         Tuple of (train_loader, val_loader).
@@ -336,7 +340,12 @@ def create_dataloaders(
     train_dataset = BraTSDatasetH5(
         h5_path=h5_path,
         split=train_split,
-        transform=get_h5_train_transforms(roi_size=train_roi, augment=augment_train),
+        transform=get_h5_train_transforms(
+            roi_size=train_roi,
+            augment=augment_train,
+            include_gaussian_noise=include_gaussian_noise,
+            include_gaussian_smooth=include_gaussian_smooth,
+        ),
         compute_semantic=compute_semantic,
     )
 
