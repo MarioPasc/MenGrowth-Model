@@ -1,0 +1,79 @@
+# experiments/uncertainty_segmentation/plotting/config.yaml
+
+style:
+  font_family: "serif"
+  font_serif: ["CMU Serif", "DejaVu Serif", "Times New Roman"]
+  font_size: 9
+  axes_title_size: 10
+  tick_size: 8
+  legend_size: 8
+  figure_dpi: 150        # Screen display
+  save_dpi: 300          # Saved files
+  save_format: "pdf"     # pdf | png | svg
+  transparent: false
+  pdf_fonttype: 42       # TrueType (editable in Illustrator)
+
+colors:
+  baseline: "#999999"
+  ensemble: "#0072B2"
+  members: "#E69F00"
+  best_member: "#009E73"
+  delta_positive: "#0072B2"
+  delta_negative: "#D55E00"
+
+figures:
+  training_curves:
+    enabled: true
+    figsize: [7, 2.8]
+  performance_comparison:
+    enabled: true
+    figsize: [4.5, 3.5]
+    show_individual_points: true
+    point_size: 6
+    point_alpha: 0.3
+  paired_comparison:
+    enabled: true
+    figsize: [7, 3.2]
+    n_bins_histogram: 30
+  forest_plot:
+    enabled: true
+    figsize: [4.5, 3.5]
+  convergence:
+    enabled: true
+    figsize: [9, 2.8]
+    show_theoretical: true    # 1/sqrt(k) overlay
+  calibration:
+    enabled: true
+    figsize: [3.5, 3.5]
+    min_bin_count: 50         # Suppress bins with fewer samples
+  best_worst:
+    enabled: true
+    figsize: [5, 4.5]
+    n_cases: 5
+  dice_compartments:
+    enabled: true
+    figsize: [4.5, 3]
+  inter_member_agreement:
+    enabled: true
+    figsize: [5, 4.5]
+  volume_bland_altman:
+    enabled: true
+    figsize: [4.5, 4]
+  volume_trajectories:
+    enabled: true
+    figsize: [7, 5]
+    n_patients: 6             # Number of patients to show (2x3 grid)
+    patient_selection: "diverse"  # "diverse" | "first" | explicit list
+  volume_uncertainty:
+    enabled: true
+    figsize: [4.5, 3.5]
+  boundary_disagreement:
+    enabled: true
+    figsize: [8, 4]
+    scan_id: null             # null = auto-select from sample scans
+    slice_axis: "axial"       # axial | coronal | sagittal
+  uncertainty_overlay:
+    enabled: true
+    figsize: [7, 3]
+    scan_id: null
+    metric: "mutual_information"  # mutual_information | entropy

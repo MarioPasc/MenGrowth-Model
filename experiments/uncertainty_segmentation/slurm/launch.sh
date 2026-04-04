@@ -9,9 +9,9 @@
 #
 # Usage (from Picasso login node):
 #   cd /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
-#   bash experiments/uncertainty_segmentation/slurm/launch.sh
-#   # or with explicit picasso override:
-#   bash experiments/uncertainty_segmentation/slurm/launch.sh config/picasso/config_picasso.yaml
+#   bash experiments/uncertainty_segmentation/slurm/launch.sh              # r=8 (default)
+#   bash experiments/uncertainty_segmentation/slurm/launch.sh --rank 4     # r=4 ablation
+#   bash experiments/uncertainty_segmentation/slurm/launch.sh --rank 16    # r=16 ablation
 # =============================================================================
 
 set -euo pipefail
@@ -36,14 +36,38 @@ export CONDA_ENV_NAME="${CONDA_ENV_NAME:-growth}"
 BASE_CONFIG="${MODULE_DIR}/config.yaml"
 PICASSO_OVERRIDE="${MODULE_DIR}/config/picasso/config_picasso.yaml"
 
-# Accept optional argument: either the base config or the picasso override
-# In both cases, we always merge base + picasso override if override exists
-export CONFIG_PATH="${1:-${BASE_CONFIG}}"
+# Parse arguments
+RANK_OVERRIDE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --rank)
+            RANK_OVERRIDE="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# Resolve rank override config (optional third merge layer)
+RANK_OVERRIDE_PATH=""
+if [ -n "${RANK_OVERRIDE}" ]; then
+    RANK_OVERRIDE_PATH="${MODULE_DIR}/config/picasso/config_r${RANK_OVERRIDE}.yaml"
+    if [ ! -f "${RANK_OVERRIDE_PATH}" ]; then
+        echo "[FAIL] Rank override config not found: ${RANK_OVERRIDE_PATH}"
+        echo "       Available: config_r4.yaml, config_r16.yaml (r=8 is default)"
+        exit 1
+    fi
+fi
 
 echo "Configuration:"
 echo "  Repo:        ${REPO_SRC}"
 echo "  Base config: ${BASE_CONFIG}"
 echo "  Override:    ${PICASSO_OVERRIDE}"
+if [ -n "${RANK_OVERRIDE_PATH}" ]; then
+    echo "  Rank ablation: ${RANK_OVERRIDE_PATH} (r=${RANK_OVERRIDE})"
+fi
 echo "  Conda env:   ${CONDA_ENV_NAME}"
 echo ""
 
@@ -67,6 +91,7 @@ import os, sys, pathlib
 # Always start from the complete base config
 base_path = '${BASE_CONFIG}'
 override_path = '${PICASSO_OVERRIDE}'
+rank_override_path = '${RANK_OVERRIDE_PATH}'
 
 if not os.path.exists(base_path):
     print(f'FAIL Base config not found: {base_path}')
@@ -79,6 +104,12 @@ if os.path.exists(override_path):
     print('[config] Merged base + picasso override')
 else:
     print('[config] Using base config only (no picasso override found)')
+
+# Apply rank ablation override (optional third layer)
+if rank_override_path and os.path.exists(rank_override_path):
+    rank_override = OmegaConf.load(rank_override_path)
+    cfg = OmegaConf.merge(cfg, rank_override)
+    print(f'[config] Applied rank override: r={cfg.lora.rank}, alpha={cfg.lora.alpha}')
 
 r = cfg.lora.rank
 M = cfg.ensemble.n_members
@@ -243,8 +274,8 @@ echo ""
 echo "Cancel all:"
 echo "  scancel ${TRAIN_JOB_ID} ${EVAL_JOB_ID} ${INFER_JOB_ID}"
 echo ""
-echo "Estimated timeline:"
-echo "  Training:   ~6-12h per member (parallel)"
-echo "  Evaluation: ~2-4h (sequential, per-member + ensemble + baseline)"
-echo "  Inference:  ~2-4h (sequential, MenGrowth cohort)"
-echo "  Total:      ~16-20h"
+echo "Estimated timeline (based on r8_M10_s42 actuals):"
+echo "  Training:   ~2-9h per member (parallel, median ~3.5h)"
+echo "  Evaluation: ~1.5h (per-member + ensemble + baseline + stats)"
+echo "  Inference:  ~30min (MenGrowth cohort, ~16s/scan)"
+echo "  Total:      ~5-11h wall clock (dominated by training)"

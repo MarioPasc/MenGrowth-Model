@@ -1,0 +1,11 @@
+# experiments/uncertainty_segmentation/config/picasso/config_r16.yaml
+# LoRA rank ablation: r=16 (higher capacity, less regularized)
+#
+# Merge order: config.yaml → config_picasso.yaml → config_r16.yaml
+# Only overrides that differ from the base r=8 configuration.
+#
+# Usage: bash slurm/launch.sh --rank 16
+
+lora:
+  rank: 16
+  alpha: 32    # scaling = alpha/rank = 32/16 = 2.0 (unchanged)

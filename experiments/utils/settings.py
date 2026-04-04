@@ -601,6 +601,21 @@ CONDITION_ORDER_ALL: list[str] = [
 
 CONDITION_ORDER_DUAL: list[str] = ["baseline", "men_r8", "dual_r8"]
 
+# =============================================================================
+# Ensemble Uncertainty Colors (Okabe-Ito / Wong, colorblind-safe)
+# =============================================================================
+
+ENSEMBLE_COLORS: dict[str, str] = {
+    "baseline": "#999999",     # grey
+    "ensemble": "#0072B2",     # blue
+    "members": "#E69F00",      # amber
+    "best_member": "#009E73",  # teal
+    "delta_positive": "#0072B2",  # blue (improvement)
+    "delta_negative": "#D55E00",  # vermillion (worsening)
+    "fill": "#0072B2",         # fill color for histograms
+    "median": "#009E73",       # teal (for median lines)
+}
+
 RANKS: list[int] = [2, 4, 8, 16, 32]
 
 # =============================================================================

@@ -1,0 +1,11 @@
+# experiments/uncertainty_segmentation/config/picasso/config_r4.yaml
+# LoRA rank ablation: r=4 (lower capacity, more regularized)
+#
+# Merge order: config.yaml → config_picasso.yaml → config_r4.yaml
+# Only overrides that differ from the base r=8 configuration.
+#
+# Usage: bash slurm/launch.sh --rank 4
+
+lora:
+  rank: 4
+  alpha: 8     # scaling = alpha/rank = 8/4 = 2.0 (unchanged)

@@ -80,6 +80,23 @@ print('Imports OK')
 echo ""
 
 # ========================================================================
+# GPU MONITORING
+# ========================================================================
+GPU_LOG_DIR="${RUN_DIR}/logs"
+mkdir -p "${GPU_LOG_DIR}"
+
+echo "GPU Status (pre-training):"
+nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free \
+    --format=csv,noheader
+echo ""
+
+# Background GPU logger (sample every 60s)
+nvidia-smi --query-gpu=timestamp,memory.used,memory.total,utilization.gpu \
+    --format=csv -l 60 > "${GPU_LOG_DIR}/gpu_train_${MEMBER_ID}_${SLURM_JOB_ID}.csv" 2>/dev/null &
+GPU_MONITOR_PID=$!
+echo "[gpu-monitor] Started (PID=${GPU_MONITOR_PID}, interval=60s)"
+
+# ========================================================================
 # TRAIN MEMBER
 # ========================================================================
 echo "=========================================="
@@ -92,6 +109,18 @@ python -m experiments.uncertainty_segmentation.run_train \
     --run-dir "${RUN_DIR}"
 
 echo "  [OK] Training complete for member ${MEMBER_ID}"
+
+# Stop GPU monitor
+if [ -n "${GPU_MONITOR_PID:-}" ] && kill -0 "${GPU_MONITOR_PID}" 2>/dev/null; then
+    kill "${GPU_MONITOR_PID}" 2>/dev/null || true
+    wait "${GPU_MONITOR_PID}" 2>/dev/null || true
+    echo "[gpu-monitor] Stopped"
+fi
+
+echo "GPU Status (post-training):"
+nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu \
+    --format=csv,noheader
+echo ""
 
 # ========================================================================
 # COMPLETION
