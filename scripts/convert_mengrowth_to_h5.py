@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import logging
 import re
 import sys
@@ -94,9 +93,9 @@ H5_VERSION = "2.0"
 
 # Default split sizes (patient-level, ~70/10/20 split for 31 patients)
 DEFAULT_SPLIT_SIZES = {
-    "lora_train": 21,
-    "lora_val": 3,
-    "test": 7,
+    "lora_train": 40,
+    "lora_val": 6,
+    "test": 12,
 }
 
 # Patterns for parsing directory names
@@ -149,9 +148,7 @@ def load_metadata(
 
             metadata[mg_id] = {"age": age, "sex": sex}
 
-    logger.info(
-        f"Loaded metadata for {len(metadata)} patients from {metadata_csv}"
-    )
+    logger.info(f"Loaded metadata for {len(metadata)} patients from {metadata_csv}")
     n_with_age = sum(1 for m in metadata.values() if not np.isnan(m["age"]))
     n_with_sex = sum(1 for m in metadata.values() if m["sex"] != "unknown")
     logger.info(f"  Age available: {n_with_age}, Sex available: {n_with_sex}")
@@ -192,9 +189,7 @@ def _find_nifti(scan_dir: Path, name: str) -> Path:
     if prefixed.exists():
         return prefixed
 
-    raise FileNotFoundError(
-        f"Missing {name} in {scan_dir}: tried {bare.name} and {prefixed.name}"
-    )
+    raise FileNotFoundError(f"Missing {name} in {scan_dir}: tried {bare.name} and {prefixed.name}")
 
 
 # =========================================================================
@@ -240,12 +235,14 @@ def discover_mengrowth_scans(
                 continue
 
             timepoint = int(match.group(2))
-            scans.append({
-                "scan_id": scan_dir.name,
-                "patient_id": patient_id,
-                "timepoint": timepoint,
-                "scan_dir": scan_dir,
-            })
+            scans.append(
+                {
+                    "scan_id": scan_dir.name,
+                    "patient_id": patient_id,
+                    "timepoint": timepoint,
+                    "scan_dir": scan_dir,
+                }
+            )
 
     # Sort by patient then timepoint
     scans.sort(key=lambda s: (s["patient_id"], s["timepoint"]))
@@ -292,16 +289,17 @@ def build_longitudinal_structure(
     return patient_list, np.array(patient_offsets, dtype=np.int32), timepoint_indices
 
 
-def load_scan_paths(scan_dir: Path) -> dict[str, Path]:
-    """Get paths to all modalities and segmentation for a scan.
+def load_scan_paths(scan_dir: Path, require_seg: bool = True) -> dict[str, Path]:
+    """Get paths to all modalities and optionally segmentation for a scan.
 
     Uses bare-name convention with prefixed-name fallback.
 
     Args:
         scan_dir: Path to scan directory.
+        require_seg: If False, seg is optional (None if missing).
 
     Returns:
-        Dict with keys: 't1c', 't1n', 't2f', 't2w', 'seg'.
+        Dict with keys: 't1c', 't1n', 't2f', 't2w', and optionally 'seg'.
 
     Raises:
         FileNotFoundError: If any required file is missing.
@@ -310,7 +308,12 @@ def load_scan_paths(scan_dir: Path) -> dict[str, Path]:
     for modality in MODALITY_KEYS:
         paths[modality] = _find_nifti(scan_dir, modality)
 
-    paths["seg"] = _find_nifti(scan_dir, "seg")
+    try:
+        paths["seg"] = _find_nifti(scan_dir, "seg")
+    except FileNotFoundError:
+        if require_seg:
+            raise
+        paths["seg"] = None
     return paths
 
 
@@ -319,19 +322,22 @@ def load_scan_paths(scan_dir: Path) -> dict[str, Path]:
 # =========================================================================
 
 
-def build_preprocessing_transforms() -> Compose:
+def build_preprocessing_transforms(has_seg: bool = True) -> Compose:
     """Build MONAI transforms for spatial preprocessing without normalization.
 
     Pipeline: Load -> EnsureChannelFirst -> Orient(RAS) -> Spacing(1mm) ->
               CropForeground -> SpatialPad(192^3) -> CenterCrop(192^3) ->
               Concat -> EnsureType
 
+    Args:
+        has_seg: Whether segmentation is included in the keys.
+
     Returns:
         MONAI Compose pipeline.
     """
     modality_keys = list(MODALITY_KEYS)
     seg_key = "seg"
-    all_keys = modality_keys + [seg_key]
+    all_keys = modality_keys + [seg_key] if has_seg else modality_keys
     roi_size = list(FEATURE_ROI_SIZE)
 
     transforms = [
@@ -343,17 +349,23 @@ def build_preprocessing_transforms() -> Compose:
             pixdim=DEFAULT_SPACING,
             mode=["bilinear"] * len(modality_keys),
         ),
-        Spacingd(keys=[seg_key], pixdim=DEFAULT_SPACING, mode=("nearest",)),
-        CropForegroundd(
-            keys=all_keys,
-            source_key=modality_keys[0],
-            k_divisible=roi_size,
-        ),
-        SpatialPadd(keys=all_keys, spatial_size=roi_size),
-        ResizeWithPadOrCropd(keys=all_keys, spatial_size=roi_size),
-        ConcatItemsd(keys=modality_keys, name="image", dim=0),
-        EnsureTyped(keys=["image", seg_key], dtype="float32", track_meta=False),
     ]
+    if has_seg:
+        transforms.append(Spacingd(keys=[seg_key], pixdim=DEFAULT_SPACING, mode=("nearest",)))
+    transforms.extend(
+        [
+            CropForegroundd(
+                keys=all_keys,
+                source_key=modality_keys[0],
+                k_divisible=roi_size,
+            ),
+            SpatialPadd(keys=all_keys, spatial_size=roi_size),
+            ResizeWithPadOrCropd(keys=all_keys, spatial_size=roi_size),
+            ConcatItemsd(keys=modality_keys, name="image", dim=0),
+        ]
+    )
+    ensure_keys = ["image", seg_key] if has_seg else ["image"]
+    transforms.append(EnsureTyped(keys=ensure_keys, dtype="float32", track_meta=False))
 
     return Compose(transforms)
 
@@ -392,9 +404,7 @@ def convert(
     logger.info(f"Found {len(all_scans)} scans in {data_root_path}")
 
     # Build longitudinal structure
-    patient_list, patient_offsets, timepoint_indices = build_longitudinal_structure(
-        all_scans
-    )
+    patient_list, patient_offsets, timepoint_indices = build_longitudinal_structure(all_scans)
     n_patients = len(patient_list)
     logger.info(f"Found {n_patients} patients")
 
@@ -411,8 +421,16 @@ def convert(
     n_scans = len(all_scans)
     roi = list(FEATURE_ROI_SIZE)
 
+    # Check if any scan has segmentation to decide pipeline mode
+    _first_scan_dir = all_scans[0]["scan_dir"]
+    _has_any_seg = (_first_scan_dir / "seg.nii.gz").exists() or (
+        _first_scan_dir / f"{_first_scan_dir.name}-seg.nii.gz"
+    ).exists()
+    if not _has_any_seg:
+        logger.info("No segmentation files found — running without seg")
+
     # Build preprocessing pipeline
-    transforms = build_preprocessing_transforms()
+    transforms = build_preprocessing_transforms(has_seg=_has_any_seg)
 
     # Generate patient-level splits
     if max_patients is None or n_patients >= sum(DEFAULT_SPLIT_SIZES.values()):
@@ -483,9 +501,7 @@ def convert(
 
         f.create_dataset("scan_ids", data=scan_id_list, dtype=dt)
         f.create_dataset("patient_ids", data=patient_id_list, dtype=dt)
-        f.create_dataset(
-            "timepoint_idx", data=np.array(timepoint_indices, dtype=np.int32)
-        )
+        f.create_dataset("timepoint_idx", data=np.array(timepoint_indices, dtype=np.int32))
 
         # Longitudinal group
         long_grp = f.create_group("longitudinal")
@@ -520,9 +536,7 @@ def convert(
         # Semantic features group
         sem_grp = f.create_group("semantic")
         vol_ds = sem_grp.create_dataset("volume", shape=(n_scans, 4), dtype="float32")
-        loc_ds = sem_grp.create_dataset(
-            "location", shape=(n_scans, 3), dtype="float32"
-        )
+        loc_ds = sem_grp.create_dataset("location", shape=(n_scans, 3), dtype="float32")
         shape_ds = sem_grp.create_dataset("shape", shape=(n_scans, 3), dtype="float32")
 
         # Process each scan
@@ -531,32 +545,32 @@ def convert(
         for i, scan_info in enumerate(tqdm(all_scans, desc="Converting")):
             try:
                 scan_dir = scan_info["scan_dir"]
-                paths = load_scan_paths(scan_dir)
+                paths = load_scan_paths(scan_dir, require_seg=_has_any_seg)
 
                 data = {
                     "t2f": str(paths["t2f"]),
                     "t1c": str(paths["t1c"]),
                     "t1n": str(paths["t1n"]),
                     "t2w": str(paths["t2w"]),
-                    "seg": str(paths["seg"]),
                 }
+                if _has_any_seg and paths.get("seg") is not None:
+                    data["seg"] = str(paths["seg"])
+
                 result = transforms(data)
 
                 image_np = result["image"].numpy()
-                seg_np = result["seg"].numpy()
-
-                assert image_np.shape == (4, *roi), (
-                    f"Image shape mismatch: {image_np.shape}"
-                )
-                assert seg_np.shape == (1, *roi), (
-                    f"Seg shape mismatch: {seg_np.shape}"
-                )
-
+                assert image_np.shape == (4, *roi), f"Image shape mismatch: {image_np.shape}"
                 images_ds[i] = image_np
-                segs_ds[i] = seg_np.astype(np.int8)
 
-                # Semantic features (no label 4 in MenGrowth, no merge needed)
-                seg_for_semantic = seg_np[0].astype(np.int32)
+                if "seg" in result:
+                    seg_np = result["seg"].numpy()
+                    assert seg_np.shape == (1, *roi), f"Seg shape mismatch: {seg_np.shape}"
+                    segs_ds[i] = seg_np.astype(np.int8)
+                    seg_for_semantic = seg_np[0].astype(np.int32)
+                else:
+                    segs_ds[i] = np.zeros((1, *roi), dtype=np.int8)
+                    seg_for_semantic = np.zeros(roi, dtype=np.int32)
+
                 if not np.any(seg_for_semantic > 0):
                     n_empty_segs += 1
 
@@ -577,18 +591,13 @@ def convert(
         # Splits group (patient-level indices into patient_list)
         splits_grp = f.create_group("splits")
         for split_name, pid_list in patient_splits.items():
-            indices = np.array(
-                [patient_to_idx[pid] for pid in pid_list], dtype=np.int32
-            )
+            indices = np.array([patient_to_idx[pid] for pid in pid_list], dtype=np.int32)
             splits_grp.create_dataset(split_name, data=indices)
             # Count scans in this split
             n_split_scans = sum(
                 int(patient_offsets[idx + 1] - patient_offsets[idx]) for idx in indices
             )
-            logger.info(
-                f"  Split '{split_name}': {len(indices)} patients, "
-                f"{n_split_scans} scans"
-            )
+            logger.info(f"  Split '{split_name}': {len(indices)} patients, {n_split_scans} scans")
 
     # Summary
     file_size_gb = output_path_obj.stat().st_size / (1024**3)
@@ -668,9 +677,7 @@ def _verify_h5(
 
         # Check splits (patient-level)
         if "splits" in f:
-            total_patients_in_splits = sum(
-                len(f[f"splits/{s}"]) for s in f["splits"]
-            )
+            total_patients_in_splits = sum(len(f[f"splits/{s}"]) for s in f["splits"])
             logger.info(f"  Total patients in splits: {total_patients_in_splits}")
 
     logger.info("  Verification passed!")

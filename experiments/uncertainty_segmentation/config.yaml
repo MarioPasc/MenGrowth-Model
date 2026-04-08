@@ -29,7 +29,7 @@ paths:
 # Ensemble configuration
 # =============================================================================
 ensemble:
-  n_members: 10             # M: number of LoRA adapters (primary: 10; ablation: 5, 15)
+  n_members: 20             # M: number of LoRA adapters (rank ablation: r=4,8,16 × M=20)
   base_seed: 42             # seed_m = base_seed + member_id for m in 0..M-1
 
 # =============================================================================

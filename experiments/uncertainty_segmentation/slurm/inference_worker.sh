@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH -J lora_ens_infer
-#SBATCH --time=0-02:00:00
+#SBATCH --time=0-04:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
