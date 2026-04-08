@@ -5,7 +5,7 @@
 #   config = OmegaConf.merge(base_config, picasso_config)
 
 experiment:
-  output_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/results/uncertainty_segmentation
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation
 
 paths:
   checkpoint_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS
