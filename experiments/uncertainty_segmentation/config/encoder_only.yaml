@@ -1,0 +1,26 @@
+# Encoder-Only LoRA — Decoder Bypass Ablation
+#
+# Merges on top of base config.yaml. Key differences:
+#   - LoRA targets stages 2, 3, 4 (not just 3, 4)
+#   - Decoder is FROZEN — only LoRA + output head trainable
+#   - Tests whether encoder adaptation alone bridges GLI→MEN domain gap
+#
+# Usage:
+#   bash experiments/uncertainty_segmentation/slurm/launch.sh --encoder-only
+#   OR merge manually:
+#     config = OmegaConf.merge(base, picasso, encoder_only)
+
+experiment:
+  name: "lora_encoder_only"
+  description: "LoRA encoder-only ablation: frozen decoder + trainable output head"
+
+lora:
+  target_stages: [1, 2, 3]       # Adapt 3 stages instead of 2 — more encoder capacity
+
+training:
+  freeze_decoder: true            # CRITICAL: freeze the entire decoder
+  train_output_head: true         # Unfreeze ONLY model.out (48→3 Conv3d, ~147 params)
+  learning_rate:
+    encoder: 1.0e-4               # LoRA adapter LR (same as before)
+    decoder: 1.0e-4               # Unused when freeze_decoder=true (kept for schema compat)
+    output_head: 1.0e-3           # Output head LR (higher — only 147 params, needs fast adaptation)

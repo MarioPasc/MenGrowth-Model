@@ -101,6 +101,15 @@ def create_ensemble_member_model(
         use_semantic_heads=False,
     )
 
+    # Encoder-only mode: freeze decoder but unfreeze the output head
+    # This forces LoRA to be the primary adaptation mechanism while allowing
+    # the output head to remap channel semantics (GLI→MEN).
+    if config.training.get("train_output_head", False) and config.training.freeze_decoder:
+        for param in model.decoder.out.parameters():
+            param.requires_grad = True
+        out_params = sum(p.numel() for p in model.decoder.out.parameters())
+        logger.info(f"Unfroze output head only: {out_params} params (decoder remains frozen)")
+
     return model.to(device)
 
 
@@ -126,6 +135,11 @@ def create_optimizer(
     encoder_params = model.get_encoder_params()
     decoder_params = model.get_decoder_params()
 
+    # Use separate output_head LR when in encoder-only mode
+    decoder_lr = config.training.learning_rate.get(
+        "output_head", config.training.learning_rate.decoder
+    ) if config.training.get("train_output_head", False) else config.training.learning_rate.decoder
+
     param_groups = [
         {
             "params": encoder_params,
@@ -134,8 +148,8 @@ def create_optimizer(
         },
         {
             "params": decoder_params,
-            "lr": config.training.learning_rate.decoder,
-            "name": "decoder",
+            "lr": decoder_lr,
+            "name": "output_head" if config.training.get("train_output_head", False) else "decoder",
         },
     ]
 

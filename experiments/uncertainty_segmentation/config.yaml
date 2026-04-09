@@ -54,7 +54,7 @@ training:
     decoder: 1.0e-4         # Decoder LR
   weight_decay: 1.0e-5
   early_stopping:
-    patience: 15
+    patience: 20
     min_delta: 0.001
     monitor: "val_dice_mean"
   gradient_clip: 1.0
