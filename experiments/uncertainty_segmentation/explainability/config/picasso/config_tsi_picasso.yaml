@@ -1,0 +1,20 @@
+# TSI Explainability — Picasso Override
+#
+# Merged on top of base explainability/config.yaml via OmegaConf.
+# Key changes vs local:
+#   - 192³ full-resolution (A100 40GB handles this easily)
+#   - All 150 test scans (maximize power for stages 3-4 paired tests)
+#   - Picasso paths (fscratch mount points)
+#
+# Usage:
+#   bash experiments/uncertainty_segmentation/explainability/slurm/launch_tsi.sh
+
+analysis:
+  n_scans: 150                      # Use ALL test scans — maximizes paired-test power at stages 3-4
+  scan_selection: "first"            # Deterministic: first N scans (= all 150)
+  roi_size: [192, 192, 192]          # Full H5 resolution — A100 40GB fits 192³ forward pass (~3GB peak)
+
+paths:
+  base_results_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation/tsi_explainability
+  run_dir_pattern: "r{rank}_M20_s42"

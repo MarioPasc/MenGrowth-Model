@@ -1,0 +1,36 @@
+# TSI Explainability Analysis Configuration
+# Merged with parent uncertainty_segmentation/config.yaml for shared paths.
+#
+# Usage:
+#   python -m experiments.uncertainty_segmentation.explainability.run_tsi \
+#       --config experiments/uncertainty_segmentation/config.yaml \
+#       --tsi-config experiments/uncertainty_segmentation/explainability/config.yaml \
+#       --device cuda:0
+
+analysis:
+  n_scans: 20                       # Number of test scans to analyse
+  scan_selection: "first"            # "first" | "random"
+  seed: 42                          # For reproducible scan sampling if "random"
+  tsi_thresholds: [1.5, 2.0]        # Tau values for Frac(TSI > tau)
+  epsilon: 1.0e-8                   # Numerical stability constant
+  top_k: 3                          # Top tumor-selective channels for visualization
+  member_id: 0                      # Which ensemble member for the adapted condition
+  roi_size: [128, 128, 128]         # Input ROI (128³ fits 8GB GPU; 192³ needs 16GB+)
+
+ranks: [4, 8, 16]                   # LoRA ranks to analyze
+
+paths:
+  base_results_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/tsi_explainability
+  run_dir_pattern: "r{rank}_M20_s42"   # Pattern with {rank} placeholder
+
+figure:
+  figsize_main: [14, 8]             # 5x3 panel figure
+  figsize_delta: [8, 2.5]           # 1x5 delta summary
+  figsize_cross_rank: [8, 3]        # Cross-rank comparison
+  colormap_activation: "inferno"
+  colormap_selective: "plasma"
+  slice_selection: "max_tumor"       # "max_tumor" | "center" | integer index
+  save_format: "pdf"
+  save_dpi: 300
+  mri_channel: 1                    # T1ce (index 1 in [FLAIR, T1ce, T1, T2])
