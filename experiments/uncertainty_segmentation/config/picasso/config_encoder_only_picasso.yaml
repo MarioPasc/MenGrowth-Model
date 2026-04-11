@@ -2,9 +2,13 @@
 #
 # Merge order: base config.yaml → config_picasso.yaml → encoder_only.yaml → this file
 #
-# This only overrides experiment.output_dir to separate results from the
-# full-decoder runs. All other Picasso-specific overrides (paths, batch_size,
-# num_workers) come from config_picasso.yaml.
+# LoRA on stages [1,2,3] requires ~16× more activation memory than [3,4]
+# because stage 1 operates at 48³ resolution. batch_size=4 OOMs on A100 40GB.
+# Fix: batch_size=2 with grad_accum_steps=2 to preserve effective batch size of 4.
 
 experiment:
   output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only
+
+training:
+  batch_size: 2               # A100 40GB: stages [1,2,3] OOM at bs=4 (stage 1 at 48³ is huge)
+  grad_accum_steps: 2         # Effective batch size = 2 × 2 = 4 (matches trainable decoder runs)
