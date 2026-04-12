@@ -615,28 +615,54 @@ def run_full_analysis(
 
 def _save_summary(
     frozen_df: pd.DataFrame,
-    all_rank_results: dict[int, list[ScanTSIResult]],
+    all_rank_results: dict[int, list[ScanTSIResult]] | None,
     output_dir: Path,
+    adapted_dfs: dict[int, pd.DataFrame] | None = None,
 ) -> None:
     """Save a JSON summary of key findings for quick inspection.
 
+    Concurrent rank-subset invocations (one SLURM job per rank writing to the
+    same output_dir) race on this file. To survive that, we read any existing
+    summary first and merge the new ranks into it rather than overwriting.
+
     Args:
         frozen_df: Frozen results DataFrame.
-        all_rank_results: Dict of rank -> adapted results.
+        all_rank_results: Dict of rank -> ScanTSIResult list. Mutually exclusive
+            with adapted_dfs; one of the two must be provided.
         output_dir: Output directory.
+        adapted_dfs: Dict of rank -> per-scan DataFrame (use this in
+            regeneration mode where ScanTSIResult objects are not available).
     """
     import json
 
+    summary_path = output_dir / "tsi_summary.json"
+    # Merge with existing summary (survives concurrent writers and regeneration).
     summary: dict = {"frozen": {}, "adapted": {}}
+    if summary_path.exists():
+        try:
+            existing = json.loads(summary_path.read_text())
+            if isinstance(existing.get("frozen"), dict):
+                summary["frozen"] = dict(existing["frozen"])
+            if isinstance(existing.get("adapted"), dict):
+                summary["adapted"] = dict(existing["adapted"])
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Could not parse existing {summary_path}: {e} — overwriting.")
+
+    # Always refresh frozen block from the current run's frozen_df.
     for stage in range(5):
         vals = frozen_df[frozen_df["stage"] == stage]["mean_tsi"].dropna()
         summary["frozen"][f"stage{stage}"] = {
-            "mean_tsi": round(float(vals.mean()), 4),
+            "mean_tsi": round(float(vals.mean()), 4) if len(vals) > 0 else None,
             "n_valid": int(len(vals)),
         }
 
-    for rank, results in all_rank_results.items():
-        adf = _results_to_dataframe(results)
+    # Resolve adapted ranks source (ScanTSIResult list or DataFrame).
+    if adapted_dfs is None:
+        if all_rank_results is None:
+            raise ValueError("Either all_rank_results or adapted_dfs must be provided")
+        adapted_dfs = {r: _results_to_dataframe(res) for r, res in all_rank_results.items()}
+
+    for rank, adf in adapted_dfs.items():
         summary["adapted"][f"r{rank}"] = {}
         for stage in range(5):
             vals = adf[adf["stage"] == stage]["mean_tsi"].dropna()
@@ -645,10 +671,12 @@ def _save_summary(
                 "n_valid": int(len(vals)),
             }
 
-    path = output_dir / "tsi_summary.json"
-    with open(path, "w") as f:
+    with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
-    logger.info(f"Saved summary: {path}")
+    logger.info(
+        f"Saved summary with {len(summary['adapted'])} adapted ranks "
+        f"({sorted(summary['adapted'].keys())}): {summary_path}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -787,6 +815,17 @@ def regenerate_figures(
             stage_meta=stage_meta,
         )
 
+    # Rebuild tsi_summary.json from the CSVs we just processed so that a
+    # mis-labeled / single-rank summary left over from a concurrent run
+    # gets replaced with one covering every rank on disk.
+    if all_adapted_dfs:
+        _save_summary(
+            frozen_df=frozen_df,
+            all_rank_results=None,
+            output_dir=output_dir,
+            adapted_dfs=all_adapted_dfs,
+        )
+
     logger.info("Figure regeneration complete.")
 
 
@@ -916,7 +955,13 @@ def main() -> None:
     logger.info(f"Ranks: {ranks}")
     logger.info(f"Output: {output_dir}")
 
-    # Pre-flight
+    # Regenerate figures mode (no GPU / no checkpoint / no H5 needed).
+    # Run BEFORE preflight so offline post-processing works without a training env.
+    if args.regenerate_figures:
+        regenerate_figures(tsi_config, ranks, config=config)
+        return
+
+    # Pre-flight (for full analysis or validation: needs checkpoint + H5 + adapters).
     if not preflight(config, tsi_config, ranks):
         logger.error("Pre-flight checks failed — aborting")
         return
@@ -925,11 +970,6 @@ def main() -> None:
     if args.validate_only:
         validation_rank = ranks[0]
         run_validation(config, tsi_config, validation_rank, args.device)
-        return
-
-    # Regenerate figures mode (no GPU needed)
-    if args.regenerate_figures:
-        regenerate_figures(tsi_config, ranks, config=config)
         return
 
     # Full analysis
