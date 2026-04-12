@@ -29,14 +29,45 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Stage metadata: (channels, downsample_factor) for feature_size=48
-STAGE_META = {
-    0: {"channels": 48, "downsample": 2, "name": "patch_embed", "has_lora": False},
-    1: {"channels": 96, "downsample": 4, "name": "layers1", "has_lora": False},
-    2: {"channels": 192, "downsample": 8, "name": "layers2", "has_lora": False},
-    3: {"channels": 384, "downsample": 16, "name": "layers3", "has_lora": True},
-    4: {"channels": 768, "downsample": 32, "name": "layers4", "has_lora": True},
+# Stage metadata: (channels, downsample_factor) for feature_size=48.
+# has_lora is derived per-run from config.lora.target_stages via build_stage_meta().
+# Stage 0 is the patch embedding (before swinViT.layers*) and is never LoRA-adapted.
+_STAGE_SHAPE = {
+    0: {"channels": 48, "downsample": 2, "name": "patch_embed"},
+    1: {"channels": 96, "downsample": 4, "name": "layers1"},
+    2: {"channels": 192, "downsample": 8, "name": "layers2"},
+    3: {"channels": 384, "downsample": 16, "name": "layers3"},
+    4: {"channels": 768, "downsample": 32, "name": "layers4"},
 }
+
+
+def build_stage_meta(target_stages: list[int] | tuple[int, ...]) -> dict[int, dict]:
+    """Build per-stage metadata with has_lora derived from the run's target_stages.
+
+    Args:
+        target_stages: The LoRA target_stages list from config.lora.target_stages.
+            Values must be in {1, 2, 3, 4} (stage 0 is the patch embedding and
+            cannot host LoRA).
+
+    Returns:
+        Dict mapping stage index (0-4) to metadata dict with keys
+        "channels", "downsample", "name", and "has_lora".
+    """
+    target_set = {int(s) for s in target_stages}
+    invalid = target_set - {1, 2, 3, 4}
+    if invalid:
+        raise ValueError(
+            f"target_stages must be a subset of {{1,2,3,4}}, got invalid values: {sorted(invalid)}"
+        )
+    return {
+        s: {**_STAGE_SHAPE[s], "has_lora": s in target_set}
+        for s in range(5)
+    }
+
+
+# Backward-compat alias: historical default was target_stages=[3, 4].
+# New code should call build_stage_meta(target_stages) instead.
+STAGE_META = build_stage_meta([3, 4])
 
 
 @dataclasses.dataclass

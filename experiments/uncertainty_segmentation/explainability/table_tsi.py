@@ -22,9 +22,15 @@ from .tsi_analysis import STAGE_META
 logger = logging.getLogger(__name__)
 
 
+def _resolve_stage_meta(stage_meta: dict | None) -> dict:
+    """Fall back to legacy [3,4] STAGE_META when callers pass None."""
+    return stage_meta if stage_meta is not None else STAGE_META
+
+
 def _aggregate_per_stage(
     df: pd.DataFrame,
     thresholds: list[float] = (1.5, 2.0),
+    stage_meta: dict | None = None,
 ) -> pd.DataFrame:
     """Aggregate per-scan TSI statistics by stage and condition.
 
@@ -40,9 +46,10 @@ def _aggregate_per_stage(
     Returns:
         Aggregated DataFrame with one row per (stage, condition).
     """
+    stage_meta = _resolve_stage_meta(stage_meta)
     rows = []
     for (stage, condition), group in df.groupby(["stage", "condition"]):
-        meta = STAGE_META.get(int(stage), {})
+        meta = stage_meta.get(int(stage), {})
         mean_tsi_values = group["mean_tsi"].dropna().values
 
         row = {
@@ -157,6 +164,7 @@ def _generate_latex(
     agg_df: pd.DataFrame,
     paired_df: pd.DataFrame | None,
     rank: int | None,
+    stage_meta: dict | None = None,
 ) -> str:
     """Generate LaTeX table string.
 
@@ -168,6 +176,7 @@ def _generate_latex(
     Returns:
         LaTeX table string.
     """
+    stage_meta = _resolve_stage_meta(stage_meta)
     rank_label = f"r={rank}" if rank else "all ranks"
     lines = [
         r"\begin{table}[htbp]",
@@ -192,7 +201,7 @@ def _generate_latex(
         p_str = _format_pvalue(row.get("wilcoxon_p_scans", np.nan))
 
         # Bold LoRA stages
-        stage_str = f"\\textbf{{{stage}}}" if STAGE_META[stage]["has_lora"] else str(stage)
+        stage_str = f"\\textbf{{{stage}}}" if stage_meta[stage]["has_lora"] else str(stage)
         cond_clean = cond.replace("adapted_", "Adapted ").replace("frozen", "Frozen")
 
         lines.append(
@@ -237,6 +246,7 @@ def generate_all_tables(
     rank: int | None,
     output_dir: Path,
     all_adapted: dict[int, pd.DataFrame] | None = None,
+    stage_meta: dict | None = None,
 ) -> None:
     """Generate CSV and LaTeX tables for one rank or cross-rank comparison.
 
@@ -247,20 +257,21 @@ def generate_all_tables(
         output_dir: Directory to write tables into.
         all_adapted: Dict of rank -> adapted_df for cross-rank comparison.
     """
+    stage_meta = _resolve_stage_meta(stage_meta)
     tables_dir = output_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
 
     if adapted_df is not None:
         # Single-rank table
         combined = pd.concat([frozen_df, adapted_df], ignore_index=True)
-        agg = _aggregate_per_stage(combined)
+        agg = _aggregate_per_stage(combined, stage_meta=stage_meta)
         paired = _paired_wilcoxon_per_stage(frozen_df, adapted_df)
 
         suffix = f"_r{rank}" if rank else ""
         agg.to_csv(tables_dir / f"tsi_table{suffix}.csv", index=False)
         paired.to_csv(tables_dir / f"tsi_paired{suffix}.csv", index=False)
 
-        latex = _generate_latex(agg, paired, rank)
+        latex = _generate_latex(agg, paired, rank, stage_meta=stage_meta)
         (tables_dir / f"tsi_table{suffix}.tex").write_text(latex)
 
         logger.info(f"Saved tables to {tables_dir}")

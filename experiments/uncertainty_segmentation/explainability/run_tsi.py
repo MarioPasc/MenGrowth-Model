@@ -46,8 +46,8 @@ from .model_loader import (
     load_frozen_model,
 )
 from .tsi_analysis import (
-    STAGE_META,
     ScanTSIResult,
+    build_stage_meta,
     compute_tsi_single_scan,
     extract_hidden_states,
 )
@@ -221,8 +221,8 @@ def run_validation(
 
     Checks:
     1. Hidden state shapes match expected values.
-    2. Stages 0-2 are numerically identical between frozen and adapted.
-    3. Stages 3-4 differ between frozen and adapted.
+    2. Stages before the first LoRA-adapted layer are numerically identical.
+    3. Stages at/after the first LoRA-adapted layer differ between frozen and adapted.
     4. TSI values are computed without errors.
 
     Args:
@@ -237,6 +237,14 @@ def run_validation(
     logger.info("=" * 60)
     logger.info("VALIDATION RUN (1 scan)")
     logger.info("=" * 60)
+
+    target_stages = [int(s) for s in config.lora.target_stages]
+    stage_meta = build_stage_meta(target_stages)
+    # Stages before the smallest adapted layer are unaffected; from that stage
+    # onward, activations must differ (either directly adapted, or downstream
+    # of a LoRA-adapted layer via frozen processing).
+    first_adapted = min(target_stages)
+    logger.info(f"LoRA target_stages={target_stages} (first adapted stage={first_adapted})")
 
     roi_size = tuple(tsi_config.analysis.roi_size)
     logger.info(f"ROI size: {roi_size}")
@@ -271,7 +279,7 @@ def run_validation(
     # Check 1: shapes
     logger.info("\n--- Check 1: Hidden state shapes ---")
     for s in range(5):
-        meta = STAGE_META[s]
+        meta = stage_meta[s]
         expected_c = meta["channels"]
         expected_spatial = images.shape[2] // meta["downsample"]
         f_shape = hs_frozen[s].shape
@@ -286,9 +294,9 @@ def run_validation(
         if not ok:
             all_ok = False
 
-    # Check 2: stages 0-2 identical
-    logger.info("\n--- Check 2: Stages 0-2 should be identical ---")
-    for s in range(3):
+    # Check 2: stages before first_adapted are identical (no upstream LoRA)
+    logger.info(f"\n--- Check 2: Stages 0..{first_adapted - 1} should be identical ---")
+    for s in range(first_adapted):
         max_diff = (hs_frozen[s] - hs_adapted[s]).abs().max().item()
         ok = max_diff < 1e-5
         status = "OK" if ok else "FAIL"
@@ -296,13 +304,14 @@ def run_validation(
         if not ok:
             all_ok = False
 
-    # Check 3: stages 3-4 differ
-    logger.info("\n--- Check 3: Stages 3-4 should differ (LoRA applied) ---")
-    for s in range(3, 5):
+    # Check 3: stages at/after first_adapted must differ (direct LoRA or downstream propagation)
+    logger.info(f"\n--- Check 3: Stages {first_adapted}..4 should differ (LoRA applied or downstream) ---")
+    for s in range(first_adapted, 5):
         max_diff = (hs_frozen[s] - hs_adapted[s]).abs().max().item()
         ok = max_diff > 1e-3
         status = "OK" if ok else "FAIL"
-        logger.info(f"  Stage {s}: max_diff={max_diff:.2e} [{status}]")
+        tag = "[LoRA]" if stage_meta[s]["has_lora"] else "[downstream]"
+        logger.info(f"  Stage {s} {tag}: max_diff={max_diff:.2e} [{status}]")
         if not ok:
             all_ok = False
 
@@ -433,6 +442,13 @@ def run_full_analysis(
     # Save resolved config snapshot
     OmegaConf.save(tsi_config, output_dir / "config_snapshot.yaml", resolve=True)
 
+    # Build per-stage metadata from the actual LoRA config.
+    # has_lora[s] is True iff s in config.lora.target_stages.
+    target_stages = [int(s) for s in config.lora.target_stages]
+    stage_meta = build_stage_meta(target_stages)
+    logger.info(f"LoRA target_stages={target_stages}; has_lora by stage: "
+                f"{ {s: stage_meta[s]['has_lora'] for s in range(5)} }")
+
     # Load dataset
     roi_size = tuple(tsi_config.analysis.roi_size)
     logger.info(f"ROI size: {roi_size}")
@@ -539,6 +555,7 @@ def run_full_analysis(
             adapted_df=adapted_df,
             rank=rank,
             output_dir=rank_dir,
+            stage_meta=stage_meta,
         )
 
     # Generate cross-rank table
@@ -549,6 +566,7 @@ def run_full_analysis(
             rank=None,
             output_dir=output_dir / "cross_rank",
             all_adapted={r: _results_to_dataframe(res) for r, res in all_rank_results.items()},
+            stage_meta=stage_meta,
         )
 
     # Generate figures
@@ -567,6 +585,7 @@ def run_full_analysis(
             rank=rank,
             config=tsi_config,
             output_dir=rank_dir,
+            stage_meta=stage_meta,
         )
 
     # Cross-rank comparison figure
@@ -582,6 +601,7 @@ def run_full_analysis(
             all_adapted_dfs=all_adapted_dfs,
             config=tsi_config,
             output_dir=output_dir / "cross_rank",
+            stage_meta=stage_meta,
         )
 
     # Save statistical summary JSON for quick inspection
@@ -639,6 +659,7 @@ def _save_summary(
 def regenerate_figures(
     tsi_config: DictConfig,
     ranks: list[int],
+    config: DictConfig | None = None,
 ) -> None:
     """Regenerate all figures from saved data without model inference.
 
@@ -648,6 +669,11 @@ def regenerate_figures(
     Args:
         tsi_config: TSI config.
         ranks: Ranks to regenerate figures for.
+        config: Parent uncertainty_segmentation config. If provided, figures
+            are labeled with the correct has_lora flags from
+            config.lora.target_stages. If None, falls back to the saved
+            parent_config_snapshot.yaml next to tsi_config, and finally
+            to the legacy [3,4] default if no snapshot exists.
     """
     from .figure_tsi import (
         generate_cross_rank_figure,
@@ -660,6 +686,24 @@ def regenerate_figures(
     output_dir = Path(tsi_config.paths.output_dir)
     save_fmt = tsi_config.figure.save_format
     save_dpi = tsi_config.figure.save_dpi
+
+    # Resolve stage_meta from parent config or its saved snapshot.
+    stage_meta = None
+    if config is not None:
+        target_stages = [int(s) for s in config.lora.target_stages]
+        stage_meta = build_stage_meta(target_stages)
+    else:
+        snapshot = output_dir / "parent_config_snapshot.yaml"
+        if snapshot.exists():
+            snap_cfg = OmegaConf.load(snapshot)
+            target_stages = [int(s) for s in snap_cfg.lora.target_stages]
+            stage_meta = build_stage_meta(target_stages)
+            logger.info(f"Loaded target_stages={target_stages} from {snapshot}")
+        else:
+            logger.warning(
+                f"No parent config available and no snapshot at {snapshot}; "
+                "figures will use legacy has_lora=[3,4] labeling."
+            )
 
     # Load frozen data
     frozen_csv = output_dir / "frozen" / "data" / "tsi_frozen_per_scan.csv"
@@ -693,7 +737,7 @@ def regenerate_figures(
 
         if viz_frozen_path.exists():
             viz_data = load_viz_data(viz_frozen_path)
-            fig = generate_panel_figure_from_saved(viz_data, tsi_config)
+            fig = generate_panel_figure_from_saved(viz_data, tsi_config, stage_meta=stage_meta)
             path = figures_dir / f"tsi_frozen.{save_fmt}"
             fig.savefig(path, dpi=save_dpi, bbox_inches="tight")
             plt.close(fig)
@@ -702,7 +746,7 @@ def regenerate_figures(
         if viz_adapted_path.exists():
             viz_data = load_viz_data(viz_adapted_path)
             fig = generate_panel_figure_from_saved(
-                viz_data, tsi_config, title_suffix=f" (r={rank})",
+                viz_data, tsi_config, title_suffix=f" (r={rank})", stage_meta=stage_meta,
             )
             path = figures_dir / f"tsi_adapted_r{rank}.{save_fmt}"
             fig.savefig(path, dpi=save_dpi, bbox_inches="tight")
@@ -710,7 +754,7 @@ def regenerate_figures(
             logger.info(f"Regenerated: {path}")
 
         # Delta figure (from CSVs — always available)
-        fig_delta = generate_delta_figure(frozen_df, adapted_df, tsi_config, rank)
+        fig_delta = generate_delta_figure(frozen_df, adapted_df, tsi_config, rank, stage_meta=stage_meta)
         path = figures_dir / f"tsi_delta_r{rank}.{save_fmt}"
         fig_delta.savefig(path, dpi=save_dpi, bbox_inches="tight")
         plt.close(fig_delta)
@@ -722,6 +766,7 @@ def regenerate_figures(
             adapted_df=adapted_df,
             rank=rank,
             output_dir=rank_dir,
+            stage_meta=stage_meta,
         )
 
     # Cross-rank figures
@@ -731,6 +776,7 @@ def regenerate_figures(
             all_adapted_dfs=all_adapted_dfs,
             config=tsi_config,
             output_dir=output_dir / "cross_rank",
+            stage_meta=stage_meta,
         )
         generate_all_tables(
             frozen_df=frozen_df,
@@ -738,6 +784,7 @@ def regenerate_figures(
             rank=None,
             output_dir=output_dir / "cross_rank",
             all_adapted=all_adapted_dfs,
+            stage_meta=stage_meta,
         )
 
     logger.info("Figure regeneration complete.")
@@ -882,7 +929,7 @@ def main() -> None:
 
     # Regenerate figures mode (no GPU needed)
     if args.regenerate_figures:
-        regenerate_figures(tsi_config, ranks)
+        regenerate_figures(tsi_config, ranks, config=config)
         return
 
     # Full analysis

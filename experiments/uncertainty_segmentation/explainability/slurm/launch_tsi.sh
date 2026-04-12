@@ -9,6 +9,12 @@
 #   bash experiments/uncertainty_segmentation/explainability/slurm/launch_tsi.sh
 #   bash experiments/uncertainty_segmentation/explainability/slurm/launch_tsi.sh --rank 4
 #   bash experiments/uncertainty_segmentation/explainability/slurm/launch_tsi.sh --rank 4,8,16
+#   bash experiments/uncertainty_segmentation/explainability/slurm/launch_tsi.sh --encoder-only
+#
+# --encoder-only merges the frozen-decoder / encoder-only overrides into the
+# parent config, so config.lora.target_stages reflects [1,2,3] rather than the
+# legacy [3,4]. This is required for TSI figures to label the correct LoRA
+# stages; see project_frozen_decoder_lora.md.
 # =============================================================================
 
 set -euo pipefail
@@ -38,17 +44,34 @@ TSI_PICASSO_OVERRIDE="${MODULE_DIR}/config/picasso/config_tsi_picasso.yaml"
 
 # Parse arguments
 RANKS="4,8,16"
+ENCODER_ONLY=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --rank)
             RANKS="$2"
             shift 2
             ;;
+        --encoder-only)
+            ENCODER_ONLY=1
+            shift
+            ;;
         *)
             shift
             ;;
     esac
 done
+
+# Resolve encoder-only overrides (mirrors training launch.sh)
+ENCODER_ONLY_PATH=""
+ENCODER_ONLY_PICASSO_PATH=""
+if [ "${ENCODER_ONLY}" -eq 1 ]; then
+    ENCODER_ONLY_PATH="${EXPERIMENT_DIR}/config/encoder_only.yaml"
+    ENCODER_ONLY_PICASSO_PATH="${EXPERIMENT_DIR}/config/picasso/config_encoder_only_picasso.yaml"
+    if [ ! -f "${ENCODER_ONLY_PATH}" ]; then
+        echo "[FAIL] Encoder-only config not found: ${ENCODER_ONLY_PATH}"
+        exit 1
+    fi
+fi
 
 echo "Configuration:"
 echo "  Repo:            ${REPO_SRC}"
@@ -58,6 +81,11 @@ echo "  TSI config:      ${TSI_BASE_CONFIG}"
 echo "  TSI Picasso:     ${TSI_PICASSO_OVERRIDE}"
 echo "  Ranks:           ${RANKS}"
 echo "  Conda env:       ${CONDA_ENV_NAME}"
+if [ "${ENCODER_ONLY}" -eq 1 ]; then
+    echo "  Mode:            ENCODER-ONLY (frozen decoder, LoRA on stages [1,2,3])"
+    echo "  encoder_only:    ${ENCODER_ONLY_PATH}"
+    echo "  encoder_only_p:  ${ENCODER_ONLY_PICASSO_PATH}"
+fi
 echo ""
 
 # Activate conda for pre-flight
@@ -77,9 +105,11 @@ MERGED_OUTPUT=$(python3 -c "
 from omegaconf import OmegaConf
 import os, sys, pathlib
 
-# Parent config: base + picasso override
+# Parent config: base + picasso override (+ optional encoder-only overrides)
 base_path = '${BASE_CONFIG}'
 picasso_path = '${PICASSO_OVERRIDE}'
+encoder_only_path = '${ENCODER_ONLY_PATH}'
+encoder_only_picasso_path = '${ENCODER_ONLY_PICASSO_PATH}'
 tsi_base_path = '${TSI_BASE_CONFIG}'
 tsi_picasso_path = '${TSI_PICASSO_OVERRIDE}'
 
@@ -92,6 +122,17 @@ parent_cfg = OmegaConf.load(base_path)
 if os.path.exists(picasso_path):
     parent_cfg = OmegaConf.merge(parent_cfg, OmegaConf.load(picasso_path))
     print('[config] Parent: base + picasso override')
+
+# Apply encoder-only overrides (must match the training-time merge order).
+# Without this, parent_config_snapshot.yaml would record target_stages=[3,4]
+# even for frozen-decoder runs that actually used [1,2,3], and TSI figures
+# would label the wrong stages as LoRA-adapted.
+if encoder_only_path and os.path.exists(encoder_only_path):
+    parent_cfg = OmegaConf.merge(parent_cfg, OmegaConf.load(encoder_only_path))
+    print(f'[config] Applied encoder-only: target_stages={list(parent_cfg.lora.target_stages)}, freeze_decoder={parent_cfg.training.freeze_decoder}')
+if encoder_only_picasso_path and os.path.exists(encoder_only_picasso_path):
+    parent_cfg = OmegaConf.merge(parent_cfg, OmegaConf.load(encoder_only_picasso_path))
+    print('[config] Applied encoder-only picasso path override')
 
 # Merge TSI config
 tsi_cfg = OmegaConf.load(tsi_base_path)

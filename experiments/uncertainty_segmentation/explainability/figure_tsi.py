@@ -24,6 +24,16 @@ from growth.data.bratsmendata import BraTSDatasetH5
 
 from .tsi_analysis import STAGE_META, ScanTSIResult
 
+
+def _resolve_stage_meta(stage_meta: dict | None) -> dict:
+    """Fall back to the legacy [3,4] STAGE_META when callers pass None.
+
+    Why: thread-through is opt-in; old call sites keep working but figures will
+    mislabel stages as in the [3,4] default. New callers should always pass
+    stage_meta built from config.lora.target_stages.
+    """
+    return stage_meta if stage_meta is not None else STAGE_META
+
 logger = logging.getLogger(__name__)
 
 # Paul Tol vibrant palette for ranks
@@ -94,6 +104,7 @@ def generate_panel_figure_from_saved(
     viz_data: dict[str, np.ndarray],
     config: DictConfig,
     title_suffix: str = "",
+    stage_meta: dict | None = None,
 ) -> Figure:
     """Generate 5×3 panel figure from saved visualization data.
 
@@ -111,6 +122,7 @@ def generate_panel_figure_from_saved(
     fig_cfg = config.figure
     cmap_act = fig_cfg.colormap_activation
     cmap_sel = fig_cfg.colormap_selective
+    stage_meta = _resolve_stage_meta(stage_meta)
 
     mri_slice = viz_data["mri_slice"]
     mask_slice = viz_data["mask_slice"]
@@ -130,7 +142,7 @@ def generate_panel_figure_from_saved(
     )
 
     for s in range(5):
-        meta = STAGE_META[s]
+        meta = stage_meta[s]
         tsi_vals = viz_data.get(f"stage{s}_tsi", np.array([]))
 
         # Column header
@@ -251,6 +263,7 @@ def generate_panel_figure(
     slice_idx: int,
     config: DictConfig,
     title_suffix: str = "",
+    stage_meta: dict | None = None,
 ) -> Figure:
     """Generate a 5×3 panel figure for one condition.
 
@@ -272,6 +285,7 @@ def generate_panel_figure(
     fig_cfg = config.figure
     cmap_act = fig_cfg.colormap_activation
     cmap_sel = fig_cfg.colormap_selective
+    stage_meta = _resolve_stage_meta(stage_meta)
 
     target_size = mri_volume.shape
     mri_slice = mri_volume[slice_idx]
@@ -292,7 +306,7 @@ def generate_panel_figure(
 
     for s in range(5):
         sr = scan_result.stages[s]
-        meta = STAGE_META[s]
+        meta = stage_meta[s]
 
         # Column header
         lora_tag = " [LoRA]" if meta["has_lora"] else ""
@@ -422,6 +436,7 @@ def generate_delta_figure(
     adapted_df: pd.DataFrame,
     config: DictConfig,
     rank: int,
+    stage_meta: dict | None = None,
 ) -> Figure:
     """Generate 1×5 delta summary figure (adapted − frozen mean TSI per stage).
 
@@ -434,6 +449,7 @@ def generate_delta_figure(
     Returns:
         Matplotlib Figure.
     """
+    stage_meta = _resolve_stage_meta(stage_meta)
     fig, axes = plt.subplots(
         1, 5,
         figsize=tuple(config.figure.figsize_delta),
@@ -463,7 +479,7 @@ def generate_delta_figure(
         else:
             err = [[0], [0]]
 
-        color = ADAPTED_COLOR if STAGE_META[s]["has_lora"] else FROZEN_COLOR
+        color = ADAPTED_COLOR if stage_meta[s]["has_lora"] else FROZEN_COLOR
         ax.bar(
             0, mean_delta,
             color=color,
@@ -481,7 +497,7 @@ def generate_delta_figure(
         )
         ax.axhline(0, color="grey", linestyle="-", linewidth=0.5)
 
-        lora_tag = " *" if STAGE_META[s]["has_lora"] else ""
+        lora_tag = " *" if stage_meta[s]["has_lora"] else ""
         ax.set_title(f"Stage {s}{lora_tag}", fontsize=9)
         ax.set_xticks([])
         ax.tick_params(labelsize=8)
@@ -506,6 +522,7 @@ def generate_cross_rank_figure(
     all_adapted_dfs: dict[int, pd.DataFrame],
     config: DictConfig,
     output_dir: Path,
+    stage_meta: dict | None = None,
 ) -> None:
     """Generate cross-rank comparison figure.
 
@@ -518,6 +535,7 @@ def generate_cross_rank_figure(
         config: TSI config.
         output_dir: Directory to save figure.
     """
+    stage_meta = _resolve_stage_meta(stage_meta)
     ranks = sorted(all_adapted_dfs.keys())
     n_ranks = len(ranks)
 
@@ -582,7 +600,7 @@ def generate_cross_rank_figure(
     ax.axhline(0, color="grey", linestyle="-", linewidth=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels([
-        f"Stage {s}" + (" *" if STAGE_META[s]["has_lora"] else "")
+        f"Stage {s}" + (" *" if stage_meta[s]["has_lora"] else "")
         for s in range(5)
     ], fontsize=9)
     ax.set_ylabel("Δ Mean TSI (Adapted − Frozen)", fontsize=9)
@@ -610,6 +628,7 @@ def generate_all_figures(
     rank: int,
     config: DictConfig,
     output_dir: Path,
+    stage_meta: dict | None = None,
 ) -> None:
     """Generate all figures for one rank.
 
@@ -626,6 +645,7 @@ def generate_all_figures(
         config: TSI config.
         output_dir: Rank output directory.
     """
+    stage_meta = _resolve_stage_meta(stage_meta)
     figures_dir = output_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -653,6 +673,7 @@ def generate_all_figures(
         frozen_scan = frozen_results[0]
         fig_frozen = generate_panel_figure(
             frozen_scan, mri_vol, wt_mask, slice_idx, config,
+            stage_meta=stage_meta,
         )
         path = figures_dir / f"tsi_frozen.{save_fmt}"
         fig_frozen.savefig(path, dpi=save_dpi, bbox_inches="tight")
@@ -671,6 +692,7 @@ def generate_all_figures(
         fig_adapted = generate_panel_figure(
             adapted_scan, mri_vol, wt_mask, slice_idx, config,
             title_suffix=f" (r={rank})",
+            stage_meta=stage_meta,
         )
         path = figures_dir / f"tsi_adapted_r{rank}.{save_fmt}"
         fig_adapted.savefig(path, dpi=save_dpi, bbox_inches="tight")
@@ -684,7 +706,7 @@ def generate_all_figures(
                       data_dir / f"viz_adapted_r{rank}.npz")
 
     # Delta figure
-    fig_delta = generate_delta_figure(frozen_df, adapted_df, config, rank)
+    fig_delta = generate_delta_figure(frozen_df, adapted_df, config, rank, stage_meta=stage_meta)
     path = figures_dir / f"tsi_delta_r{rank}.{save_fmt}"
     fig_delta.savefig(path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig_delta)
