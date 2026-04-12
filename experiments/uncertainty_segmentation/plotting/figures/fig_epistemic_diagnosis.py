@@ -184,82 +184,93 @@ def _plot_bias_variance_landscape(
 
     ranks_sorted = sorted(rank_data.keys())
 
-    # Plot individual scans per rank (background layer, low alpha).
+    # Compute global axis limits up front so shading / region labels get
+    # the correct extent before data is plotted on top.
     for rank in ranks_sorted:
         bias_df = rank_data[rank]["bias"]
-        std = np.clip(bias_df["logvol_ensemble_std"].to_numpy(), floor, None)
-        abs_bias = np.clip(bias_df["logvol_abs_bias"].to_numpy(), floor, None)
-        all_std.append(std)
-        all_bias.append(abs_bias)
-
-        color = colors[rank]
-        ax.scatter(
-            std, abs_bias,
-            s=10, color=color, alpha=0.28, edgecolors="none",
-            label=f"r = {rank}",
-            zorder=2,
-        )
-
-    # Plot per-rank medians as large diamond markers (foreground).
-    median_points: list[tuple[int, float, float]] = []
-    for rank in ranks_sorted:
-        bias_df = rank_data[rank]["bias"]
-        med_std = float(bias_df["logvol_ensemble_std"].median())
-        med_bias = float(bias_df["logvol_abs_bias"].median())
-        med_std_clip = max(med_std, floor)
-        med_bias_clip = max(med_bias, floor)
-        median_points.append((rank, med_std_clip, med_bias_clip))
-        ax.scatter(
-            [med_std_clip], [med_bias_clip],
-            s=180, marker="D", color=colors[rank],
-            edgecolors="black", linewidths=1.3,
-            zorder=5,
-        )
-        ax.annotate(
-            f"r={rank}",
-            xy=(med_std_clip, med_bias_clip),
-            xytext=(10, -3), textcoords="offset points",
-            fontsize=8, fontweight="bold", color="black",
-            zorder=6,
-        )
-
-    # Connect medians with an arrow to show the trade-off direction.
-    for (r_a, x_a, y_a), (r_b, x_b, y_b) in zip(median_points[:-1], median_points[1:]):
-        ax.add_patch(FancyArrowPatch(
-            (x_a, y_a), (x_b, y_b),
-            arrowstyle="-|>", mutation_scale=12,
-            color="black", lw=1.1, alpha=0.7,
-            zorder=4,
+        all_std.append(np.clip(
+            bias_df["logvol_ensemble_std"].to_numpy(), floor, None,
         ))
-
-    # Decision boundary |bias| = std.
+        all_bias.append(np.clip(
+            bias_df["logvol_abs_bias"].to_numpy(), floor, None,
+        ))
     combined_std = np.concatenate(all_std)
     combined_bias = np.concatenate(all_bias)
     lim_min = min(combined_std.min(), combined_bias.min()) * 0.8
     lim_max = max(combined_std.max(), combined_bias.max()) * 1.2
-    diag = np.array([lim_min, lim_max])
-    ax.plot(
-        diag, diag, "k--", lw=0.9, alpha=0.7,
-        label="|bias| = std  (decision boundary)",
-        zorder=3,
+
+    # Shaded bias-contamination region (above diagonal) — drawn first so
+    # scatter points sit on top.
+    n_shade = 128
+    log_grid = np.logspace(np.log10(lim_min), np.log10(lim_max), n_shade)
+    ax.fill_between(
+        log_grid, log_grid, np.full_like(log_grid, lim_max),
+        color="#D55E00", alpha=0.07, zorder=1, linewidth=0,
     )
 
-    # Shaded bias-contamination region (above diagonal).
-    ax.fill_between(
-        diag, diag, [lim_max, lim_max],
-        color="#D55E00", alpha=0.07, zorder=1,
+    # Diagonal decision boundary.
+    diag = np.array([lim_min, lim_max])
+    ax.plot(
+        diag, diag, "k--", lw=0.9, alpha=0.7, zorder=3,
     )
-    # Region labels.
-    mid = np.sqrt(lim_min * lim_max)
+
+    # Background scatter layer (one color per rank, low alpha).
+    for rank, std, abs_bias in zip(ranks_sorted, all_std, all_bias):
+        ax.scatter(
+            std, abs_bias,
+            s=10, color=colors[rank], alpha=0.30, edgecolors="none",
+            zorder=2,
+        )
+
+    # Per-rank medians — large diamonds. Labels go in the external legend.
+    median_points: list[tuple[int, float, float]] = []
+    for rank in ranks_sorted:
+        bias_df = rank_data[rank]["bias"]
+        med_std = max(float(bias_df["logvol_ensemble_std"].median()), floor)
+        med_bias = max(float(bias_df["logvol_abs_bias"].median()), floor)
+        median_points.append((rank, med_std, med_bias))
+        ax.scatter(
+            [med_std], [med_bias],
+            s=170, marker="D", color=colors[rank],
+            edgecolors="black", linewidths=1.3,
+            zorder=6,
+        )
+
+    # Arrow from lowest to highest rank showing the trade-off direction.
+    _, x_lo, y_lo = median_points[0]
+    _, x_hi, y_hi = median_points[-1]
+    ax.add_patch(FancyArrowPatch(
+        (x_lo, y_lo), (x_hi, y_hi),
+        arrowstyle="-|>", mutation_scale=14,
+        color="black", lw=1.3, alpha=0.85, zorder=5,
+        shrinkA=10, shrinkB=10,
+    ))
+    # Trade-off annotation placed near the arrow midpoint (geometric mid
+    # in log-space).
+    mid_x = np.sqrt(x_lo * x_hi)
+    mid_y = np.sqrt(y_lo * y_hi)
+    ax.annotate(
+        "rank ↑\n(bias ↓, var ↑)",
+        xy=(mid_x, mid_y),
+        xytext=(mid_x * 2.2, mid_y * 0.35),
+        fontsize=7.5, color="black",
+        ha="center", va="center",
+        arrowprops=dict(arrowstyle="-", lw=0.5, color="gray", alpha=0.6),
+        zorder=7,
+    )
+
+    # Region labels in the corners so they never touch data.
     ax.text(
-        mid * 0.25, mid * 4, "bias-contaminated\n(|bias| > std)",
-        fontsize=7.5, color="#8B0000", alpha=0.8,
-        ha="left", va="center", zorder=1,
+        lim_min * 1.5, lim_max * 0.65,
+        "BIAS-CONTAMINATED\n|bias| > std",
+        fontsize=7.5, color="#8B0000", alpha=0.9, fontweight="bold",
+        ha="left", va="top", zorder=3,
     )
     ax.text(
-        mid * 1.8, mid * 0.25, "procedural-dominated\n(|bias| ≤ std)",
-        fontsize=7.5, color="#00468B", alpha=0.8,
-        ha="center", va="center", zorder=1,
+        lim_max * 0.95, lim_min * 1.5,
+        "PROCEDURAL-DOMINATED\n|bias| ≤ std",
+        fontsize=7.5, color="#00468B", alpha=0.9, fontweight="bold",
+        ha="right", va="bottom", zorder=3,
     )
 
     if log_scale:
@@ -269,8 +280,8 @@ def _plot_bias_variance_landscape(
     ax.set_ylim(lim_min, lim_max)
     ax.set_aspect("equal", adjustable="box")
 
-    ax.set_xlabel("Procedural std  Std[log(V)]  (variance-like)")
-    ax.set_ylabel("|Bias|  |mean[log(V)] − log(V_GT)|  (bias-like)")
+    ax.set_xlabel("Procedural std  Std[log(V)]   (variance)")
+    ax.set_ylabel("|Bias|   |mean log(V) − log(V_GT)|   (bias)")
     ax.set_title("Bias–variance landscape across LoRA ranks",
                  fontweight="bold")
 
