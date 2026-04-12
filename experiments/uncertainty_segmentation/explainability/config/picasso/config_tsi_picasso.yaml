@@ -15,6 +15,6 @@ analysis:
   roi_size: [192, 192, 192]          # Full H5 resolution — A100 40GB fits 192³ forward pass (~3GB peak)
 
 paths:
-  base_results_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation
-  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation/tsi_explainability
+  base_results_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only/
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only/tsi_explainability
   run_dir_pattern: "r{rank}_M20_s42"
