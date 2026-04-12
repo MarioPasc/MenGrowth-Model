@@ -43,6 +43,13 @@ class EnsembleResultsData:
     # Predictions directory (may be None)
     predictions_dir: Path | None           # predictions/
 
+    # Epistemic-uncertainty diagnostics (populated by epistemic_metrics.py).
+    # All optional: None if the diagnostic pipeline has not run yet.
+    bias_diagnostics: pd.DataFrame | None = None
+    calibration_coverage: pd.DataFrame | None = None
+    epistemic_taxonomy: dict[str, Any] | None = None
+    cross_rank_summary: pd.DataFrame | None = None
+
     # Scans with full per-member predictions
     sample_scans: list[str] = dataclasses.field(default_factory=list)
 
@@ -186,6 +193,24 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
         logger.info("  Found %d scans with full per-member predictions: %s",
                      len(sample_scans), sample_scans)
 
+    # Epistemic diagnostics (cached CSVs + JSON, optional).
+    bias_diag = _read_csv_optional(eval_dir / "bias_diagnostics.csv")
+    calib_cov = _read_csv_optional(eval_dir / "calibration_coverage.csv")
+    taxonomy_path = eval_dir / "epistemic_taxonomy.json"
+    taxonomy = _read_json(taxonomy_path) if taxonomy_path.exists() else None
+    if bias_diag is not None:
+        logger.info("  Loaded bias_diagnostics (%d rows)", len(bias_diag))
+    if calib_cov is not None:
+        logger.info("  Loaded calibration_coverage (%d rows)", len(calib_cov))
+
+    # Cross-rank summary lives next to sibling ranks, not inside run_dir.
+    cross_rank_path = (
+        run_dir.parent / "epistemic_summary" / "cross_rank_epistemic_summary.csv"
+    )
+    cross_rank = _read_csv_optional(cross_rank_path)
+    if cross_rank is not None:
+        logger.info("  Loaded cross_rank_summary (%d rows)", len(cross_rank))
+
     return EnsembleResultsData(
         run_dir=run_dir,
         training_curves=loaded["training_curves"],
@@ -200,5 +225,9 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
         calibration=calibration,
         mengrowth_volumes=mengrowth_volumes,
         predictions_dir=predictions_dir,
+        bias_diagnostics=bias_diag,
+        calibration_coverage=calib_cov,
+        epistemic_taxonomy=taxonomy,
+        cross_rank_summary=cross_rank,
         sample_scans=sample_scans,
     )

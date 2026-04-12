@@ -22,6 +22,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import yaml
 
+from experiments.uncertainty_segmentation.plotting import epistemic_metrics
 from experiments.uncertainty_segmentation.plotting.data_loader import load_results
 from experiments.uncertainty_segmentation.plotting.figures import FIGURE_REGISTRY
 from experiments.uncertainty_segmentation.plotting.style import setup_style
@@ -48,7 +49,13 @@ FIGURE_NAMES = {
     "fig_volume_uncertainty": "fig12_volume_uncertainty",
     "fig_boundary_disagreement": "fig13_boundary_disagreement",
     "fig_uncertainty_overlay": "fig14_uncertainty_overlay",
+    "fig_epistemic_diagnosis": "fig15_bias_variance_landscape",
 }
+
+# Figures that should be saved to {run_dir.parent}/epistemic_summary/ in
+# addition to the per-run figures/ directory, so the cross-rank artifact
+# has a single canonical home.
+CROSS_RANK_FIGURES: set[str] = {"fig_epistemic_diagnosis"}
 
 
 def _load_config(config_path: Path | None) -> dict:
@@ -79,6 +86,7 @@ def generate_figures(
     fmt: str | None = None,
     dpi: int | None = None,
     only: list[str] | None = None,
+    force_recompute: bool = False,
 ) -> None:
     """Generate all (or a subset of) figures.
 
@@ -89,6 +97,8 @@ def generate_figures(
         fmt: Output format override (pdf, png, svg).
         dpi: DPI override.
         only: If given, generate only these figure names.
+        force_recompute: If True, bypass cached epistemic-diagnostics CSVs
+            and recompute them from raw evaluation CSVs.
     """
     run_dir = Path(run_dir)
     config = _load_config(Path(config_path) if config_path else None)
@@ -102,6 +112,21 @@ def generate_figures(
 
     out = Path(output_dir) if output_dir else run_dir / "figures"
     out.mkdir(parents=True, exist_ok=True)
+
+    # Epistemic-uncertainty compute step: populates / refreshes cached
+    # CSVs and JSON under {run_dir}/evaluation/ and
+    # {run_dir.parent}/epistemic_summary/. Non-fatal if raw inputs are
+    # missing — downstream figures will simply skip.
+    try:
+        epistemic_metrics.run_for_rank(run_dir, force=force_recompute)
+    except FileNotFoundError as exc:
+        logger.warning(
+            "Epistemic compute skipped for %s: %s", run_dir.name, exc,
+        )
+    try:
+        epistemic_metrics.run_cross_rank(run_dir, force=force_recompute)
+    except Exception:
+        logger.exception("Cross-rank epistemic aggregation failed")
 
     # Load data
     data = load_results(run_dir)
@@ -153,10 +178,26 @@ def generate_figures(
         out_name = FIGURE_NAMES.get(name, name)
         out_path = out / f"{out_name}.{save_fmt}"
         fig.savefig(out_path, dpi=save_dpi, transparent=transparent)
+
+        # Also save cross-rank figure to the central epistemic_summary/
+        # folder, so one canonical copy lives next to the summary CSVs.
+        extra_path: Path | None = None
+        if name in CROSS_RANK_FIGURES:
+            extra_dir = run_dir.parent / "epistemic_summary"
+            extra_dir.mkdir(parents=True, exist_ok=True)
+            extra_path = extra_dir / f"{out_name}.{save_fmt}"
+            fig.savefig(extra_path, dpi=save_dpi, transparent=transparent)
+
         plt.close(fig)
 
         elapsed = time.time() - t0
-        logger.info("[OK]   %s  (%.1fs) -> %s", name, elapsed, out_path.name)
+        if extra_path is not None:
+            logger.info(
+                "[OK]   %s  (%.1fs) -> %s (+ %s)",
+                name, elapsed, out_path.name, extra_path,
+            )
+        else:
+            logger.info("[OK]   %s  (%.1fs) -> %s", name, elapsed, out_path.name)
         n_ok += 1
 
     total_time = time.time() - t_total
@@ -197,6 +238,10 @@ def main() -> None:
         "--only", nargs="+", default=None,
         help="Generate only these figures (by registry name)",
     )
+    parser.add_argument(
+        "--force-recompute", action="store_true",
+        help="Bypass cached epistemic-diagnostics CSVs and recompute.",
+    )
 
     args = parser.parse_args()
 
@@ -207,6 +252,7 @@ def main() -> None:
         fmt=args.format,
         dpi=args.dpi,
         only=args.only,
+        force_recompute=args.force_recompute,
     )
 
 

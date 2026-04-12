@@ -77,3 +77,10 @@ figures:
     figsize: [7, 3]
     scan_id: null
     metric: "mutual_information"  # mutual_information | entropy
+  epistemic_diagnosis:
+    # Merged bias-variance landscape + calibration-per-rank figure.
+    # Cross-rank by nature: overlays all sibling ranks in one plot.
+    enabled: true
+    figsize: [10.5, 4.2]
+    log_scale: true               # log-log axes for bias-vs-std scatter
+    ranks: [4, 8, 16]             # filter; set to null/omit to auto-include all siblings

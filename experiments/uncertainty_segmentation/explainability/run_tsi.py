@@ -558,14 +558,29 @@ def run_full_analysis(
             stage_meta=stage_meta,
         )
 
-    # Generate cross-rank table
-    if len(all_rank_results) > 1:
+    # Cross-rank table: pool in-memory ranks with any sibling-rank CSVs already
+    # on disk. Rationale: when users launch one SLURM job per rank, each job
+    # would otherwise see only its own rank and the cross-rank artifacts would
+    # never be generated until a manual --regenerate-figures pass.
+    cross_rank_dfs: dict[int, pd.DataFrame] = {
+        r: _results_to_dataframe(res) for r, res in all_rank_results.items()
+    }
+    for other_dir in sorted(output_dir.glob("r*/data/tsi_adapted_per_scan.csv")):
+        try:
+            r_other = int(other_dir.parent.parent.name.lstrip("r"))
+        except ValueError:
+            continue
+        if r_other in cross_rank_dfs:
+            continue
+        cross_rank_dfs[r_other] = pd.read_csv(other_dir)
+
+    if len(cross_rank_dfs) > 1:
         generate_all_tables(
             frozen_df=frozen_df,
             adapted_df=None,
             rank=None,
             output_dir=output_dir / "cross_rank",
-            all_adapted={r: _results_to_dataframe(res) for r, res in all_rank_results.items()},
+            all_adapted=cross_rank_dfs,
             stage_meta=stage_meta,
         )
 
@@ -588,23 +603,20 @@ def run_full_analysis(
             stage_meta=stage_meta,
         )
 
-    # Cross-rank comparison figure
-    if len(all_rank_results) > 1:
+    # Cross-rank comparison figure (same rationale as the cross-rank table above).
+    if len(cross_rank_dfs) > 1:
         from .figure_tsi import generate_cross_rank_figure
 
-        all_adapted_dfs = {
-            r: _results_to_dataframe(res)
-            for r, res in all_rank_results.items()
-        }
         generate_cross_rank_figure(
             frozen_df=frozen_df,
-            all_adapted_dfs=all_adapted_dfs,
+            all_adapted_dfs=cross_rank_dfs,
             config=tsi_config,
             output_dir=output_dir / "cross_rank",
             stage_meta=stage_meta,
         )
 
-    # Save statistical summary JSON for quick inspection
+    # Save statistical summary JSON for quick inspection. Merge-aware, so a
+    # single-rank invocation extends any existing summary rather than replacing it.
     _save_summary(frozen_df, all_rank_results, output_dir)
 
     logger.info("=" * 60)
