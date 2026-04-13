@@ -47,6 +47,7 @@ class EnsembleResultsData:
     # All optional: None if the diagnostic pipeline has not run yet.
     bias_diagnostics: pd.DataFrame | None = None
     calibration_coverage: pd.DataFrame | None = None
+    bias_dominance_threshold: pd.DataFrame | None = None
     epistemic_taxonomy: dict[str, Any] | None = None
     cross_rank_summary: pd.DataFrame | None = None
 
@@ -196,12 +197,15 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
     # Epistemic diagnostics (cached CSVs + JSON, optional).
     bias_diag = _read_csv_optional(eval_dir / "bias_diagnostics.csv")
     calib_cov = _read_csv_optional(eval_dir / "calibration_coverage.csv")
+    k_star_df = _read_csv_optional(eval_dir / "bias_dominance_threshold.csv")
     taxonomy_path = eval_dir / "epistemic_taxonomy.json"
     taxonomy = _read_json(taxonomy_path) if taxonomy_path.exists() else None
     if bias_diag is not None:
         logger.info("  Loaded bias_diagnostics (%d rows)", len(bias_diag))
     if calib_cov is not None:
         logger.info("  Loaded calibration_coverage (%d rows)", len(calib_cov))
+    if k_star_df is not None:
+        logger.info("  Loaded bias_dominance_threshold (%d rows)", len(k_star_df))
 
     # Cross-rank summary lives next to sibling ranks, not inside run_dir.
     cross_rank_path = (
@@ -227,6 +231,7 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
         predictions_dir=predictions_dir,
         bias_diagnostics=bias_diag,
         calibration_coverage=calib_cov,
+        bias_dominance_threshold=k_star_df,
         epistemic_taxonomy=taxonomy,
         cross_rank_summary=cross_rank,
         sample_scans=sample_scans,

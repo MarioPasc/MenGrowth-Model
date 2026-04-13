@@ -1,0 +1,17 @@
+# experiments/uncertainty_segmentation/config/picasso/config_r32.yaml
+# LoRA rank ablation: r=32 (2× capacity of r=16; tests saturation / overfitting)
+#
+# Merge order: config.yaml → config_picasso.yaml → config_r32.yaml
+# Only overrides that differ from the base r=8 configuration.
+#
+# Monitoring note (encoder-only mode only):
+#   With extended target_module_types=["qkv","proj","fc1","fc2"] from
+#   encoder_only.yaml, r=32 yields the highest trainable-parameter count of
+#   the ladder. Monitor per-member val Dice vs train loss during training
+#   for signs of overfitting (train ↓ while val plateau/rises).
+#
+# Usage: bash slurm/launch.sh --rank 32
+
+lora:
+  rank: 32
+  alpha: 64    # scaling = alpha/rank = 64/32 = 2.0 (constant across the ladder)

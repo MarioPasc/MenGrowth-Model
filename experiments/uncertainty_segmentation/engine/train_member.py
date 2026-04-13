@@ -90,6 +90,7 @@ def create_ensemble_member_model(
         alpha=config.lora.alpha,
         dropout=config.lora.dropout,
         target_stages=list(config.lora.target_stages),
+        target_module_types=list(config.lora.get("target_module_types", ["qkv"])),
         use_dora=config.lora.get("use_dora", False),
     )
 

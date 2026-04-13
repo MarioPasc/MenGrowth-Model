@@ -2,13 +2,22 @@
 #
 # Merge order: base config.yaml → config_picasso.yaml → encoder_only.yaml → this file
 #
-# LoRA on stages [1,2,3] requires ~16× more activation memory than [3,4]
-# because stage 1 operates at 48³ resolution. batch_size=4 OOMs on A100 40GB.
-# Fix: batch_size=2 with grad_accum_steps=2 to preserve effective batch size of 4.
+# LoRA on stages [1,2,3,4] (extended targets) loads activations at every Swin
+# stage. The dominant cost is stage 1, which operates at 32^3 tokens with
+# 96 channels (input 128^3, patch_embed stride 4). Empirical scaling from
+# verify_extended_lora_report.md (peak 4.2 GB at spatial=96^3, batch=1):
+#
+#   batch_size=2 spatial=128^3  ->  ~20 GB peak  (safe on A100 40GB)
+#   batch_size=4 spatial=128^3  ->  ~40 GB peak  (at the limit, risky)
+#
+# So batch_size=2 with grad_accum_steps=2 (effective batch = 4) is the safe
+# choice. Stage 4 contributes negligible activation memory (4^3 tokens) but
+# doubles the trainable parameter count via the 768-dim weight matrices —
+# memory budget unchanged from stages [1,2,3].
 
 experiment:
   output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only
 
 training:
-  batch_size: 2               # A100 40GB: stages [1,2,3] OOM at bs=4 (stage 1 at 48³ is huge)
+  batch_size: 2               # A100 40GB: extended stages [1,2,3,4] OOM-risk at bs=4 (stage 1 at 32^3 dominates)
   grad_accum_steps: 2         # Effective batch size = 2 × 2 = 4 (matches trainable decoder runs)

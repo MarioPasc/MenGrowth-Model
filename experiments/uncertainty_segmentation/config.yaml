@@ -40,6 +40,11 @@ lora:
   alpha: 16                 # alpha (scaling = alpha/r = 2.0)
   dropout: 0.1              # LoRA dropout
   target_stages: [3, 4]     # SwinViT stages to adapt
+  target_module_types: ["qkv"]   # Linear layers per block to adapt.
+                                  # Subset of ("qkv","proj","fc1","fc2").
+                                  # qkv-only preserves historical behaviour for
+                                  # the full-decoder rank ablations.
+                                  # encoder_only.yaml overrides this to the full set.
   use_dora: false           # DoRA variant (Weight-Decomposed LoRA)
 
 # =============================================================================

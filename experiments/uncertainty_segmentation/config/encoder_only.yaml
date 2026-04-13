@@ -1,9 +1,33 @@
 # Encoder-Only LoRA — Decoder Bypass Ablation
 #
 # Merges on top of base config.yaml. Key differences:
-#   - LoRA targets stages 2, 3, 4 (not just 3, 4)
+#   - LoRA targets stages 1, 2, 3, 4 (the full SwinViT encoder)
+#   - LoRA adapts qkv, proj, fc1, fc2 (the full Swin block, not just qkv)
 #   - Decoder is FROZEN — only LoRA + output head trainable
 #   - Tests whether encoder adaptation alone bridges GLI→MEN domain gap
+#
+# Why include stage 4?
+#   Stage 4's input is the modulated output of stage 3 (which IS adapted).
+#   Leaving stage 4 frozen creates a within-network distribution shift: the
+#   frozen layers4 weights expect the OLD (pretrained) feature distribution
+#   from stage 3, but get the NEW (LoRA-modulated) one. Adapting stage 4
+#   closes that gap. Empirically (verify_extended_lora_report.md): adding
+#   stage 4 costs ~6 MB of peak activation memory at spatial=96^3 — stage 4
+#   operates at 4^3 tokens, so storage is negligible — but it doubles the
+#   trainable parameter count because layers4 has dim=768 (the deepest
+#   stage carries the most parameters per block).
+#
+# Trainable parameters per ensemble member (extended types, stages [1,2,3,4]):
+#   r=2  ->  46,080         r=8  ->  184,320         r=32 ->  737,280
+#   r=4  ->  92,160         r=16 ->  368,640
+#
+# Caveat (extended target_module_types):
+#   With 4× more adapters per block at the same alpha/r=2.0, the effective
+#   per-block update-norm is ~4× larger than qkv-only at the same rank. This
+#   is the intended stronger intervention for the MLP-bias test, but means
+#   qkv-only and extended configs at the same rank are NOT directly
+#   comparable in effective perturbation magnitude. Compare across ranks
+#   within-regime (extended-vs-extended or qkv-only-vs-qkv-only).
 #
 # Usage:
 #   bash experiments/uncertainty_segmentation/slurm/launch.sh --encoder-only
@@ -12,10 +36,15 @@
 
 experiment:
   name: "lora_encoder_only"
-  description: "LoRA encoder-only ablation: frozen decoder + trainable output head"
+  description: "LoRA encoder-only ablation: frozen decoder + trainable output head (extended targets, stages 1-4)"
 
 lora:
-  target_stages: [1, 2, 3]       # Adapt 3 stages instead of 2 — more encoder capacity
+  target_stages: [1, 2, 3, 4]    # Full SwinViT encoder — closes within-network distribution shift
+  target_module_types:           # Extend beyond qkv-only to the full Swin block:
+    - "qkv"                      #   .attn.qkv  — combined Q,K,V projection
+    - "proj"                     #   .attn.proj — attention output projection
+    - "fc1"                      #   .mlp.fc1   — dim -> 4*dim   (linear1 in MONAI)
+    - "fc2"                      #   .mlp.fc2   — 4*dim -> dim   (linear2 in MONAI)
 
 training:
   freeze_decoder: true            # CRITICAL: freeze the entire decoder

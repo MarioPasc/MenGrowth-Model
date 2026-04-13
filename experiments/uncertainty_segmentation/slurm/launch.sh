@@ -61,7 +61,7 @@ if [ -n "${RANK_OVERRIDE}" ]; then
     RANK_OVERRIDE_PATH="${MODULE_DIR}/config/picasso/config_r${RANK_OVERRIDE}.yaml"
     if [ ! -f "${RANK_OVERRIDE_PATH}" ]; then
         echo "[FAIL] Rank override config not found: ${RANK_OVERRIDE_PATH}"
-        echo "       Available: config_r4.yaml, config_r16.yaml (r=8 is default)"
+        echo "       Available: config_r2.yaml, config_r4.yaml, config_r16.yaml, config_r32.yaml (r=8 is default)"
         exit 1
     fi
 fi

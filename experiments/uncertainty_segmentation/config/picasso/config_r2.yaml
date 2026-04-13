@@ -1,0 +1,11 @@
+# experiments/uncertainty_segmentation/config/picasso/config_r2.yaml
+# LoRA rank ablation: r=2 (minimum non-trivial rank; lower asymptote of the ladder)
+#
+# Merge order: config.yaml → config_picasso.yaml → config_r2.yaml
+# Only overrides that differ from the base r=8 configuration.
+#
+# Usage: bash slurm/launch.sh --rank 2
+
+lora:
+  rank: 2
+  alpha: 4     # scaling = alpha/rank = 4/2 = 2.0 (constant across the ladder)

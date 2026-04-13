@@ -15,14 +15,15 @@ Typical usage::
     from experiments.uncertainty_segmentation.plotting.epistemic_metrics import (
         run_for_rank, run_cross_rank,
     )
-    bias_df, calib_df, taxonomy = run_for_rank(Path("results/r8_M20_s42"))
+    bias_df, calib_df, k_star_df, taxonomy = run_for_rank(Path("results/r8_M20_s42"))
     cross_df = run_cross_rank(Path("results/r8_M20_s42"))
 
 Outputs (per-rank, inside ``{run_dir}/evaluation/``):
 
-* ``bias_diagnostics.csv``     — per-scan bias, std, ratios.
-* ``calibration_coverage.csv`` — nominal vs empirical coverage table.
-* ``epistemic_taxonomy.json``  — five-source taxonomy summary.
+* ``bias_diagnostics.csv``            — per-scan bias, std, ratios.
+* ``calibration_coverage.csv``        — nominal vs empirical coverage table.
+* ``bias_dominance_threshold.csv``    — per-scan k* = ceil((sigma/|bias|)^2).
+* ``epistemic_taxonomy.json``         — five-source taxonomy summary.
 
 Outputs (cross-rank, inside ``{run_dir.parent}/epistemic_summary/``):
 
@@ -48,6 +49,13 @@ logger = logging.getLogger(__name__)
 EPS: float = 1e-8
 DEFAULT_NOMINAL_LEVELS: tuple[float, ...] = (0.50, 0.80, 0.90, 0.95)
 RUN_DIR_RE = re.compile(r"^r(?P<rank>\d+)_M(?P<members>\d+)_s(?P<seed>\d+)$")
+
+# Bias-dominance threshold k* is unbounded when |bias| → 0. Cap at this
+# sentinel to keep CSVs finite and aggregates well-defined; a separate
+# boolean flag (``k_star_saturated``) marks the affected rows so downstream
+# consumers can filter them if needed. Median aggregates are robust to
+# saturation; mean aggregates are not — prefer median.
+K_STAR_MAX: int = 10_000
 
 # Column names referenced across the module.
 COL_SCAN_ID = "scan_id"
@@ -171,6 +179,90 @@ def compute_bias_diagnostics(
     return merged[cols].sort_values(COL_SCAN_ID).reset_index(drop=True)
 
 
+def compute_bias_dominance_threshold(
+    bias_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compute the per-scan bias-dominance threshold ``k*``.
+
+    For an i.i.d. ensemble, the standard error of the mean scales as
+    ``sigma / sqrt(k)`` while bias is independent of ``k``. The smallest
+    ``k`` at which SE drops below ``|bias|`` is::
+
+        k* = ceil((sigma / |bias|) ** 2)
+
+    Scans with ``k* <= M`` are already bias-dominated at the sampled
+    ensemble size: the calibration failure is structural, not a
+    consequence of under-sampling the seed distribution.
+
+    Edge cases:
+
+    * ``|bias| == 0`` (lucky scan) → ``k*`` is undefined; we cap it at
+      :data:`K_STAR_MAX` and set ``k_star_saturated = True``. The median
+      aggregate ignores this by construction; the mean should not be used.
+    * ``sigma == 0`` (collapsed ensemble — all members predict the same
+      volume, e.g., a rank so small the adapters are nearly identical) →
+      ``k*`` is 0 but uninformative. We flag ``degenerate_ensemble = True``
+      so downstream summary aggregators can exclude the row.
+
+    Args:
+        bias_df: Output of :func:`compute_bias_diagnostics` (must contain
+            ``scan_id``, ``n_members``, ``volume_ensemble_std``,
+            ``abs_bias``, ``logvol_ensemble_std``, ``logvol_abs_bias``).
+
+    Returns:
+        One row per scan, columns ``scan_id``, ``n_members_actual``,
+        ``k_star_raw``, ``k_star_logvol``, ``k_star_saturated``,
+        ``degenerate_ensemble``, ``k_star_exceeds_M``.
+    """
+    required = {
+        COL_SCAN_ID, "n_members",
+        "volume_ensemble_std", "abs_bias",
+        "logvol_ensemble_std", "logvol_abs_bias",
+    }
+    missing = required - set(bias_df.columns)
+    if missing:
+        raise KeyError(f"bias_df missing columns: {missing}")
+
+    def _k_star(sigma: pd.Series, abs_bias: pd.Series) -> pd.Series:
+        """Compute k* = ceil((sigma / |bias|)^2), capping the |bias|==0 case."""
+        sigma = sigma.astype(float)
+        abs_bias = abs_bias.astype(float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(abs_bias > 0.0, sigma / abs_bias, np.inf)
+            k_inf = np.ceil(np.square(ratio))
+        # Finite cap. np.inf stays inf through np.ceil(np.square(inf)).
+        k_capped = np.minimum(k_inf, float(K_STAR_MAX))
+        return pd.Series(k_capped.astype(int), index=sigma.index)
+
+    k_star_raw = _k_star(bias_df["volume_ensemble_std"], bias_df["abs_bias"])
+    k_star_log = _k_star(bias_df["logvol_ensemble_std"], bias_df["logvol_abs_bias"])
+
+    # |bias|==0 triggers saturation on either scale — the primary narrative
+    # uses the log-volume bias, so anchor the saturation flag there.
+    k_star_saturated = bias_df["logvol_abs_bias"].astype(float) == 0.0
+
+    # Degenerate if EITHER scale collapsed. In practice they co-vary, but
+    # being explicit avoids surprising exclusions.
+    degenerate = (
+        (bias_df["volume_ensemble_std"].astype(float) == 0.0)
+        | (bias_df["logvol_ensemble_std"].astype(float) == 0.0)
+    )
+
+    n_members_actual = bias_df["n_members"].astype(int)
+    exceeds = k_star_log > n_members_actual
+
+    out = pd.DataFrame({
+        COL_SCAN_ID: bias_df[COL_SCAN_ID].values,
+        "n_members_actual": n_members_actual.values,
+        "k_star_raw": k_star_raw.values,
+        "k_star_logvol": k_star_log.values,
+        "k_star_saturated": k_star_saturated.values,
+        "degenerate_ensemble": degenerate.values,
+        "k_star_exceeds_M": exceeds.values,
+    })
+    return out.sort_values(COL_SCAN_ID).reset_index(drop=True)
+
+
 def compute_calibration_coverage(
     per_member_df: pd.DataFrame,
     ensemble_df: pd.DataFrame,
@@ -231,6 +323,7 @@ def compute_rank_summary(
     bias_df: pd.DataFrame,
     calibration_df: pd.DataFrame,
     rank: int,
+    k_star_df: pd.DataFrame | None = None,
 ) -> dict[str, float | int]:
     """Condense per-scan diagnostics into a single summary row.
 
@@ -238,6 +331,12 @@ def compute_rank_summary(
         bias_df: Output of :func:`compute_bias_diagnostics`.
         calibration_df: Output of :func:`compute_calibration_coverage`.
         rank: LoRA rank for this configuration.
+        k_star_df: Output of :func:`compute_bias_dominance_threshold`.
+            If provided, the summary includes ``median_k_star_logvol`` —
+            the Proposal-1 narrative anchor — plus ``pct_scans_k_star_eq_1``
+            and ``pct_scans_k_star_exceeds_M``. Aggregates exclude rows
+            flagged as ``degenerate_ensemble`` and use the median (robust
+            to saturation).
 
     Returns:
         Dict with one float/int per summary statistic — suitable for a
@@ -254,7 +353,7 @@ def compute_rank_summary(
         return float(match["empirical_coverage"].iloc[0])
 
     q25, q75 = bias_df["logvol_ensemble_std"].quantile([0.25, 0.75])
-    return {
+    summary: dict[str, float | int] = {
         "rank": int(rank),
         "n_scans": int(len(bias_df)),
         "median_logvol_std": float(bias_df["logvol_ensemble_std"].median()),
@@ -274,6 +373,41 @@ def compute_rank_summary(
         "coverage_deficit_95": 0.95 - _coverage(0.95),
     }
 
+    if k_star_df is not None and len(k_star_df) > 0:
+        # Exclude degenerate rows (sigma == 0) from k* aggregates — the
+        # value is 0 but not meaningful. Median is robust to the
+        # saturation cap (|bias|==0 rows).
+        usable = k_star_df.loc[~k_star_df["degenerate_ensemble"].astype(bool)]
+        n_k = int(len(usable))
+        if n_k > 0:
+            summary["n_scans_k_star"] = n_k
+            summary["median_k_star_logvol"] = float(usable["k_star_logvol"].median())
+            summary["median_k_star_raw"] = float(usable["k_star_raw"].median())
+            summary["pct_scans_k_star_eq_1"] = float(
+                (usable["k_star_logvol"] <= 1).mean()
+            )
+            summary["pct_scans_k_star_exceeds_M"] = float(
+                usable["k_star_exceeds_M"].astype(bool).mean()
+            )
+            summary["pct_scans_k_star_saturated"] = float(
+                usable["k_star_saturated"].astype(bool).mean()
+            )
+            summary["pct_scans_degenerate_ensemble"] = float(
+                k_star_df["degenerate_ensemble"].astype(bool).mean()
+            )
+        else:
+            # Every scan was degenerate — emit NaNs so the column exists.
+            for key in (
+                "median_k_star_logvol", "median_k_star_raw",
+                "pct_scans_k_star_eq_1", "pct_scans_k_star_exceeds_M",
+                "pct_scans_k_star_saturated",
+            ):
+                summary[key] = float("nan")
+            summary["n_scans_k_star"] = 0
+            summary["pct_scans_degenerate_ensemble"] = 1.0
+
+    return summary
+
 
 def build_taxonomy_dict(
     bias_df: pd.DataFrame,
@@ -281,23 +415,44 @@ def build_taxonomy_dict(
     rank: int,
     n_members: int,
     seed: int,
+    k_star_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Assemble the five-source taxonomy dict (spec §2.4.4).
 
     Returns a JSON-serializable dict documenting which epistemic
-    components the ensemble measures, diagnoses, or ignores.
-
-    Args:
-        bias_df: Output of :func:`compute_bias_diagnostics`.
-        calibration_df: Output of :func:`compute_calibration_coverage`.
-        rank: LoRA rank.
-        n_members: Number of ensemble members.
-        seed: Base random seed.
-
-    Returns:
-        Taxonomy dict; keys follow spec §2.4.4.
+    components the ensemble measures, diagnoses, or ignores. If
+    ``k_star_df`` is provided, the estimation-bias entry gains the
+    Proposal-1 bias-dominance metrics.
     """
-    summary = compute_rank_summary(bias_df, calibration_df, rank)
+    summary = compute_rank_summary(bias_df, calibration_df, rank, k_star_df=k_star_df)
+
+    estimation_bias: dict[str, Any] = {
+        "status": "diagnosed",
+        "median_abs_bias_logvol": summary["median_abs_bias_logvol"],
+        "mean_abs_bias_logvol": summary["mean_abs_bias_logvol"],
+        "pct_scans_bias_gt_std": summary["pct_scans_bias_gt_std"],
+        "note": (
+            "Sources: LoRA low-rank constraint (rank="
+            f"{int(rank)}), frozen encoder bias, finite BraTS-MEN"
+            " training set."
+        ),
+    }
+    if k_star_df is not None and "median_k_star_logvol" in summary:
+        estimation_bias["bias_dominance"] = {
+            "median_k_star_logvol": summary["median_k_star_logvol"],
+            "pct_scans_k_star_eq_1": summary["pct_scans_k_star_eq_1"],
+            "pct_scans_k_star_exceeds_M": summary["pct_scans_k_star_exceeds_M"],
+            "pct_scans_degenerate_ensemble": summary.get(
+                "pct_scans_degenerate_ensemble", 0.0
+            ),
+            "n_members_sampled": int(n_members),
+            "note": (
+                "k* = ceil((sigma / |bias|)^2) on the log-volume scale."
+                " Scans with k* <= M are already bias-dominated at the"
+                " sampled ensemble size, so additional members cannot"
+                " improve calibration."
+            ),
+        }
     return {
         "config": {"rank": int(rank), "n_members": int(n_members), "seed": int(seed)},
         "taxonomy": {
@@ -310,17 +465,7 @@ def build_taxonomy_dict(
                     " capacity."
                 ),
             },
-            "estimation_bias": {
-                "status": "diagnosed",
-                "median_abs_bias_logvol": summary["median_abs_bias_logvol"],
-                "mean_abs_bias_logvol": summary["mean_abs_bias_logvol"],
-                "pct_scans_bias_gt_std": summary["pct_scans_bias_gt_std"],
-                "note": (
-                    "Sources: LoRA low-rank constraint (rank="
-                    f"{int(rank)}), frozen encoder bias, finite BraTS-MEN"
-                    " training set."
-                ),
-            },
+            "estimation_bias": estimation_bias,
             "procedural_uncertainty": {
                 "status": "measured",
                 "median_logvol_std": summary["median_logvol_std"],
@@ -391,16 +536,16 @@ def run_for_rank(
     run_dir: Path,
     *,
     force: bool = False,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """Compute per-rank epistemic diagnostics and cache them to disk.
 
     Args:
-        run_dir: Path to a single-rank run directory
-            (e.g., ``r8_M20_s42``).
+        run_dir: Path to a single-rank run directory (e.g., ``r8_M20_s42``).
         force: If True, ignore cache and recompute everything.
 
     Returns:
-        ``(bias_diagnostics_df, calibration_coverage_df, taxonomy_dict)``.
+        ``(bias_diagnostics_df, calibration_coverage_df,
+        bias_dominance_threshold_df, taxonomy_dict)``.
 
     Raises:
         FileNotFoundError: If required raw CSVs are missing.
@@ -416,27 +561,31 @@ def run_for_rank(
 
     bias_cache = eval_dir / "bias_diagnostics.csv"
     calib_cache = eval_dir / "calibration_coverage.csv"
+    k_star_cache = eval_dir / "bias_dominance_threshold.csv"
     taxonomy_cache = eval_dir / "epistemic_taxonomy.json"
 
     caches_valid = (
         not force
         and _cache_is_valid(bias_cache, per_member_path, ensemble_path)
         and _cache_is_valid(calib_cache, per_member_path, ensemble_path)
+        and _cache_is_valid(k_star_cache, per_member_path, ensemble_path)
         and _cache_is_valid(taxonomy_cache, per_member_path, ensemble_path)
     )
     if caches_valid:
         logger.info("[epistemic] %s: using cached outputs", run_dir.name)
         bias_df = pd.read_csv(bias_cache)
         calib_df = pd.read_csv(calib_cache)
+        k_star_df = pd.read_csv(k_star_cache)
         with open(taxonomy_cache) as f:
             taxonomy = json.load(f)
-        return bias_df, calib_df, taxonomy
+        return bias_df, calib_df, k_star_df, taxonomy
 
     logger.info("[epistemic] %s: computing from raw CSVs", run_dir.name)
     per_member_df = pd.read_csv(per_member_path)
     ensemble_df = pd.read_csv(ensemble_path)
 
     bias_df = compute_bias_diagnostics(per_member_df, ensemble_df)
+    k_star_df = compute_bias_dominance_threshold(bias_df)
     calib_df = compute_calibration_coverage(per_member_df, ensemble_df)
 
     parsed = _parse_run_dir(run_dir) or {}
@@ -445,21 +594,25 @@ def run_for_rank(
     n_members = _n_members_from_df(per_member_df)
 
     taxonomy = build_taxonomy_dict(
-        bias_df, calib_df, rank=rank, n_members=n_members, seed=seed,
+        bias_df, calib_df,
+        rank=rank, n_members=n_members, seed=seed,
+        k_star_df=k_star_df,
     )
 
     eval_dir.mkdir(parents=True, exist_ok=True)
     bias_df.to_csv(bias_cache, index=False)
     calib_df.to_csv(calib_cache, index=False)
+    k_star_df.to_csv(k_star_cache, index=False)
     with open(taxonomy_cache, "w") as f:
         json.dump(taxonomy, f, indent=2)
 
     logger.info(
         "[epistemic] %s: saved bias_diagnostics(%d rows),"
-        " calibration_coverage(%d rows), epistemic_taxonomy.json",
-        run_dir.name, len(bias_df), len(calib_df),
+        " calibration_coverage(%d rows), bias_dominance_threshold(%d rows),"
+        " epistemic_taxonomy.json",
+        run_dir.name, len(bias_df), len(calib_df), len(k_star_df),
     )
-    return bias_df, calib_df, taxonomy
+    return bias_df, calib_df, k_star_df, taxonomy
 
 
 def _find_sibling_ranks(run_dir: Path) -> list[Path]:
@@ -509,11 +662,13 @@ def run_cross_rank(
         if parsed is None:
             continue
         try:
-            bias_df, calib_df, taxonomy = run_for_rank(sib, force=force)
+            bias_df, calib_df, k_star_df, taxonomy = run_for_rank(sib, force=force)
         except FileNotFoundError as exc:
             logger.warning("[epistemic] skipping %s: %s", sib.name, exc)
             continue
-        summary = compute_rank_summary(bias_df, calib_df, rank=parsed["rank"])
+        summary = compute_rank_summary(
+            bias_df, calib_df, rank=parsed["rank"], k_star_df=k_star_df,
+        )
         per_rank_rows.append(summary)
         per_rank_taxonomies[f"r{parsed['rank']}"] = taxonomy
 

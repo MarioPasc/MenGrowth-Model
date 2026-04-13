@@ -1,24 +1,29 @@
 # src/growth/models/encoder/lora_adapter.py
 """LoRA adapter for SwinViT encoder.
 
-Applies Low-Rank Adaptation to Q, K, V projections in Stages 3-4.
-Freezes Stages 0-2 to preserve low-level anatomy features.
+Applies Low-Rank Adaptation to selected linear layers within Swin Transformer
+blocks of the SwinUNETR/SwinViT encoder. Which stages and which linear types
+are adapted is controlled by ``target_stages`` and ``target_module_types``.
 
-Uses HuggingFace PEFT library for robust LoRA implementation.
+Supported module types (matched against the tail of ``named_modules()`` keys).
+The user-facing keywords follow standard Swin/Transformer terminology, while
+the suffixes below use MONAI's actual attribute names (``linear1``/``linear2``
+rather than the literature's ``fc1``/``fc2``):
 
-Target modules in SwinUNETR/SwinViT:
-    - swinViT.layers3.*.blocks.*.attn.qkv (192 -> 576)
-    - swinViT.layers4.*.blocks.*.attn.qkv (384 -> 1152)
+    qkv   -> ``.attn.qkv``       (combined Q, K, V projection)
+    proj  -> ``.attn.proj``      (attention output projection)
+    fc1   -> ``.mlp.linear1``    (MLP sublayer: dim -> 4*dim)
+    fc2   -> ``.mlp.linear2``    (MLP sublayer: 4*dim -> dim)
 
-Optionally also targets projection layers:
-    - swinViT.layers3.*.blocks.*.attn.proj (192 -> 192)
-    - swinViT.layers4.*.blocks.*.attn.proj (384 -> 384)
+Default behaviour (``target_module_types=["qkv"]``) preserves the historical
+qkv-only configuration. Extended configurations (``["qkv","proj","fc1","fc2"]``)
+let each ensemble member perturb the full Swin block, including the MLP
+sublayer where nonlinear feature transformation happens.
 """
 
 import logging
-import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -31,96 +36,129 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Map module-type keyword -> required suffix in dotted module name.
+# The suffix is matched with str.endswith, so it must uniquely identify the
+# linear layer within the block (e.g. ".attn.proj" does not collide with
+# ".mlp.fc1").
+MODULE_TYPE_SUFFIX: Dict[str, str] = {
+    "qkv": ".attn.qkv",
+    "proj": ".attn.proj",
+    # MONAI's SwinUNETR names the MLP linears "linear1"/"linear2" rather than
+    # the literature's "fc1"/"fc2" — we keep the user-facing keywords aligned
+    # with the literature and map them to MONAI's actual attribute names.
+    "fc1": ".mlp.linear1",
+    "fc2": ".mlp.linear2",
+}
 
-def get_lora_target_modules(
-    stages: List[int] = [3, 4],
-    include_proj: bool = False,
-) -> List[str]:
-    """Get target module patterns for LoRA injection.
+SUPPORTED_MODULE_TYPES = tuple(MODULE_TYPE_SUFFIX.keys())
+
+
+def _validate_module_types(module_types: List[str]) -> List[str]:
+    """Normalise and validate a list of module-type keywords."""
+    if not module_types:
+        raise ValueError("target_module_types must be a non-empty list")
+    unknown = [t for t in module_types if t not in MODULE_TYPE_SUFFIX]
+    if unknown:
+        raise ValueError(
+            f"Unsupported LoRA target_module_types: {unknown}. "
+            f"Expected a subset of {SUPPORTED_MODULE_TYPES}."
+        )
+    # Preserve caller ordering but deduplicate.
+    seen: List[str] = []
+    for t in module_types:
+        if t not in seen:
+            seen.append(t)
+    return seen
+
+
+def _infer_module_types_from_target_names(target_modules: List[str]) -> List[str]:
+    """Infer the set of module-type keywords from a PEFT target_modules list.
+
+    Used by ``LoRASwinViT.load_lora`` to reconstruct the wrapper attribute
+    from a saved adapter's ``adapter_config.json`` (which stores the full
+    ``target_modules`` list but not our type-keyword abstraction).
 
     Args:
-        stages: Which stages to apply LoRA to (3 and/or 4).
-        include_proj: Whether to include output projection layers.
+        target_modules: List of dotted module names saved by PEFT.
 
     Returns:
-        List of module name patterns (regex-compatible).
-
-    Example:
-        >>> modules = get_lora_target_modules(stages=[3, 4])
-        >>> modules
-        ['layers3.0.blocks.0.attn.qkv', 'layers3.0.blocks.1.attn.qkv', ...]
+        List of type keywords in deterministic order (qkv, proj, fc1, fc2).
     """
-    target_modules = []
-
-    for stage in stages:
-        # QKV projection
-        target_modules.append(f"swinViT.layers{stage}")
-
-        if include_proj:
-            # Output projection
-            pass  # PEFT will match patterns
-
-    return target_modules
+    inferred: List[str] = []
+    for key, suffix in MODULE_TYPE_SUFFIX.items():
+        if any(name.endswith(suffix) for name in target_modules):
+            inferred.append(key)
+    return inferred
 
 
-def _find_lora_targets(model: nn.Module, stages: List[int] = [3, 4]) -> List[str]:
+def _find_lora_targets(
+    model: nn.Module,
+    stages: List[int] = [3, 4],
+    module_types: List[str] = ["qkv"],
+) -> List[str]:
     """Find exact module names for LoRA injection.
 
-    PEFT works better with exact module names than regex patterns.
+    PEFT matches ``target_modules`` using endswith semantics, so we return
+    exact (relative) names rather than regex patterns.
 
     Args:
         model: The SwinUNETR model.
-        stages: Which stages to apply LoRA to.
+        stages: Which Swin stages to adapt (1, 2, 3, or 4).
+        module_types: Which linear layers inside each selected block to
+            adapt. Subset of ``SUPPORTED_MODULE_TYPES``. Default ``["qkv"]``
+            preserves the historical behaviour.
 
     Returns:
-        List of exact module names containing 'qkv'.
+        List of exact module names (with any ``swinViT.`` prefix stripped,
+        because PEFT re-prefixes during injection).
     """
-    targets = []
-    for name, module in model.named_modules():
-        # Match pattern: swinViT.layers{stage}.*.blocks.*.attn.qkv
-        for stage in stages:
-            if f"layers{stage}" in name and "attn.qkv" in name:
-                # Remove 'swinViT.' prefix since PEFT adds it
-                if name.startswith("swinViT."):
-                    targets.append(name[len("swinViT."):])
-                else:
-                    targets.append(name)
-                break
+    module_types = _validate_module_types(module_types)
+    suffixes = [MODULE_TYPE_SUFFIX[t] for t in module_types]
+
+    targets: List[str] = []
+    for name, _module in model.named_modules():
+        if not any(name.endswith(suffix) for suffix in suffixes):
+            continue
+        if not any(f"layers{stage}" in name for stage in stages):
+            continue
+        # Strip the 'swinViT.' prefix because PEFT re-adds it internally.
+        if name.startswith("swinViT."):
+            targets.append(name[len("swinViT."):])
+        else:
+            targets.append(name)
     return targets
 
 
 class LoRASwinViT(nn.Module):
     """SwinViT encoder with LoRA adapters.
 
-    Wraps a SwinUNETR model and adds LoRA adapters to Q, K, V
-    projections in stages 3 and 4. All base model parameters are
-    frozen; only LoRA parameters are trainable.
+    Wraps a SwinUNETR model and adds LoRA adapters to the linear layers
+    inside selected Swin Transformer blocks. All base model parameters
+    are frozen; only LoRA parameters are trainable.
 
     Args:
         base_encoder: SwinUNETR model (from load_swin_encoder).
-        rank: LoRA rank (common values: 4, 8, 16).
+        rank: LoRA rank (common values: 2, 4, 8, 16, 32).
         alpha: LoRA alpha for scaling. Effective scale is alpha/rank.
         dropout: LoRA dropout rate.
-        target_stages: Which stages to apply LoRA to (default: [3, 4]).
+        target_stages: Which Swin stages to apply LoRA to. Default ``[3, 4]``.
+        target_module_types: Which linear layers inside each selected block
+            to adapt. Subset of ``("qkv", "proj", "fc1", "fc2")``. Default
+            ``["qkv"]`` preserves the historical qkv-only configuration.
         use_dora: If True, use DoRA (Weight-Decomposed LoRA) instead of
-            standard LoRA. DoRA decomposes weights into magnitude and
-            direction, often providing better performance. Default: False.
+            standard LoRA. Default: False.
 
     Attributes:
         model: The PEFT-wrapped model.
-        rank: LoRA rank.
-        alpha: LoRA alpha.
-        use_dora: Whether DoRA is enabled.
-        lora_config: The LoRA configuration.
+        rank, alpha, use_dora, target_stages, target_module_types, lora_config.
 
     Example:
         >>> base_encoder = load_swin_encoder(ckpt_path, freeze=False)
-        >>> lora_encoder = LoRASwinViT(base_encoder, rank=8, alpha=16)
-        >>> print(f"Trainable params: {lora_encoder.get_trainable_params():,}")
-        Trainable params: 150,528
-
-        >>> # Using DoRA for potentially better performance
-        >>> dora_encoder = LoRASwinViT(base_encoder, rank=8, use_dora=True)
+        >>> lora_encoder = LoRASwinViT(
+        ...     base_encoder, rank=8, alpha=16,
+        ...     target_stages=[1, 2, 3],
+        ...     target_module_types=["qkv", "proj", "fc1", "fc2"],
+        ... )
 
     References:
         - DoRA: Liu et al. (2024). "DoRA: Weight-Decomposed Low-Rank Adaptation."
@@ -134,26 +172,35 @@ class LoRASwinViT(nn.Module):
         alpha: int = 16,
         dropout: float = 0.1,
         target_stages: List[int] = [3, 4],
+        target_module_types: List[str] = ["qkv"],
         use_dora: bool = False,
     ):
         super().__init__()
         self.rank = rank
         self.alpha = alpha
-        self.target_stages = target_stages
+        self.target_stages = list(target_stages)
+        self.target_module_types = _validate_module_types(list(target_module_types))
         self.use_dora = use_dora
 
         # Freeze all base parameters first
         for param in base_encoder.parameters():
             param.requires_grad = False
 
-        # Find target modules for LoRA
-        target_modules = _find_lora_targets(base_encoder, target_stages)
-        logger.info(f"Found {len(target_modules)} target modules for LoRA")
+        # Find target modules for LoRA (stage + module-type filter).
+        target_modules = _find_lora_targets(
+            base_encoder,
+            stages=self.target_stages,
+            module_types=self.target_module_types,
+        )
+        logger.info(
+            f"Found {len(target_modules)} target modules for LoRA "
+            f"(stages={self.target_stages}, types={self.target_module_types})"
+        )
 
         if not target_modules:
             raise ValueError(
-                f"No target modules found for stages {target_stages}. "
-                "Check model structure."
+                f"No target modules found for stages={self.target_stages}, "
+                f"types={self.target_module_types}. Check model structure."
             )
 
         # Create LoRA config (with optional DoRA)
@@ -277,16 +324,33 @@ class LoRASwinViT(nn.Module):
                 if "lora_" in name:
                     param.requires_grad = True
 
-        # Create wrapper instance
+        # Create wrapper instance (bypass __init__ since PEFT already wired the adapters)
         instance = cls.__new__(cls)
         nn.Module.__init__(instance)
         instance.model = model
-        instance.rank = model.peft_config["default"].r
-        instance.alpha = model.peft_config["default"].lora_alpha
-        instance.target_stages = [3, 4]  # Default assumption
-        instance.lora_config = model.peft_config["default"]
 
-        logger.info(f"LoRA adapter loaded from {adapter_path}")
+        saved_config = model.peft_config["default"]
+        instance.rank = saved_config.r
+        instance.alpha = saved_config.lora_alpha
+        instance.use_dora = bool(getattr(saved_config, "use_dora", False))
+        instance.lora_config = saved_config
+
+        # Reconstruct target_stages / target_module_types from the saved
+        # target_modules list, so a reloaded adapter reports the same
+        # configuration it was trained with (no caller-side duplication).
+        saved_targets = list(getattr(saved_config, "target_modules", []) or [])
+        instance.target_module_types = _infer_module_types_from_target_names(saved_targets)
+        inferred_stages: List[int] = []
+        for name in saved_targets:
+            for stage in (1, 2, 3, 4):
+                if f"layers{stage}" in name and stage not in inferred_stages:
+                    inferred_stages.append(stage)
+        instance.target_stages = sorted(inferred_stages) if inferred_stages else [3, 4]
+
+        logger.info(
+            f"LoRA adapter loaded from {adapter_path} "
+            f"(stages={instance.target_stages}, types={instance.target_module_types})"
+        )
         return instance
 
     def get_trainable_params(self) -> int:
@@ -320,15 +384,11 @@ def create_lora_encoder(
     alpha: int = 16,
     dropout: float = 0.1,
     target_stages: List[int] = [3, 4],
+    target_module_types: List[str] = ["qkv"],
     device: str = "cuda",
     use_dora: bool = False,
 ) -> LoRASwinViT:
     """Factory function to create LoRA-adapted encoder.
-
-    Convenience function that:
-    1. Loads base encoder from checkpoint
-    2. Adds LoRA (or DoRA) adapters
-    3. Returns ready-to-train LoRASwinViT
 
     Args:
         checkpoint_path: Path to BrainSegFounder checkpoint.
@@ -336,32 +396,13 @@ def create_lora_encoder(
         alpha: LoRA alpha.
         dropout: LoRA dropout.
         target_stages: Which stages to apply LoRA to.
+        target_module_types: Which linear layers inside each block
+            (subset of ``("qkv","proj","fc1","fc2")``).
         device: Device to load model to.
-        use_dora: If True, use DoRA (Weight-Decomposed LoRA) instead of
-            standard LoRA. DoRA often provides better performance.
+        use_dora: If True, use DoRA.
 
     Returns:
         LoRASwinViT instance ready for training.
-
-    Example:
-        >>> lora_encoder = create_lora_encoder(
-        ...     checkpoint_path="checkpoints/fold_0.pt",
-        ...     rank=8,
-        ...     device="cuda",
-        ... )
-        >>> # Only LoRA params are trainable
-        >>> optimizer = torch.optim.AdamW(
-        ...     [p for p in lora_encoder.parameters() if p.requires_grad],
-        ...     lr=1e-4,
-        ... )
-
-        >>> # Using DoRA
-        >>> dora_encoder = create_lora_encoder(
-        ...     checkpoint_path="checkpoints/fold_0.pt",
-        ...     rank=8,
-        ...     use_dora=True,
-        ...     device="cuda",
-        ... )
     """
     # Load base encoder (unfrozen initially, LoRASwinViT will freeze)
     base_encoder = load_swin_encoder(
@@ -376,20 +417,22 @@ def create_lora_encoder(
         alpha=alpha,
         dropout=dropout,
         target_stages=target_stages,
+        target_module_types=target_module_types,
         use_dora=use_dora,
     )
 
 
 def count_lora_params(model: LoRASwinViT) -> Dict[str, int]:
-    """Count LoRA parameters by layer.
+    """Count trainable LoRA parameters by Swin stage.
 
     Args:
         model: LoRASwinViT instance.
 
     Returns:
-        Dict with 'total', 'layers3', 'layers4' counts.
+        Dict with keys ``total``, ``layers1``, ``layers2``, ``layers3``,
+        ``layers4``. Stages not targeted by the configuration will report 0.
     """
-    counts = {"total": 0, "layers3": 0, "layers4": 0}
+    counts: Dict[str, int] = {"total": 0, "layers1": 0, "layers2": 0, "layers3": 0, "layers4": 0}
 
     for name, param in model.model.named_parameters():
         if not param.requires_grad:
@@ -398,9 +441,9 @@ def count_lora_params(model: LoRASwinViT) -> Dict[str, int]:
         numel = param.numel()
         counts["total"] += numel
 
-        if "layers3" in name:
-            counts["layers3"] += numel
-        elif "layers4" in name:
-            counts["layers4"] += numel
+        for stage in (1, 2, 3, 4):
+            if f"layers{stage}" in name:
+                counts[f"layers{stage}"] += numel
+                break
 
     return counts
