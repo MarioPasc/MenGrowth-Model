@@ -21,3 +21,10 @@ experiment:
 training:
   batch_size: 2               # A100 40GB: extended stages [1,2,3,4] OOM-risk at bs=4 (stage 1 at 32^3 dominates)
   grad_accum_steps: 2         # Effective batch size = 2 × 2 = 4 (matches trainable decoder runs)
+
+inference:
+  # Save per-member soft probabilities (uint8-quantized NIfTI) for every test
+  # scan. Required by the Dice(ensemble_k) curve and the threshold-sensitivity
+  # analysis (see engine/ensemble_convergence.py). Disk cost ~20-30 GB per run
+  # (150 scans × M=20 × 3 channels × 192^3 uint8, gzip-compressed).
+  save_per_member_probs_all: true

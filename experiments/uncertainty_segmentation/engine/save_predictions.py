@@ -169,6 +169,81 @@ def save_per_member_masks_all(
         _save_3d(mask_m, scan_dir / f"member_{m}_mask.nii.gz", dtype=np.int8)
 
 
+# uint8 quantization of a [0, 1] probability uses 256 bins → max error 1/256.
+# Dice-related analyses threshold at multiples of 0.05 (see threshold grid in
+# config.yaml::inference.threshold_grid), so this precision is well below the
+# smallest meaningful threshold step.
+_PROB_QUANT_MAX: int = 255
+
+
+def _save_probs_uint8(
+    probs: torch.Tensor,
+    path: Path,
+) -> None:
+    """Save a [C, D, H, W] probability tensor as uint8 NIfTI.
+
+    Layout matches ``_save_4d`` (permuted to [D, H, W, C]) so the file is
+    readable by the same loader path. The quantization convention is
+    ``round(prob * 255)`` in uint8; divide by 255 on load.
+    """
+    data = probs.clamp(0.0, 1.0).permute(1, 2, 3, 0).numpy()
+    q = np.rint(data * _PROB_QUANT_MAX).astype(np.uint8)
+    nib.save(nib.Nifti1Image(q, _IDENTITY_AFFINE), str(path))
+
+
+def load_probs_uint8(path: Path) -> torch.Tensor:
+    """Load a uint8-quantized probability NIfTI back to [C, D, H, W] float32.
+
+    Inverse of :func:`_save_probs_uint8`. Divides by ``_PROB_QUANT_MAX`` so
+    the returned tensor lives in ``[0, 1]`` with ~0.004 granularity.
+    """
+    arr = nib.load(str(path)).get_fdata().astype(np.float32) / float(_PROB_QUANT_MAX)
+    # File is [D, H, W, C]; transpose to [C, D, H, W].
+    if arr.ndim == 4:
+        arr = np.transpose(arr, (3, 0, 1, 2))
+    elif arr.ndim == 3:
+        arr = arr[None, ...]  # single channel file → add C axis
+    return torch.from_numpy(np.ascontiguousarray(arr))
+
+
+def save_per_member_probs_all(
+    result: "EnsemblePrediction",
+    output_dir: Path,
+    scan_id: str,
+) -> None:
+    """Save per-member 3-channel soft probabilities for a scan (all channels).
+
+    Stores ``member_{m}_probs.nii.gz`` (uint8-quantized) for each of the M
+    members of the ensemble. Required for:
+
+    * Ensemble-of-k Dice curves (requires averaging soft probs, not hard
+      masks — binary averaging only recovers majority vote).
+    * Threshold sensitivity sweeps over the [0, 1] range, per channel,
+      per member and for the full ensemble.
+
+    Disk cost at 192³ × 3 channels uint8 NIfTI: ~20 MB per member per scan
+    before gzip, ~5-10 MB after. For 150 test scans × M=20 → ~15-30 GB
+    per run. This function is opt-in via
+    ``config.inference.save_per_member_probs_all``.
+
+    Args:
+        result: EnsemblePrediction whose ``per_member_probs`` list is
+            populated (``predict_scan`` must be called with
+            ``save_per_member=True``).
+        output_dir: Predictions base directory (e.g.,
+            ``{run_dir}/predictions/brats_men_test``).
+        scan_id: Scan identifier → subdirectory under ``output_dir``.
+    """
+    if result.per_member_probs is None:
+        return
+
+    scan_dir = output_dir / scan_id
+    scan_dir.mkdir(parents=True, exist_ok=True)
+
+    for m, probs_m in enumerate(result.per_member_probs):
+        _save_probs_uint8(probs_m, scan_dir / f"member_{m}_probs.nii.gz")
+
+
 def select_sample_indices(
     n_total: int,
     n_samples: int,

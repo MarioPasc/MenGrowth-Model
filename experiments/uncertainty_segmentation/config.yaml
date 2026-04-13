@@ -110,6 +110,10 @@ inference:
   sw_mode: "gaussian"             # Blending mode
   save_ensemble_masks: true               # Save WT hard mask + multi-label NIfTI for all scans
   save_per_member_masks_all: false        # Save per-member WT masks for ALL scans (large!)
+  save_per_member_probs_all: false        # Save per-member 3-channel soft probs (uint8) for ALL
+                                          # test scans. Required for Dice(ensemble_k) curves
+                                          # and threshold-sensitivity analysis. ~20 MB/member/scan
+                                          # compressed => ~20-30 GB per run (150 scans × M=20).
   save_sample_predictions: true           # Save full spatial data for N sample scans
   n_sample_scans: 5                       # Number of sample scans for detailed saving
   sample_scan_strategy: "spread"          # "spread" (evenly spaced) or "first"
@@ -125,3 +129,11 @@ evaluation:
   n_bootstrap: 10000              # Bootstrap iterations for CIs
   alpha: 0.05                     # Significance level
   subsample_voxels_step: 8        # Voxel subsampling for calibration (memory)
+  # Dice(ensemble_k) and threshold-sensitivity analyses run streaming during
+  # evaluate_ensemble_per_subject when per_member_probs are available (see
+  # inference.save_per_member_probs_all). Threshold grid is shared between the
+  # two analyses; 0.05 steps balance resolution with runtime/disk.
+  compute_ensemble_k_dice: true
+  compute_threshold_sensitivity: true
+  threshold_grid: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+                   0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]

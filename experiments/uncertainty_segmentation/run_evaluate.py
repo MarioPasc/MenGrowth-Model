@@ -122,6 +122,7 @@ def run_full_evaluation(
     ensemble_df, calibration_data = evaluate_ensemble_per_subject(
         config, device=device, run_dir=run_dir, collect_calibration=True,
         predictions_dir=test_predictions_dir,
+        eval_dir=eval_dir,
     )
     ensemble_df.to_csv(ensemble_path, index=False)
     step_time = time.time() - step_start

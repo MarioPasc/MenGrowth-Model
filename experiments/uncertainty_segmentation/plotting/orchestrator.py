@@ -40,6 +40,7 @@ FIGURE_NAMES = {
     "fig_paired_comparison": "fig03_paired_comparison",
     "fig_forest_plot": "fig04_forest_plot",
     "fig_convergence": "fig05_convergence",
+    "fig_threshold_sensitivity": "fig05b_threshold_sensitivity",
     "fig_calibration": "fig06_calibration",
     "fig_best_worst": "fig07_best_worst",
     "fig_dice_compartments": "fig08_dice_compartments",

@@ -23,9 +23,17 @@ from growth.data.transforms import get_h5_val_transforms
 from growth.inference.sliding_window import sliding_window_segment
 from growth.losses.segmentation import DiceMetric3Ch
 
+from .ensemble_convergence import (
+    compute_ensemble_k_dice,
+    compute_threshold_sensitivity,
+)
 from .ensemble_inference import EnsemblePredictor
 from .paths import get_run_dir
-from .save_predictions import save_multilabel_mask, _save_3d
+from .save_predictions import (
+    _save_3d,
+    save_multilabel_mask,
+    save_per_member_probs_all,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,8 +204,24 @@ def evaluate_ensemble_per_subject(
     run_dir: str | Path | None = None,
     collect_calibration: bool = True,
     predictions_dir: Path | None = None,
+    eval_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, dict | None]:
     """Evaluate the ensemble (mean probs) on the test set, per subject.
+
+    In addition to producing one Dice row per scan, this function
+    optionally runs two additional analyses when
+    ``config.inference.save_per_member_probs_all`` is true:
+
+    * **Ensemble-of-k Dice** per channel, per scan (``convergence_ensemble_dice_{wt,tc,et}.csv``).
+    * **Threshold-sensitivity** Dice per channel, per member + ensemble
+      (``threshold_sensitivity.csv``).
+
+    Both analyses are computed **streaming** from the in-memory
+    ``result.per_member_probs`` returned by :class:`EnsemblePredictor` —
+    they do not re-read the NIfTIs from disk, so enabling them adds
+    only a few extra tensor ops per scan. The soft-prob NIfTIs are
+    still written to disk so future post-hoc analyses (e.g., new
+    threshold grids) can run without re-inference.
 
     Args:
         config: Full experiment configuration.
@@ -205,8 +229,11 @@ def evaluate_ensemble_per_subject(
         run_dir: Override run directory.
         collect_calibration: If True, collect subsampled probs/labels for
             calibration metrics (ECE, Brier, reliability).
-        predictions_dir: If provided, save ensemble masks and multi-label
-            segmentations for BraTS-MEN test scans.
+        predictions_dir: If provided, save ensemble masks, multi-label
+            segmentations, and (when enabled) per-member soft probs for
+            BraTS-MEN test scans.
+        eval_dir: Destination for the ensemble-k / threshold CSVs. If
+            omitted, they are not written (caller owns the path).
 
     Returns:
         Tuple of (DataFrame, calibration_data_or_None).
@@ -237,10 +264,33 @@ def evaluate_ensemble_per_subject(
 
     logger.info(f"Evaluating ensemble on {len(dataset)} test scans")
 
+    # Feature flags (evaluated once outside the per-scan loop).
+    save_probs_all = bool(
+        config.inference.get("save_per_member_probs_all", False)
+    ) and predictions_dir is not None
+    eval_cfg = config.get("evaluation", {})
+    do_ensemble_k = bool(eval_cfg.get("compute_ensemble_k_dice", True))
+    do_threshold = bool(eval_cfg.get("compute_threshold_sensitivity", True))
+    threshold_grid = [
+        float(t) for t in eval_cfg.get(
+            "threshold_grid",
+            [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+             0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95],
+        )
+    ]
+    # Streaming analyses need per-member probs in memory. Enable them
+    # whenever at least one of {save-to-disk, ensemble-k, threshold}
+    # is requested.
+    need_per_member_probs = save_probs_all or do_ensemble_k or do_threshold
+
     rows: list[dict] = []
     all_probs: list[np.ndarray] = []
     all_labels: list[np.ndarray] = []
-    step = config.evaluation.get("subsample_voxels_step", 8)
+    step = eval_cfg.get("subsample_voxels_step", 8)
+
+    # Accumulators for streaming analyses. Lists of per-scan DataFrames.
+    ensemble_k_frames: list[pd.DataFrame] = []
+    threshold_frames: list[pd.DataFrame] = []
 
     for i in range(len(dataset)):
         sample = dataset[i]
@@ -250,7 +300,7 @@ def evaluate_ensemble_per_subject(
 
         logger.info(f"Scan {i + 1}/{len(dataset)}: {sid}")
 
-        result = predictor.predict_scan(images)
+        result = predictor.predict_scan(images, save_per_member=need_per_member_probs)
 
         # Ensemble Dice
         ensemble_pred = (result.mean_probs > 0.5).float()
@@ -271,11 +321,28 @@ def evaluate_ensemble_per_subject(
             "volume_gt": vol_gt,
         })
 
-        # Save ensemble mask + multi-label for BraTS-MEN test (thesis figures)
+        # Save ensemble mask + multi-label + per-member probs for thesis figures.
         if predictions_dir is not None:
             from .save_predictions import save_ensemble_mask
             save_ensemble_mask(result.ensemble_mask, predictions_dir, sid)
             save_multilabel_mask(result.mean_probs, predictions_dir, sid)
+            if save_probs_all and result.per_member_probs is not None:
+                save_per_member_probs_all(result, predictions_dir, sid)
+
+        # Streaming analyses over the in-memory per-member probs.
+        if result.per_member_probs is not None:
+            if do_ensemble_k:
+                ek = compute_ensemble_k_dice(
+                    result.per_member_probs, gt_binary,
+                )
+                ek.insert(0, "scan_id", sid)
+                ensemble_k_frames.append(ek)
+            if do_threshold:
+                ts = compute_threshold_sensitivity(
+                    result.per_member_probs, gt_binary, threshold_grid,
+                )
+                ts.insert(0, "scan_id", sid)
+                threshold_frames.append(ts)
 
         # Collect calibration data (subsampled)
         if collect_calibration:
@@ -290,5 +357,33 @@ def evaluate_ensemble_per_subject(
             "probs": np.concatenate(all_probs, axis=0),
             "labels": np.concatenate(all_labels, axis=0),
         }
+
+    # Write the streaming-analysis CSVs if we have both an eval dir and content.
+    if eval_dir is not None:
+        eval_dir = Path(eval_dir)
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        if ensemble_k_frames:
+            long_df = pd.concat(ensemble_k_frames, ignore_index=True)
+            # Per-channel files for symmetry with convergence_dice_*.csv.
+            for ch in ("wt", "tc", "et"):
+                col = f"dice_{ch}"
+                sub = long_df[["scan_id", "k", col]].rename(
+                    columns={col: "ensemble_dice"}
+                )
+                sub.to_csv(eval_dir / f"convergence_ensemble_dice_{ch}.csv", index=False)
+            logger.info(
+                "Ensemble-of-k Dice written to %s/convergence_ensemble_dice_{wt,tc,et}.csv"
+                " (%d scans × up to k=%d)",
+                eval_dir, long_df["scan_id"].nunique(), int(long_df["k"].max()),
+            )
+        if threshold_frames:
+            tdf = pd.concat(threshold_frames, ignore_index=True)
+            tdf.to_csv(eval_dir / "threshold_sensitivity.csv", index=False)
+            logger.info(
+                "Threshold-sensitivity written to %s/threshold_sensitivity.csv"
+                " (%d rows across %d scans, %d thresholds)",
+                eval_dir, len(tdf), tdf["scan_id"].nunique(),
+                tdf["threshold"].nunique(),
+            )
 
     return pd.DataFrame(rows), calibration_data

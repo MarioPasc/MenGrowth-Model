@@ -51,6 +51,12 @@ class EnsembleResultsData:
     epistemic_taxonomy: dict[str, Any] | None = None
     cross_rank_summary: pd.DataFrame | None = None
 
+    # Ensemble-of-k Dice curves + threshold sensitivity (populated by
+    # evaluate_ensemble_per_subject when per-member soft probs are saved).
+    # Keys of ensemble_k_convergence: "wt", "tc", "et".
+    ensemble_k_convergence: dict[str, pd.DataFrame] | None = None
+    threshold_sensitivity: pd.DataFrame | None = None
+
     # Scans with full per-member predictions
     sample_scans: list[str] = dataclasses.field(default_factory=list)
 
@@ -215,6 +221,20 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
     if cross_rank is not None:
         logger.info("  Loaded cross_rank_summary (%d rows)", len(cross_rank))
 
+    # Ensemble-of-k Dice curves (per channel) and threshold sensitivity.
+    ensemble_k_convergence: dict[str, pd.DataFrame] = {}
+    for ch in ("wt", "tc", "et"):
+        ek_df = _read_csv_optional(eval_dir / f"convergence_ensemble_dice_{ch}.csv")
+        if ek_df is not None:
+            ensemble_k_convergence[ch] = ek_df
+            logger.info("  Loaded ensemble-k Dice (%s): %d rows", ch, len(ek_df))
+    threshold_df = _read_csv_optional(eval_dir / "threshold_sensitivity.csv")
+    if threshold_df is not None:
+        logger.info(
+            "  Loaded threshold_sensitivity: %d rows, %d thresholds",
+            len(threshold_df), threshold_df["threshold"].nunique(),
+        )
+
     return EnsembleResultsData(
         run_dir=run_dir,
         training_curves=loaded["training_curves"],
@@ -234,5 +254,7 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
         bias_dominance_threshold=k_star_df,
         epistemic_taxonomy=taxonomy,
         cross_rank_summary=cross_rank,
+        ensemble_k_convergence=ensemble_k_convergence or None,
+        threshold_sensitivity=threshold_df,
         sample_scans=sample_scans,
     )
