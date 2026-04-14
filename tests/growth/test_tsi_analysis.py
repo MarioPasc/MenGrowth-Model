@@ -9,7 +9,7 @@ import pytest
 import scipy.stats
 import torch
 
-from experiments.uncertainty_segmentation.explainability.tsi_analysis import (
+from experiments.uncertainty_segmentation.explainability.engine.tsi import (
     STAGE_META,
     ScanTSIResult,
     TSIResult,

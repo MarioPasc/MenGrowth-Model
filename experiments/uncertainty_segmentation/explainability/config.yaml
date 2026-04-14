@@ -1,36 +1,71 @@
-# TSI Explainability Analysis Configuration
-# Merged with parent uncertainty_segmentation/config.yaml for shared paths.
+# Encoder Explainability Analysis — TSI (corrected) + ASI + DAD
+#
+# Spec: docs/growth-related/lora/EXPLAINABILITY_ANALYSIS_SPEC.md (2026-04-14)
 #
 # Usage:
-#   python -m experiments.uncertainty_segmentation.explainability.run_tsi \
+#   python -m experiments.uncertainty_segmentation.explainability.run_analysis \
 #       --config experiments/uncertainty_segmentation/config.yaml \
-#       --tsi-config experiments/uncertainty_segmentation/explainability/config.yaml \
+#       --analysis-config experiments/uncertainty_segmentation/explainability/config.yaml \
+#       --run-dir /path/to/r8_M20_s42 \
+#       --output /path/to/r8_M20_s42/explainability \
 #       --device cuda:0
-
-analysis:
-  n_scans: 20                       # Number of test scans to analyse
-  scan_selection: "first"            # "first" | "random"
-  seed: 42                          # For reproducible scan sampling if "random"
-  tsi_thresholds: [1.5, 2.0]        # Tau values for Frac(TSI > tau)
-  epsilon: 1.0e-8                   # Numerical stability constant
-  top_k: 3                          # Top tumor-selective channels for visualization
-  member_id: 0                      # Which ensemble member for the adapted condition
-  roi_size: [128, 128, 128]         # Input ROI (128³ fits 8GB GPU; 192³ needs 16GB+)
-
-ranks: [4, 8, 16]                   # LoRA ranks to analyze
+#
+# The analysis-config is merged with the parent uncertainty_segmentation
+# config: parent provides ``paths.checkpoint_dir``, ``paths.checkpoint_filename``,
+# ``paths.men_h5_file``, ``paths.gli_h5_file`` and ``lora.target_stages``.
 
 paths:
+  # When ``base_results_dir`` and ``run_dir_pattern`` are set, the rank-based
+  # lookup is used; ``--run-dir`` on the CLI overrides this entirely.
   base_results_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation
-  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/tsi_explainability
-  run_dir_pattern: "r{rank}_M20_s42"   # Pattern with {rank} placeholder
+  run_dir_pattern: "r{rank}_M20_s42"
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/explainability
+  # Output layout:
+  #   {output_dir}/raw/             (CSV + NPZ, regenerable figures)
+  #   {output_dir}/tables/          (CSV + LaTeX)
+  #   {output_dir}/figures/         (PDF)
+  #   {output_dir}/config_snapshot.yaml
+
+analysis:
+  # Cohort sizes (BraTS-MEN test split has ~150 scans; 20 is the budget).
+  n_scans_tsi: 20
+  n_scans_asi: 20
+  n_scans_dad: 20            # Per domain (20 GLI + 20 MEN)
+  scan_selection: "random"   # "first" | "random"
+  seed: 42
+  roi_size: [128, 128, 128]  # 128³ fits 8 GB GPU, 192³ needs 16 GB+
+
+  # Multi-member adapted aggregation. ``member_ids: null`` reads
+  # ``ensemble.n_members`` and uses the first ``n_adapted_members``
+  # members; explicit lists override that.
+  ranks: [8]                 # LoRA ranks to evaluate
+  n_adapted_members: 5
+  member_ids: null
+
+  # ----- TSI (brain-masked) -----
+  tsi_thresholds: [1.5, 2.0]
+  tsi_top_k: 3
+  brain_mask_threshold: null   # null ⇒ strict zero rule (skull-stripped, z-norm BraTS)
+  tsi_epsilon: 1.0e-8
+
+  # ----- ASI -----
+  asi_min_tumor_tokens: 5
+  asi_min_nontumor_tokens: 5
+  asi_stages: [1, 2, 3, 4]    # Skip stage 0 (~2700 windows; not addressable for ASI)
+
+  # ----- DAD -----
+  dad_permutations: 1000
+  dad_stages: [1, 2, 3, 4]
+  dad_member_id: 0            # Single member for DAD (1000 perms × 5 members ≫ budget)
 
 figure:
-  figsize_main: [14, 8]             # 5x3 panel figure
-  figsize_delta: [8, 2.5]           # 1x5 delta summary
-  figsize_cross_rank: [8, 3]        # Cross-rank comparison
-  colormap_activation: "inferno"
-  colormap_selective: "plasma"
-  slice_selection: "max_tumor"       # "max_tumor" | "center" | integer index
   save_format: "pdf"
   save_dpi: 300
-  mri_channel: 1                    # T1ce (index 1 in [FLAIR, T1ce, T1, T2])
+  tsi_panel_figsize: [12, 7]
+  asi_panel_figsize: [10, 5]
+  dad_bar_figsize: [6, 4]
+  summary_figsize: [14, 5]
+  colormap_activation: "inferno"
+  colormap_selective: "plasma"
+  slice_selection: "max_tumor"
+  mri_channel: 1               # T1ce (index 1 in [FLAIR, T1ce, T1, T2])

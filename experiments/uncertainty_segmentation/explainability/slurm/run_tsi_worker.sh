@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-#SBATCH -J tsi_explain
-#SBATCH --time=0-01:00:00
+#SBATCH -J explain
+#SBATCH --time=0-02:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -8,27 +8,30 @@
 #SBATCH --gres=gpu:1
 
 # =============================================================================
-# TSI EXPLAINABILITY WORKER — PICASSO
+# EXPLAINABILITY WORKER — PICASSO  (refactored: brain-masked TSI + ASI + DAD)
 #
-# Runs TSI analysis at full 192³ resolution on all test scans.
-# 150 scans × 2 conditions × ~3s/scan + 3 ranks × ~3s/scan = ~20 min.
+# Runs the full spec §10 pipeline at 192³ resolution.  Budget per condition:
+#   - TSI + ASI: ~3 s/scan × 150 scans = ~8 min per condition
+#   - 5 adapted members per rank => extra 5 × 8 min ≈ 40 min per rank
+#   - DAD: 30 + 30 scans × 2 conditions ≈ 6 min + 1000-permutation test (~3 min)
+# Total expected ≈ 60-90 min for one rank with 5 members.
 #
 # Expected env vars (exported by launch_tsi.sh):
-#   REPO_SRC, CONDA_ENV_NAME, CONFIG_PATH, TSI_CONFIG_PATH, RANKS, OUTPUT_DIR
+#   REPO_SRC, CONDA_ENV_NAME, CONFIG_PATH, ANALYSIS_CONFIG_PATH, RANKS, OUTPUT_DIR
 # =============================================================================
 
 set -euo pipefail
 
 START_TIME=$(date +%s)
 echo "=========================================="
-echo "TSI EXPLAINABILITY WORKER"
+echo "EXPLAINABILITY WORKER (TSI + ASI + DAD)"
 echo "=========================================="
-echo "Started:     $(date)"
-echo "Hostname:    $(hostname)"
-echo "Config:      ${CONFIG_PATH:-NOT SET}"
-echo "TSI Config:  ${TSI_CONFIG_PATH:-NOT SET}"
-echo "Ranks:       ${RANKS:-NOT SET}"
-echo "Output:      ${OUTPUT_DIR:-NOT SET}"
+echo "Started:           $(date)"
+echo "Hostname:          $(hostname)"
+echo "Parent config:     ${CONFIG_PATH:-NOT SET}"
+echo "Analysis config:   ${ANALYSIS_CONFIG_PATH:-NOT SET}"
+echo "Ranks:             ${RANKS:-NOT SET}"
+echo "Output:            ${OUTPUT_DIR:-NOT SET}"
 echo ""
 
 # Environment setup
@@ -61,36 +64,26 @@ nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free \
 echo ""
 
 nvidia-smi --query-gpu=timestamp,memory.used,memory.total,utilization.gpu \
-    --format=csv -l 30 > "${LOG_DIR}/gpu_tsi_${SLURM_JOB_ID}.csv" 2>/dev/null &
+    --format=csv -l 30 > "${LOG_DIR}/gpu_${SLURM_JOB_ID}.csv" 2>/dev/null &
 GPU_MONITOR_PID=$!
 echo "[gpu-monitor] Started (PID=${GPU_MONITOR_PID}, interval=30s)"
 
 # ========================================================================
-# VALIDATION (1 scan, verify hidden states)
+# RUN PIPELINE
 # ========================================================================
-echo "Running validation..."
-FIRST_RANK=$(echo "${RANKS}" | tr ',' ' ' | awk '{print $1}')
-python -m experiments.uncertainty_segmentation.explainability.run_tsi \
+echo "Running brain-masked TSI + ASI + DAD pipeline (ranks: ${RANKS})..."
+
+# RANKS may be comma-separated; convert to space-separated for argparse nargs="+".
+RANK_ARGS=$(echo "${RANKS}" | tr ',' ' ')
+
+python -m experiments.uncertainty_segmentation.explainability.run_analysis \
     --config "${CONFIG_PATH}" \
-    --tsi-config "${TSI_CONFIG_PATH}" \
+    --analysis-config "${ANALYSIS_CONFIG_PATH}" \
     --device cuda:0 \
-    --rank ${FIRST_RANK} \
-    --validate-only
+    --output "${OUTPUT_DIR}" \
+    --ranks ${RANK_ARGS}
 
-echo "  [OK] Validation passed"
-echo ""
-
-# ========================================================================
-# FULL ANALYSIS (all ranks)
-# ========================================================================
-echo "Running full TSI analysis (ranks: ${RANKS})..."
-python -m experiments.uncertainty_segmentation.explainability.run_tsi \
-    --config "${CONFIG_PATH}" \
-    --tsi-config "${TSI_CONFIG_PATH}" \
-    --device cuda:0 \
-    --rank ${RANKS//,/ }
-
-echo "  [OK] TSI analysis complete"
+echo "  [OK] Analysis complete"
 
 # ========================================================================
 # CLEANUP

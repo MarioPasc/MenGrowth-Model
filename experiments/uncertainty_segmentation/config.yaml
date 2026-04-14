@@ -25,6 +25,8 @@ paths:
   # MenGrowth longitudinal HDF5 (inference-only, no labels)
   mengrowth_h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5
 
+  # BraTS-GLI semi-longitudinal HDF5 dataset, produced by scripts/convert_brats_gli_to_h5.py
+  gli_h5_file: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_GLI.h5
 # =============================================================================
 # Ensemble configuration
 # =============================================================================

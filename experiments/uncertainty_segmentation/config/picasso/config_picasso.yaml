@@ -12,6 +12,7 @@ paths:
   checkpoint_filename: finetuned_model_fold_0.pt
   men_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_MEN.h5
   mengrowth_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/MenGrowth.h5
+  gli_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_GLI.h5
 
 training:
   num_workers: 16

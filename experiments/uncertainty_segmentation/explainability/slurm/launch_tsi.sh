@@ -25,7 +25,7 @@ EXPERIMENT_DIR="$(cd "${MODULE_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${EXPERIMENT_DIR}/../.." && pwd)"
 
 echo "=========================================="
-echo "TSI EXPLAINABILITY — PICASSO LAUNCHER"
+echo "EXPLAINABILITY — PICASSO LAUNCHER (TSI + ASI + DAD)"
 echo "=========================================="
 echo "Time: $(date)"
 echo ""
@@ -39,8 +39,8 @@ export CONDA_ENV_NAME="${CONDA_ENV_NAME:-growth}"
 # Config files
 BASE_CONFIG="${EXPERIMENT_DIR}/config.yaml"
 PICASSO_OVERRIDE="${EXPERIMENT_DIR}/config/picasso/config_picasso.yaml"
-TSI_BASE_CONFIG="${MODULE_DIR}/config.yaml"
-TSI_PICASSO_OVERRIDE="${MODULE_DIR}/config/picasso/config_tsi_picasso.yaml"
+ANALYSIS_BASE_CONFIG="${MODULE_DIR}/config.yaml"
+ANALYSIS_PICASSO_OVERRIDE="${MODULE_DIR}/config/picasso/config_tsi_picasso.yaml"
 
 # Parse arguments
 RANKS="4,8,16"
@@ -74,12 +74,12 @@ if [ "${ENCODER_ONLY}" -eq 1 ]; then
 fi
 
 echo "Configuration:"
-echo "  Repo:            ${REPO_SRC}"
-echo "  Base config:     ${BASE_CONFIG}"
-echo "  Picasso config:  ${PICASSO_OVERRIDE}"
-echo "  TSI config:      ${TSI_BASE_CONFIG}"
-echo "  TSI Picasso:     ${TSI_PICASSO_OVERRIDE}"
-echo "  Ranks:           ${RANKS}"
+echo "  Repo:                ${REPO_SRC}"
+echo "  Parent base:         ${BASE_CONFIG}"
+echo "  Parent picasso:      ${PICASSO_OVERRIDE}"
+echo "  Analysis base:       ${ANALYSIS_BASE_CONFIG}"
+echo "  Analysis picasso:    ${ANALYSIS_PICASSO_OVERRIDE}"
+echo "  Ranks:               ${RANKS}"
 echo "  Conda env:       ${CONDA_ENV_NAME}"
 if [ "${ENCODER_ONLY}" -eq 1 ]; then
     echo "  Mode:            ENCODER-ONLY (frozen decoder, LoRA on stages [1,2,3])"
@@ -110,8 +110,8 @@ base_path = '${BASE_CONFIG}'
 picasso_path = '${PICASSO_OVERRIDE}'
 encoder_only_path = '${ENCODER_ONLY_PATH}'
 encoder_only_picasso_path = '${ENCODER_ONLY_PICASSO_PATH}'
-tsi_base_path = '${TSI_BASE_CONFIG}'
-tsi_picasso_path = '${TSI_PICASSO_OVERRIDE}'
+analysis_base_path = '${ANALYSIS_BASE_CONFIG}'
+analysis_picasso_path = '${ANALYSIS_PICASSO_OVERRIDE}'
 
 if not os.path.exists(base_path):
     print(f'FAIL Base config not found: {base_path}')
@@ -134,22 +134,23 @@ if encoder_only_picasso_path and os.path.exists(encoder_only_picasso_path):
     parent_cfg = OmegaConf.merge(parent_cfg, OmegaConf.load(encoder_only_picasso_path))
     print('[config] Applied encoder-only picasso path override')
 
-# Merge TSI config
-tsi_cfg = OmegaConf.load(tsi_base_path)
-if os.path.exists(tsi_picasso_path):
-    tsi_cfg = OmegaConf.merge(tsi_cfg, OmegaConf.load(tsi_picasso_path))
-    print('[config] TSI: base + picasso override')
+# Merge analysis config
+analysis_cfg = OmegaConf.load(analysis_base_path)
+if os.path.exists(analysis_picasso_path):
+    analysis_cfg = OmegaConf.merge(analysis_cfg, OmegaConf.load(analysis_picasso_path))
+    print('[config] Analysis: base + picasso override')
 
-output_dir = tsi_cfg.paths.output_dir
-roi = list(tsi_cfg.analysis.roi_size)
-n_scans = tsi_cfg.analysis.n_scans
+output_dir = analysis_cfg.paths.output_dir
+roi = list(analysis_cfg.analysis.roi_size)
+n_tsi = analysis_cfg.analysis.n_scans_tsi
+n_dad = analysis_cfg.analysis.n_scans_dad
 
 # Save resolved configs
 pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 OmegaConf.save(parent_cfg, f'{output_dir}/parent_config_snapshot.yaml', resolve=True)
-OmegaConf.save(tsi_cfg, f'{output_dir}/tsi_config_snapshot.yaml', resolve=True)
+OmegaConf.save(analysis_cfg, f'{output_dir}/analysis_config_snapshot.yaml', resolve=True)
 
-print(f'[config] ROI: {roi}, N_scans: {n_scans}')
+print(f'[config] ROI: {roi}, N_tsi: {n_tsi}, N_dad: {n_dad}')
 print(f'RESULT {output_dir}')
 " 2>&1) || MERGE_RC=$?
 
@@ -172,7 +173,7 @@ read -r _ OUTPUT_DIR <<< "${RESULT_LINE}"
 
 export OUTPUT_DIR
 export CONFIG_PATH="${OUTPUT_DIR}/parent_config_snapshot.yaml"
-export TSI_CONFIG_PATH="${OUTPUT_DIR}/tsi_config_snapshot.yaml"
+export ANALYSIS_CONFIG_PATH="${OUTPUT_DIR}/analysis_config_snapshot.yaml"
 export RANKS
 
 SLURM_LOG_DIR="${OUTPUT_DIR}/logs"
@@ -180,11 +181,11 @@ mkdir -p "${SLURM_LOG_DIR}"
 
 echo ""
 echo "Resolved:"
-echo "  Output:  ${OUTPUT_DIR}"
-echo "  Config:  ${CONFIG_PATH}"
-echo "  TSI cfg: ${TSI_CONFIG_PATH}"
-echo "  Ranks:   ${RANKS}"
-echo "  Logs:    ${SLURM_LOG_DIR}"
+echo "  Output:        ${OUTPUT_DIR}"
+echo "  Parent cfg:    ${CONFIG_PATH}"
+echo "  Analysis cfg:  ${ANALYSIS_CONFIG_PATH}"
+echo "  Ranks:         ${RANKS}"
+echo "  Logs:          ${SLURM_LOG_DIR}"
 echo ""
 
 # ========================================================================
@@ -196,7 +197,7 @@ JOB_OUTPUT=$(sbatch \
     --job-name="tsi_explain" \
     --output="${SLURM_LOG_DIR}/tsi_%j.out" \
     --error="${SLURM_LOG_DIR}/tsi_%j.err" \
-    --export=ALL,CONFIG_PATH="${CONFIG_PATH}",TSI_CONFIG_PATH="${TSI_CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}",OUTPUT_DIR="${OUTPUT_DIR}",RANKS="${RANKS}" \
+    --export=ALL,CONFIG_PATH="${CONFIG_PATH}",ANALYSIS_CONFIG_PATH="${ANALYSIS_CONFIG_PATH}",REPO_SRC="${REPO_SRC}",CONDA_ENV_NAME="${CONDA_ENV_NAME}",OUTPUT_DIR="${OUTPUT_DIR}",RANKS="${RANKS}" \
     "${SCRIPT_DIR}/run_tsi_worker.sh" 2>&1)
 
 JOB_ID=$(echo "$JOB_OUTPUT" | grep -oP 'job\s+\K[0-9]+' | head -1)

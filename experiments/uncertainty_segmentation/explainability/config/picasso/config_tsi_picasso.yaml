@@ -1,20 +1,26 @@
-# TSI Explainability — Picasso Override
+# Explainability — Picasso Override (refactored pipeline)
 #
 # Merged on top of base explainability/config.yaml via OmegaConf.
+# Schema follows EXPLAINABILITY_ANALYSIS_SPEC.md §6 (2026-04-14): brain-masked
+# TSI + ASI + DAD with the new ``n_scans_{tsi,asi,dad}`` keys.
+#
 # Key changes vs local:
 #   - 192³ full-resolution (A100 40GB handles this easily)
-#   - All 150 test scans (maximize power for stages 3-4 paired tests)
+#   - All 150 test scans for TSI / ASI (maximises power across stages)
+#   - 30 GLI + 30 MEN scans for DAD (slow because of 1000 permutations)
 #   - Picasso paths (fscratch mount points)
 #
 # Usage:
 #   bash experiments/uncertainty_segmentation/explainability/slurm/launch_tsi.sh
 
 analysis:
-  n_scans: 150                      # Use ALL test scans — maximizes paired-test power at stages 3-4
-  scan_selection: "first"            # Deterministic: first N scans (= all 150)
-  roi_size: [192, 192, 192]          # Full H5 resolution — A100 40GB fits 192³ forward pass (~3GB peak)
+  n_scans_tsi: 150
+  n_scans_asi: 150
+  n_scans_dad: 30
+  scan_selection: "first"
+  roi_size: [192, 192, 192]
 
 paths:
-  base_results_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only/
-  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only/tsi_explainability
+  base_results_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only/explaibility
   run_dir_pattern: "r{rank}_M20_s42"
