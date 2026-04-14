@@ -81,7 +81,7 @@ def main() -> None:
         if args.n_scans is not None:
             analysis_config.analysis.n_scans_dad = args.n_scans
         phase_dad(
-            config, analysis_config.analysis, raw_dir, args.device,
+            config, analysis_config, raw_dir, args.device,
             ranks=ranks, run_dir_override=run_dir_override,
         )
         return

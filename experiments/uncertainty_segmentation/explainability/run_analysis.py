@@ -453,7 +453,7 @@ def phase_frozen(
 
 def phase_adapted(
     config: DictConfig,
-    analysis_cfg: DictConfig,
+    analysis_config: DictConfig,
     loaded: LoadedDataset,
     scan_indices: list[int],
     raw_dir: Path,
@@ -462,11 +462,17 @@ def phase_adapted(
     member_ids: list[int],
     run_dir_override: Path | None,
 ) -> dict[tuple[int, int], PerConditionOutputs]:
-    """Phase 2: per-member TSI + ASI on the same scans as frozen."""
+    """Phase 2: per-member TSI + ASI on the same scans as frozen.
+
+    ``analysis_config`` is the FULL analysis config (top-level keys
+    ``paths``, ``analysis``, ``figure``) because ``load_adapted_model``
+    reads ``paths.base_results_dir`` to resolve the LoRA run directory.
+    """
     logger.info("=" * 60)
     logger.info("PHASE 2: ADAPTED (ranks=%s, members=%s)", ranks, member_ids)
     logger.info("=" * 60)
 
+    analysis_cfg = analysis_config.analysis
     thresholds = list(analysis_cfg.tsi_thresholds)
     tsi_csv = raw_dir / "tsi_adapted_per_scan.csv"
     asi_csv = raw_dir / "asi_adapted_per_scan.csv"
@@ -484,7 +490,7 @@ def phase_adapted(
             condition = f"adapted_r{rank}_m{mid}"
             logger.info("--- Loading rank=%d member=%d ---", rank, mid)
             model = load_adapted_model(
-                config, analysis_cfg, rank=rank,
+                config, analysis_config, rank=rank,
                 member_id=mid, device=device,
                 run_dir=run_dir_override,
             )
@@ -516,17 +522,22 @@ def phase_adapted(
 
 def phase_dad(
     config: DictConfig,
-    analysis_cfg: DictConfig,
+    analysis_config: DictConfig,
     raw_dir: Path,
     device: str,
     ranks: list[int],
     run_dir_override: Path | None,
 ) -> None:
-    """Phase 3: DAD on volume-matched MEN/GLI cohorts (frozen + one adapted member)."""
+    """Phase 3: DAD on volume-matched MEN/GLI cohorts (frozen + one adapted member).
+
+    ``analysis_config`` is the FULL analysis config; ``load_adapted_model``
+    needs ``paths.base_results_dir`` to resolve LoRA run directories.
+    """
     logger.info("=" * 60)
     logger.info("PHASE 3: DAD")
     logger.info("=" * 60)
 
+    analysis_cfg = analysis_config.analysis
     roi_size = tuple(int(x) for x in analysis_cfg.roi_size)
     n_scans = int(analysis_cfg.n_scans_dad)
     seed = int(analysis_cfg.seed)
@@ -586,7 +597,7 @@ def phase_dad(
     # One adapted member per rank.
     for rank in ranks:
         adapted = load_adapted_model(
-            config, analysis_cfg, rank=rank,
+            config, analysis_config, rank=rank,
             member_id=dad_member_id, device=device,
             run_dir=run_dir_override,
         )
@@ -765,11 +776,11 @@ def main() -> None:
         phase_frozen(config, analysis_config.analysis, men_loader, scan_indices, raw_dir, args.device)
     if args.phase in ("all", "adapted"):
         phase_adapted(
-            config, analysis_config.analysis, men_loader, scan_indices, raw_dir,
+            config, analysis_config, men_loader, scan_indices, raw_dir,
             args.device, ranks, member_ids, run_dir_override,
         )
     if args.phase in ("all", "dad"):
-        phase_dad(config, analysis_config.analysis, raw_dir, args.device, ranks, run_dir_override)
+        phase_dad(config, analysis_config, raw_dir, args.device, ranks, run_dir_override)
     if args.phase in ("all", "tables_figures"):
         phase_tables_figures(
             config, analysis_config.analysis, raw_dir, tables_dir, figures_dir,
