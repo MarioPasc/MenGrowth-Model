@@ -1,0 +1,25 @@
+# R4: MLP-Only LoRA at Stage 1 — Per-Stage Module Type Ablation
+#
+# Merges on top of encoder_only.yaml. Overrides per_stage_module_types
+# so that stage 1 uses only MLP adapters (fc1, fc2), while stages 2-4
+# retain the full block (qkv, proj, fc1, fc2).
+#
+# Rationale:
+#   Domain divergence analysis predicts low representational divergence at
+#   stage 1 (early features are generic). If the domain gap at stage 1 is
+#   primarily a magnitude shift (captured by fc1/fc2 feature recalibration)
+#   rather than a routing change (captured by qkv), then MLP-only adaptation
+#   should suffice at stage 1 while reducing parameter count.
+#
+# Expected LoRA parameters at r=8 (vs full stages1234):
+#   Full stages1234:     184,320 params/member
+#   R4 (MLP-only s1):   ~160,000 params/member (saves ~24K at stage 1)
+#
+# Usage:
+#   config = OmegaConf.merge(base, picasso, encoder_only, encoder_only_picasso, r4)
+
+lora:
+  target_stages: [1, 2, 3, 4]
+  target_module_types: ["qkv", "proj", "fc1", "fc2"]
+  per_stage_module_types:
+    1: ["fc1", "fc2"]

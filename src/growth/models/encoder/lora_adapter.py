@@ -71,6 +71,21 @@ def _validate_module_types(module_types: List[str]) -> List[str]:
     return seen
 
 
+def _resolve_stage_for_module(name: str) -> int | None:
+    """Return the SwinViT stage index (1-4) that owns a module.
+
+    Args:
+        name: Dotted module name from ``named_modules()``.
+
+    Returns:
+        Stage index in ``{1, 2, 3, 4}`` if unambiguously found, else ``None``.
+    """
+    for stage in (1, 2, 3, 4):
+        if f"layers{stage}" in name:
+            return stage
+    return None
+
+
 def _infer_module_types_from_target_names(target_modules: List[str]) -> List[str]:
     """Infer the set of module-type keywords from a PEFT target_modules list.
 
@@ -95,8 +110,9 @@ def _find_lora_targets(
     model: nn.Module,
     stages: List[int] = [3, 4],
     module_types: List[str] = ["qkv"],
+    per_stage_module_types: Dict[int, List[str]] | None = None,
 ) -> List[str]:
-    """Find exact module names for LoRA injection.
+    """Find exact module names for LoRA injection, with per-stage type overrides.
 
     PEFT matches ``target_modules`` using endswith semantics, so we return
     exact (relative) names rather than regex patterns.
@@ -104,23 +120,52 @@ def _find_lora_targets(
     Args:
         model: The SwinUNETR model.
         stages: Which Swin stages to adapt (1, 2, 3, or 4).
-        module_types: Which linear layers inside each selected block to
-            adapt. Subset of ``SUPPORTED_MODULE_TYPES``. Default ``["qkv"]``
+        module_types: Default linear layers for all stages not overridden.
+            Subset of ``SUPPORTED_MODULE_TYPES``. Default ``["qkv"]``
             preserves the historical behaviour.
+        per_stage_module_types: Optional mapping from stage index to a
+            stage-specific list of module-type keywords.  Overrides
+            ``module_types`` for any stage listed here.  All lists are
+            validated against ``SUPPORTED_MODULE_TYPES``.
 
     Returns:
         List of exact module names (with any ``swinViT.`` prefix stripped,
         because PEFT re-prefixes during injection).
+
+    Example:
+        >>> _find_lora_targets(
+        ...     model,
+        ...     stages=[1, 2, 3, 4],
+        ...     module_types=["qkv", "proj", "fc1", "fc2"],
+        ...     per_stage_module_types={1: ["fc1", "fc2"]},
+        ... )
     """
     module_types = _validate_module_types(module_types)
-    suffixes = [MODULE_TYPE_SUFFIX[t] for t in module_types]
+    default_suffixes = [MODULE_TYPE_SUFFIX[t] for t in module_types]
 
+    # Validate and normalise per-stage overrides eagerly.
+    resolved_per_stage: Dict[int, List[str]] = {}
+    if per_stage_module_types:
+        for stage, types in per_stage_module_types.items():
+            validated = _validate_module_types(list(types))
+            resolved_per_stage[int(stage)] = [
+                MODULE_TYPE_SUFFIX[t] for t in validated
+            ]
+
+    stage_set = set(stages)
     targets: List[str] = []
+
     for name, _module in model.named_modules():
-        if not any(name.endswith(suffix) for suffix in suffixes):
+        module_stage = _resolve_stage_for_module(name)
+        if module_stage is None or module_stage not in stage_set:
             continue
-        if not any(f"layers{stage}" in name for stage in stages):
+
+        # Determine which suffixes apply for this stage.
+        active_suffixes = resolved_per_stage.get(module_stage, default_suffixes)
+
+        if not any(name.endswith(suffix) for suffix in active_suffixes):
             continue
+
         # Strip the 'swinViT.' prefix because PEFT re-adds it internally.
         if name.startswith("swinViT."):
             targets.append(name[len("swinViT."):])
@@ -145,12 +190,16 @@ class LoRASwinViT(nn.Module):
         target_module_types: Which linear layers inside each selected block
             to adapt. Subset of ``("qkv", "proj", "fc1", "fc2")``. Default
             ``["qkv"]`` preserves the historical qkv-only configuration.
+        per_stage_module_types: Optional mapping from stage index to a
+            stage-specific list of module-type keywords.  Overrides
+            ``target_module_types`` for the specified stages only.
         use_dora: If True, use DoRA (Weight-Decomposed LoRA) instead of
             standard LoRA. Default: False.
 
     Attributes:
         model: The PEFT-wrapped model.
-        rank, alpha, use_dora, target_stages, target_module_types, lora_config.
+        rank, alpha, use_dora, target_stages, target_module_types,
+        per_stage_module_types, lora_config.
 
     Example:
         >>> base_encoder = load_swin_encoder(ckpt_path, freeze=False)
@@ -173,6 +222,7 @@ class LoRASwinViT(nn.Module):
         dropout: float = 0.1,
         target_stages: List[int] = [3, 4],
         target_module_types: List[str] = ["qkv"],
+        per_stage_module_types: Dict[int, List[str]] | None = None,
         use_dora: bool = False,
     ):
         super().__init__()
@@ -180,6 +230,12 @@ class LoRASwinViT(nn.Module):
         self.alpha = alpha
         self.target_stages = list(target_stages)
         self.target_module_types = _validate_module_types(list(target_module_types))
+        self.per_stage_module_types: Dict[int, List[str]] = (
+            {int(k): _validate_module_types(list(v))
+             for k, v in per_stage_module_types.items()}
+            if per_stage_module_types
+            else {}
+        )
         self.use_dora = use_dora
 
         # Freeze all base parameters first
@@ -191,11 +247,15 @@ class LoRASwinViT(nn.Module):
             base_encoder,
             stages=self.target_stages,
             module_types=self.target_module_types,
+            per_stage_module_types=self.per_stage_module_types or None,
         )
-        logger.info(
+        log_msg = (
             f"Found {len(target_modules)} target modules for LoRA "
             f"(stages={self.target_stages}, types={self.target_module_types})"
         )
+        if self.per_stage_module_types:
+            log_msg += f", per_stage_overrides={self.per_stage_module_types}"
+        logger.info(log_msg)
 
         if not target_modules:
             raise ValueError(
@@ -347,10 +407,26 @@ class LoRASwinViT(nn.Module):
                     inferred_stages.append(stage)
         instance.target_stages = sorted(inferred_stages) if inferred_stages else [3, 4]
 
-        logger.info(
+        # Reconstruct per_stage_module_types: for each stage, infer
+        # which types were used; if they differ from the global set,
+        # record as an override.
+        global_types = set(instance.target_module_types)
+        per_stage_overrides: Dict[int, List[str]] = {}
+        for stage in instance.target_stages:
+            stage_targets = [n for n in saved_targets if f"layers{stage}" in n]
+            if stage_targets:
+                stage_types = _infer_module_types_from_target_names(stage_targets)
+                if set(stage_types) != global_types:
+                    per_stage_overrides[stage] = stage_types
+        instance.per_stage_module_types = per_stage_overrides
+
+        log_msg = (
             f"LoRA adapter loaded from {adapter_path} "
             f"(stages={instance.target_stages}, types={instance.target_module_types})"
         )
+        if per_stage_overrides:
+            log_msg += f", per_stage_overrides={per_stage_overrides}"
+        logger.info(log_msg)
         return instance
 
     def get_trainable_params(self) -> int:
@@ -385,6 +461,7 @@ def create_lora_encoder(
     dropout: float = 0.1,
     target_stages: List[int] = [3, 4],
     target_module_types: List[str] = ["qkv"],
+    per_stage_module_types: Dict[int, List[str]] | None = None,
     device: str = "cuda",
     use_dora: bool = False,
 ) -> LoRASwinViT:
@@ -398,6 +475,8 @@ def create_lora_encoder(
         target_stages: Which stages to apply LoRA to.
         target_module_types: Which linear layers inside each block
             (subset of ``("qkv","proj","fc1","fc2")``).
+        per_stage_module_types: Optional per-stage override of
+            ``target_module_types``.  See ``LoRASwinViT`` for details.
         device: Device to load model to.
         use_dora: If True, use DoRA.
 
@@ -418,6 +497,7 @@ def create_lora_encoder(
         dropout=dropout,
         target_stages=target_stages,
         target_module_types=target_module_types,
+        per_stage_module_types=per_stage_module_types,
         use_dora=use_dora,
     )
 

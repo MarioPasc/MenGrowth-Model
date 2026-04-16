@@ -1,0 +1,30 @@
+# Domain Divergence Analysis — Picasso Override
+#
+# Merged on top of base config/domain_divergence.yaml via OmegaConf.
+# Key changes vs local:
+#   - 150 scans per domain (full test split)
+#   - Decoder patching enabled
+#   - Picasso paths (fscratch mount points)
+#
+# Usage:
+#   bash experiments/uncertainty_segmentation/explainability/slurm/launch_domain_divergence.sh
+
+domain_divergence:
+  n_scans_per_domain: 150       # Full test split
+  scan_selection: "first"
+  roi_size: [192, 192, 192]
+  decoder_patching: true
+
+  adapted_configs:
+    - name: "stages234_full"
+      run_dir: "r8_M20_s42_stages234"
+      rank: 8
+      member_id: 0
+    - name: "stages1234_full"
+      run_dir: "r8_M20_s42_stages1234"
+      rank: 8
+      member_id: 0
+
+paths:
+  base_results_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only/domain_divergence

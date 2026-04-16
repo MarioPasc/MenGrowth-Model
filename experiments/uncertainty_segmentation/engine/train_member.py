@@ -84,6 +84,11 @@ def create_ensemble_member_model(
     )
 
     # Wrap encoder with LoRA adapters (init seeded by current RNG state)
+    per_stage_raw = config.lora.get("per_stage_module_types", None)
+    per_stage_overrides = None
+    if per_stage_raw is not None:
+        per_stage_overrides = {int(k): list(v) for k, v in per_stage_raw.items()}
+
     lora_encoder = LoRASwinViT(
         full_model,
         rank=config.lora.rank,
@@ -91,6 +96,7 @@ def create_ensemble_member_model(
         dropout=config.lora.dropout,
         target_stages=list(config.lora.target_stages),
         target_module_types=list(config.lora.get("target_module_types", ["qkv"])),
+        per_stage_module_types=per_stage_overrides,
         use_dora=config.lora.get("use_dora", False),
     )
 

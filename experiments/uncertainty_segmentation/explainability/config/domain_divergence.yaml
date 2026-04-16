@@ -1,0 +1,50 @@
+# Domain Divergence Analysis — Local Config
+#
+# Quantifies per-stage representation divergence between GLI and MEN domains
+# in the frozen BrainSegFounder encoder, and measures CKA adaptation drift
+# for trained LoRA configurations.
+#
+# Usage:
+#   python -m experiments.uncertainty_segmentation.explainability.run_domain_divergence \
+#       --config experiments/uncertainty_segmentation/config.yaml \
+#       --analysis-config experiments/uncertainty_segmentation/explainability/config/domain_divergence.yaml \
+#       --device cuda:0 --phase all
+#
+# For a quick sanity check on RTX 4060 (<2 min):
+#   ... --smoke-test
+
+paths:
+  # Local results directory (external SSD mount)
+  base_results_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/frozen_decoder/kqv_proj_fc1_fc2
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/domain_divergence
+
+domain_divergence:
+  n_scans_per_domain: 50        # N_GLI and N_MEN for feature extraction
+  roi_size: [192, 192, 192]     # Full resolution for feature extraction
+  stages: [0, 1, 2, 3, 4]      # All 5 encoder stages
+  seed: 42
+  scan_selection: "first"       # Deterministic selection
+  mmd_permutations: 1000
+  bootstrap_ci_samples: 1000
+  decoder_patching: false       # Optional; enable for full analysis
+
+  # LoRA-adapted configs to evaluate for CKA drift.
+  # Each entry points to an existing training run.
+  adapted_configs:
+    - name: "stages234_full"
+      run_dir: "r8_M20_s42_stages234"
+      rank: 8
+      member_id: 0
+    - name: "stages1234_full"
+      run_dir: "r8_M20_s42_stages1234"
+      rank: 8
+      member_id: 0
+
+  # Path to existing DAD CSV for integration into figures (optional).
+  dad_csv_path: null
+
+figure:
+  save_format: "pdf"
+  save_dpi: 300
+  panel_figsize: [14, 10]
+  drift_figsize: [10, 5]

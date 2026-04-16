@@ -1,0 +1,26 @@
+# R5: QKV-Only LoRA at Stage 1 — Negative Control Ablation
+#
+# Merges on top of encoder_only.yaml. Overrides per_stage_module_types
+# so that stage 1 uses only the attention query-key-value adapter (qkv),
+# while stages 2-4 retain the full block (qkv, proj, fc1, fc2).
+#
+# Rationale (negative control):
+#   If domain divergence analysis shows low FSD at stage 1, then the gap
+#   is primarily in feature statistics (magnitude), not attention routing.
+#   QKV-only at stage 1 tests the wrong adaptation type for that gap: it
+#   modifies routing but not feature magnitudes. We predict R5 performs
+#   worse than R4 (MLP-only at s1) and comparable to or worse than the
+#   full stages1234 config — confirming the divergence analysis predicts
+#   optimal module targeting.
+#
+# Expected LoRA parameters at r=8:
+#   R5 (QKV-only s1):   ~148,000 params/member
+#
+# Usage:
+#   config = OmegaConf.merge(base, picasso, encoder_only, encoder_only_picasso, r5)
+
+lora:
+  target_stages: [1, 2, 3, 4]
+  target_module_types: ["qkv", "proj", "fc1", "fc2"]
+  per_stage_module_types:
+    1: ["qkv"]
