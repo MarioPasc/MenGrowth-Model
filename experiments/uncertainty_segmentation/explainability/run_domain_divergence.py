@@ -133,8 +133,12 @@ def phase_extract(
             model, loaded, indices, device, stages=stages,
         )
 
-        # Collect scan IDs for provenance
-        scan_ids = [loaded.all_scan_ids[loaded.test_indices[i]] for i in indices]
+        # Collect scan IDs for provenance.
+        # Use dataset.subject_ids which correctly handles longitudinal
+        # expansion (patient→scan), unlike test_indices which may be
+        # patient-level for longitudinal datasets (e.g. GLI).
+        dataset_ids = loaded.dataset.subject_ids
+        scan_ids = [dataset_ids[i] for i in indices]
 
         save_dict = {f"stage_{s}": features[s] for s in stages}
         save_dict["scan_ids"] = np.array(scan_ids)
@@ -322,8 +326,8 @@ def phase_decoder_patch(
             decoder, men_hs, gli_hs, men_images, device, stages=stages,
         )
 
-        men_sid = men_loaded.all_scan_ids[men_loaded.test_indices[men_idx]]
-        gli_sid = gli_loaded.all_scan_ids[gli_loaded.test_indices[gli_idx]]
+        men_sid = men_loaded.dataset.subject_ids[men_idx]
+        gli_sid = gli_loaded.dataset.subject_ids[gli_idx]
 
         row = {
             "pair_idx": pair_i,
