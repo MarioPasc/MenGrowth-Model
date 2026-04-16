@@ -39,7 +39,7 @@ experiment:
   description: "LoRA encoder-only ablation: frozen decoder + trainable output head (extended targets, stages 1-4)"
 
 lora:
-  target_stages: [2, 3, 4]    # Full SwinViT encoder — closes within-network distribution shift
+  target_stages: [1, 2, 3, 4]    # Full SwinViT encoder — closes within-network distribution shift
   target_module_types:           # Extend beyond qkv-only to the full Swin block:
     - "qkv"                      #   .attn.qkv  — combined Q,K,V projection
     - "proj"                     #   .attn.proj — attention output projection
