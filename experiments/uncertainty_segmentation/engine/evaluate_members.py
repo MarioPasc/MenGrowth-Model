@@ -21,14 +21,12 @@ from omegaconf import DictConfig
 from growth.data.bratsmendata import BraTSDatasetH5
 from growth.data.transforms import get_h5_val_transforms
 from growth.inference.sliding_window import sliding_window_segment
-from growth.losses.segmentation import DiceMetric3Ch
 
 from .ensemble_convergence import (
     compute_ensemble_k_dice,
     compute_threshold_sensitivity,
 )
 from .ensemble_inference import EnsemblePredictor
-from .paths import get_run_dir
 from .save_predictions import (
     _save_3d,
     save_multilabel_mask,
@@ -41,6 +39,9 @@ logger = logging.getLogger(__name__)
 def _convert_seg_to_binary(seg: torch.Tensor, domain: str = "MEN") -> torch.Tensor:
     """Convert integer seg labels to 3-channel binary masks (TC/WT/ET).
 
+    Thin wrapper around :func:`growth.losses.segmentation._convert_single_domain`
+    so the MEN/GLI label mapping lives in a single source of truth.
+
     Args:
         seg: Integer labels [1, D, H, W] with values {0, 1, 2, 3}.
         domain: "MEN" or "GLI".
@@ -48,16 +49,11 @@ def _convert_seg_to_binary(seg: torch.Tensor, domain: str = "MEN") -> torch.Tens
     Returns:
         Binary masks [3, D, H, W].
     """
-    seg = seg.squeeze(0).long()
-    if domain == "MEN":
-        tc = ((seg == 1) | (seg == 2)).float()
-        wt = ((seg == 1) | (seg == 2) | (seg == 3)).float()
-        et = (seg == 1).float()
-    else:
-        tc = ((seg == 1) | (seg == 3)).float()
-        wt = (seg > 0).float()
-        et = (seg == 3).float()
-    return torch.stack([tc, wt, et], dim=0)
+    from growth.losses.segmentation import _convert_single_domain
+
+    seg = seg.squeeze(0).long().unsqueeze(0)  # [1, D, H, W] for the shared helper
+    masks = _convert_single_domain(seg, domain)  # [1, 3, D, H, W]
+    return masks.squeeze(0)  # [3, D, H, W]
 
 
 def _compute_dice_per_channel(
@@ -124,9 +120,7 @@ def evaluate_per_member(
 
     # Load scan IDs from H5 metadata (not from dataset samples — BUG-2 fix)
     with h5py.File(h5_path, "r") as f:
-        all_scan_ids = [
-            s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]
-        ]
+        all_scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
     splits = BraTSDatasetH5.load_splits_from_h5(h5_path)
     test_indices = splits.get(config.data.test_split, np.arange(len(all_scan_ids)))
 
@@ -147,7 +141,8 @@ def evaluate_per_member(
             # Forward pass
             with torch.no_grad():
                 logits = sliding_window_segment(
-                    model, images,
+                    model,
+                    images,
                     roi_size=predictor.sw_roi_size,
                     sw_batch_size=predictor.sw_batch_size,
                     overlap=predictor.sw_overlap,
@@ -175,15 +170,17 @@ def evaluate_per_member(
                     dtype=np.int8,
                 )
 
-            rows.append({
-                "member_id": member_id,
-                "scan_id": sid,
-                "dice_tc": float(dice[0]),
-                "dice_wt": float(dice[1]),
-                "dice_et": float(dice[2]),
-                "dice_mean": float(dice.mean()),
-                "volume_pred": vol_pred,
-            })
+            rows.append(
+                {
+                    "member_id": member_id,
+                    "scan_id": sid,
+                    "dice_tc": float(dice[0]),
+                    "dice_wt": float(dice[1]),
+                    "dice_et": float(dice[2]),
+                    "dice_mean": float(dice.mean()),
+                    "volume_pred": vol_pred,
+                }
+            )
 
         # Free GPU
         del model
@@ -191,10 +188,7 @@ def evaluate_per_member(
         logger.info(f"Member {member_id}: done ({len(dataset)} scans)")
 
     df = pd.DataFrame(rows)
-    logger.info(
-        f"Per-member evaluation: {len(df)} rows "
-        f"({M} members × {len(dataset)} scans)"
-    )
+    logger.info(f"Per-member evaluation: {len(df)} rows ({M} members × {len(dataset)} scans)")
     return df
 
 
@@ -256,26 +250,45 @@ def evaluate_ensemble_per_subject(
 
     # Load scan IDs from H5 metadata (BUG-2 fix)
     with h5py.File(h5_path, "r") as f:
-        all_scan_ids = [
-            s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]
-        ]
+        all_scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
     splits = BraTSDatasetH5.load_splits_from_h5(h5_path)
     test_indices = splits.get(config.data.test_split, np.arange(len(all_scan_ids)))
 
     logger.info(f"Evaluating ensemble on {len(dataset)} test scans")
 
     # Feature flags (evaluated once outside the per-scan loop).
-    save_probs_all = bool(
-        config.inference.get("save_per_member_probs_all", False)
-    ) and predictions_dir is not None
+    save_probs_all = (
+        bool(config.inference.get("save_per_member_probs_all", False))
+        and predictions_dir is not None
+    )
     eval_cfg = config.get("evaluation", {})
     do_ensemble_k = bool(eval_cfg.get("compute_ensemble_k_dice", True))
     do_threshold = bool(eval_cfg.get("compute_threshold_sensitivity", True))
     threshold_grid = [
-        float(t) for t in eval_cfg.get(
+        float(t)
+        for t in eval_cfg.get(
             "threshold_grid",
-            [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
-             0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95],
+            [
+                0.05,
+                0.10,
+                0.15,
+                0.20,
+                0.25,
+                0.30,
+                0.35,
+                0.40,
+                0.45,
+                0.50,
+                0.55,
+                0.60,
+                0.65,
+                0.70,
+                0.75,
+                0.80,
+                0.85,
+                0.90,
+                0.95,
+            ],
         )
     ]
     # Streaming analyses need per-member probs in memory. Enable them
@@ -311,19 +324,22 @@ def evaluate_ensemble_per_subject(
         vol_ensemble = float(ensemble_pred[1].sum().item())
         vol_gt = float(gt_binary[1].sum().item())
 
-        rows.append({
-            "scan_id": sid,
-            "dice_tc": float(dice[0]),
-            "dice_wt": float(dice[1]),
-            "dice_et": float(dice[2]),
-            "dice_mean": float(dice.mean()),
-            "volume_ensemble": vol_ensemble,
-            "volume_gt": vol_gt,
-        })
+        rows.append(
+            {
+                "scan_id": sid,
+                "dice_tc": float(dice[0]),
+                "dice_wt": float(dice[1]),
+                "dice_et": float(dice[2]),
+                "dice_mean": float(dice.mean()),
+                "volume_ensemble": vol_ensemble,
+                "volume_gt": vol_gt,
+            }
+        )
 
         # Save ensemble mask + multi-label + per-member probs for thesis figures.
         if predictions_dir is not None:
             from .save_predictions import save_ensemble_mask
+
             save_ensemble_mask(result.ensemble_mask, predictions_dir, sid)
             save_multilabel_mask(result.mean_probs, predictions_dir, sid)
             if save_probs_all and result.per_member_probs is not None:
@@ -333,13 +349,16 @@ def evaluate_ensemble_per_subject(
         if result.per_member_probs is not None:
             if do_ensemble_k:
                 ek = compute_ensemble_k_dice(
-                    result.per_member_probs, gt_binary,
+                    result.per_member_probs,
+                    gt_binary,
                 )
                 ek.insert(0, "scan_id", sid)
                 ensemble_k_frames.append(ek)
             if do_threshold:
                 ts = compute_threshold_sensitivity(
-                    result.per_member_probs, gt_binary, threshold_grid,
+                    result.per_member_probs,
+                    gt_binary,
+                    threshold_grid,
                 )
                 ts.insert(0, "scan_id", sid)
                 threshold_frames.append(ts)
@@ -367,14 +386,14 @@ def evaluate_ensemble_per_subject(
             # Per-channel files for symmetry with convergence_dice_*.csv.
             for ch in ("wt", "tc", "et"):
                 col = f"dice_{ch}"
-                sub = long_df[["scan_id", "k", col]].rename(
-                    columns={col: "ensemble_dice"}
-                )
+                sub = long_df[["scan_id", "k", col]].rename(columns={col: "ensemble_dice"})
                 sub.to_csv(eval_dir / f"convergence_ensemble_dice_{ch}.csv", index=False)
             logger.info(
                 "Ensemble-of-k Dice written to %s/convergence_ensemble_dice_{wt,tc,et}.csv"
                 " (%d scans × up to k=%d)",
-                eval_dir, long_df["scan_id"].nunique(), int(long_df["k"].max()),
+                eval_dir,
+                long_df["scan_id"].nunique(),
+                int(long_df["k"].max()),
             )
         if threshold_frames:
             tdf = pd.concat(threshold_frames, ignore_index=True)
@@ -382,7 +401,9 @@ def evaluate_ensemble_per_subject(
             logger.info(
                 "Threshold-sensitivity written to %s/threshold_sensitivity.csv"
                 " (%d rows across %d scans, %d thresholds)",
-                eval_dir, len(tdf), tdf["scan_id"].nunique(),
+                eval_dir,
+                len(tdf),
+                tdf["scan_id"].nunique(),
                 tdf["threshold"].nunique(),
             )
 

@@ -105,12 +105,16 @@ def save_multilabel_mask(
 
     Converts 3-channel sigmoid probabilities (TC/WT/ET) to integer labels:
         0 = Background
-        1 = NCR/NET (in TC but not ET)
-        2 = ED (in WT but not TC)
+        1 = NCR/NET (in TC but not ET) — only produced for GLI predictions
+        2 = ED / SNFH (in WT but not TC)
         3 = ET (enhancing tumor)
 
     This is the inverse of the TC/WT/ET → integer label mapping used during
-    training. Matches BraTS submission format for clinical review.
+    training. For MEN-trained models the TC channel is held empty (BSF natively
+    models 2 tumor labels for meningioma; NETC is **merged into ET** during
+    training — see ``growth.losses.segmentation._convert_single_domain``), so
+    the output mask contains only labels {0, 2=SNFH, 3=merged_ET}: label 1 is
+    never produced and the entire solid meningioma mass appears as label 3.
 
     Args:
         probs: Sigmoid probabilities [3, D, H, W] (TC=ch0, WT=ch1, ET=ch2).
@@ -131,9 +135,9 @@ def save_multilabel_mask(
 
     # Convert to BraTS integer labels
     seg = torch.zeros_like(probs[0], dtype=torch.int8)
-    seg[wt & ~tc] = 2         # ED: in WT but not TC
-    seg[tc & ~et] = 1         # NCR/NET: in TC but not ET
-    seg[et] = 3               # ET: enhancing
+    seg[wt & ~tc] = 2  # ED: in WT but not TC
+    seg[tc & ~et] = 1  # NCR/NET: in TC but not ET
+    seg[et] = 3  # ET: enhancing
 
     out_path = scan_dir / filename
     nib.save(

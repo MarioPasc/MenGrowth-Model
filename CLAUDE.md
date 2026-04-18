@@ -53,7 +53,7 @@ VARIANCE DECOMPOSITION:
 | 1 | H5 trajectory loader | COMPLETE | stage1_volumetric/trajectory_loader.py |
 | 1 | Stage 1 orchestrator | COMPLETE | experiments/stage1_volumetric/run_stage1.py |
 | 1 | Stage 1 tests | COMPLETE | tests/growth/test_stage1_pipeline.py (33 tests) |
-| 1 | **Stage 1 LOPO-CV** | **EVALUATED** | LME R²=0.387 (BSF-adapted best), R²=0.028 (manual) |
+| 1 | **Stage 1 LOPO-CV** | **EVALUATED** | LME R²=0.387 (BSF-adapted best), R²=0.028 (manual). Numbers used WT volume; needs re-run with ET-only target after BraTS-MEN label fix (2026-04-18). |
 | 1 | Segmentation comparison | **EVALUATED** | 4 sources × 3 models, decoder-adapted wins |
 | 2 | Quantile transform | COMPLETE | stage2_severity/quantile_transform.py |
 | 2 | Severity model (MLE) | COMPLETE | stage2_severity/severity_model.py |

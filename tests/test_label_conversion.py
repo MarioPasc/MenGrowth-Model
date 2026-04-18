@@ -46,7 +46,13 @@ class TestConvertSingleDomain:
         assert tc[4] == 1 and wt[4] == 1 and et[4] == 0
 
     def test_men_labels(self) -> None:
-        """MEN: 1=ET, 2=NET, 3=Cyst → TC=(1|2), WT=(1|2|3), ET=(1)."""
+        """MEN: 1=NETC (merged into ET), 2=SNFH (edema), 3=ET → TC=empty, WT=(1|2|3), ET=(1|3).
+
+        BSF effectively models 2 tissues for meningioma (SNFH + ET); NETC is
+        part of the solid meningioma mass and is **merged into the ET target**
+        during the BraTS→BSF translation. The TC sigmoid channel has no
+        analogue in this 2-label space and is left empty (target = zeros).
+        """
         seg = torch.tensor([[[[0, 1, 2, 3]]]])  # [1, 1, 1, 4]
         seg = seg.squeeze(1)  # [1, 1, 4]
         result = _convert_single_domain(seg, "MEN")  # [1, 3, 1, 4]
@@ -57,12 +63,14 @@ class TestConvertSingleDomain:
 
         # bg=0: all zero
         assert tc[0] == 0 and wt[0] == 0 and et[0] == 0
-        # ET=1: TC=1, WT=1, ET=1
-        assert tc[1] == 1 and wt[1] == 1 and et[1] == 1
-        # NET=2: TC=1, WT=1, ET=0
-        assert tc[2] == 1 and wt[2] == 1 and et[2] == 0
-        # Cyst=3: TC=0, WT=1, ET=0
-        assert tc[3] == 0 and wt[3] == 1 and et[3] == 0
+        # NETC=1: TC=0 (always empty), WT=1 (in tumor), ET=1 (merged into ET)
+        assert tc[1] == 0 and wt[1] == 1 and et[1] == 1
+        # SNFH=2: TC=0, WT=1 (in tumor), ET=0 (edema is not part of the mass)
+        assert tc[2] == 0 and wt[2] == 1 and et[2] == 0
+        # ET=3: TC=0, WT=1 (in tumor), ET=1 (the original enhancing tumor)
+        assert tc[3] == 0 and wt[3] == 1 and et[3] == 1
+        # Strong assertion: TC channel must be entirely empty for MEN
+        assert tc.sum().item() == 0, "MEN TC channel must always be all zeros"
 
     def test_all_background(self) -> None:
         """All background labels should produce all-zero masks."""

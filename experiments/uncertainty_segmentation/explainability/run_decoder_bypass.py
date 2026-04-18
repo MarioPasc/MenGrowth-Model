@@ -60,12 +60,17 @@ OUTPUT_DIR = Path(
 
 
 def _convert_seg_to_binary(seg: torch.Tensor) -> torch.Tensor:
-    """Convert MEN integer labels to 3-channel binary masks (TC/WT/ET)."""
-    seg = seg.squeeze(0).long()
-    tc = ((seg == 1) | (seg == 2)).float()
-    wt = ((seg == 1) | (seg == 2) | (seg == 3)).float()
-    et = (seg == 1).float()
-    return torch.stack([tc, wt, et], dim=0)
+    """Convert MEN integer labels to 3-channel binary masks (TC/WT/ET).
+
+    Delegates to :func:`growth.losses.segmentation._convert_single_domain` so
+    the MEN label mapping ({1=NETC, 2=SNFH, 3=ET} → TC=(1|3), WT=(>0), ET=(3))
+    lives in a single source of truth.
+    """
+    from growth.losses.segmentation import _convert_single_domain
+
+    seg = seg.squeeze(0).long().unsqueeze(0)  # [1, D, H, W] for the shared helper
+    masks = _convert_single_domain(seg, "MEN")  # [1, 3, D, H, W]
+    return masks.squeeze(0)  # [3, D, H, W]
 
 
 def _compute_dice(pred: torch.Tensor, target: torch.Tensor, smooth: float = 1e-5) -> torch.Tensor:
@@ -122,17 +127,23 @@ def load_condition_a(
         LoRAOriginalDecoderModel in eval mode.
     """
     full_model = load_full_swinunetr(
-        ckpt_path, freeze_encoder=True, freeze_decoder=True,
-        out_channels=3, device="cpu",
+        ckpt_path,
+        freeze_encoder=True,
+        freeze_decoder=True,
+        out_channels=3,
+        device="cpu",
     )
     lora_encoder = LoRASwinViT.load_lora(
         base_encoder=full_model,
         adapter_path=str(member_dir / "adapter"),
-        device="cpu", trainable=False,
+        device="cpu",
+        trainable=False,
     )
     model = LoRAOriginalDecoderModel(
-        lora_encoder=lora_encoder, freeze_decoder=True,
-        out_channels=3, use_semantic_heads=False,
+        lora_encoder=lora_encoder,
+        freeze_decoder=True,
+        out_channels=3,
+        use_semantic_heads=False,
     )
     decoder_state = torch.load(member_dir / "decoder.pt", map_location="cpu", weights_only=True)
     model.decoder.load_state_dict(decoder_state)
@@ -160,8 +171,11 @@ def load_condition_b(
     """
     # Fresh base model (no LoRA ever applied)
     base_model = load_full_swinunetr(
-        ckpt_path, freeze_encoder=True, freeze_decoder=True,
-        out_channels=3, device="cpu",
+        ckpt_path,
+        freeze_encoder=True,
+        freeze_decoder=True,
+        out_channels=3,
+        device="cpu",
     )
     # Create decoder wrapper and load trained weights
     decoder_wrapper = OriginalDecoderWrapper(base_model, freeze_decoder=True)
@@ -188,8 +202,11 @@ def load_condition_c(
         SwinUNETR in eval mode.
     """
     model = load_full_swinunetr(
-        ckpt_path, freeze_encoder=True, freeze_decoder=True,
-        out_channels=3, device=device,
+        ckpt_path,
+        freeze_encoder=True,
+        freeze_decoder=True,
+        out_channels=3,
+        device=device,
     )
     return model.eval()
 
@@ -236,7 +253,8 @@ def evaluate_condition(
 
         with torch.amp.autocast("cuda", enabled=(device != "cpu")):
             logits = sliding_window_segment(
-                model, images,
+                model,
+                images,
                 roi_size=sw_roi_size,
                 sw_batch_size=sw_batch_size,
                 overlap=0.5,
@@ -250,18 +268,20 @@ def evaluate_condition(
 
         elapsed = time.time() - t0
 
-        rows.append({
-            "scan_id": sid,
-            "condition": condition,
-            "dice_tc": dice[0].item(),
-            "dice_wt": dice[1].item(),
-            "dice_et": dice[2].item(),
-            "dice_mean": dice.mean().item(),
-        })
+        rows.append(
+            {
+                "scan_id": sid,
+                "condition": condition,
+                "dice_tc": dice[0].item(),
+                "dice_wt": dice[1].item(),
+                "dice_et": dice[2].item(),
+                "dice_mean": dice.mean().item(),
+            }
+        )
 
         if (i + 1) % 10 == 0 or i == 0 or i == n - 1:
             logger.info(
-                f"  [{condition}] {i+1}/{n} ({sid}): "
+                f"  [{condition}] {i + 1}/{n} ({sid}): "
                 f"TC={dice[0]:.3f} WT={dice[1]:.3f} ET={dice[2]:.3f} "
                 f"({elapsed:.1f}s)"
             )
@@ -349,18 +369,25 @@ def print_results(stats: dict) -> None:
     """Print a clear results table for one rank."""
     rank = stats["rank"]
     logger.info("")
-    logger.info(f"{'='*70}")
+    logger.info(f"{'=' * 70}")
     logger.info(f"DECODER BYPASS TEST — rank={rank}")
-    logger.info(f"{'='*70}")
+    logger.info(f"{'=' * 70}")
 
-    for ch_label, ch_key in [("TC", "dice_tc"), ("WT", "dice_wt"), ("ET", "dice_et"), ("Mean", "dice_mean")]:
+    for ch_label, ch_key in [
+        ("TC", "dice_tc"),
+        ("WT", "dice_wt"),
+        ("ET", "dice_et"),
+        ("Mean", "dice_mean"),
+    ]:
         s = stats[ch_key]
         logger.info(f"\n  {ch_label} Dice (N={s['n_scans']} scans):")
         logger.info(f"    Condition A (LoRA + decoder):  {s['mean_A']:.4f}")
         logger.info(f"    Condition B (no LoRA + decoder): {s['mean_B']:.4f}")
         logger.info(f"    Condition C (baseline):         {s['mean_C']:.4f}")
-        logger.info(f"    ---")
-        logger.info(f"    Δ(A-B) bypass:  {s['delta_AB']:+.4f} ± {s['delta_AB_sd']:.4f}  p={s['p_AB']:.2e}")
+        logger.info("    ---")
+        logger.info(
+            f"    Δ(A-B) bypass:  {s['delta_AB']:+.4f} ± {s['delta_AB_sd']:.4f}  p={s['p_AB']:.2e}"
+        )
         logger.info(f"    Δ(A-C) total:   {s['delta_AC']:+.4f}  p={s['p_AC']:.2e}")
         logger.info(f"    Δ(B-C) decoder: {s['delta_BC']:+.4f}  p={s['p_BC']:.2e}")
 
@@ -376,16 +403,18 @@ def print_results(stats: dict) -> None:
         decoder_pct = (decoder_gain / total_gain * 100) if total_gain > 0 else 0
         logger.info(f"    Total improvement (A-C): {total_gain:+.4f}")
         logger.info(f"    LoRA contribution (A-B): {lora_gain:+.4f} ({lora_pct:.1f}% of total)")
-        logger.info(f"    Decoder contribution (B-C): {decoder_gain:+.4f} ({decoder_pct:.1f}% of total)")
+        logger.info(
+            f"    Decoder contribution (B-C): {decoder_gain:+.4f} ({decoder_pct:.1f}% of total)"
+        )
 
         if s["p_AB"] < 0.05:
             logger.info(f"    → LoRA contribution is SIGNIFICANT (p={s['p_AB']:.2e})")
-            logger.info(f"      The decoder co-adapted with LoRA features.")
+            logger.info("      The decoder co-adapted with LoRA features.")
         else:
             logger.info(f"    → LoRA contribution is NOT significant (p={s['p_AB']:.2e})")
-            logger.info(f"      The decoder may bypass LoRA features.")
+            logger.info("      The decoder may bypass LoRA features.")
     else:
-        logger.info(f"    No meaningful improvement over baseline.")
+        logger.info("    No meaningful improvement over baseline.")
 
 
 # -------------------------------------------------------------------------
@@ -402,15 +431,22 @@ def main() -> None:
     parser.add_argument("--member-id", type=int, default=0)
     parser.add_argument("--output-dir", type=str, default=str(OUTPUT_DIR))
     parser.add_argument(
-        "--results-dir", type=str, default=None,
+        "--results-dir",
+        type=str,
+        default=None,
         help="Base dir containing r{rank}_M20_s42 run dirs (default: config output_dir)",
     )
     parser.add_argument(
-        "--roi-size", type=int, nargs=3, default=None,
+        "--roi-size",
+        type=int,
+        nargs=3,
+        default=None,
         help="Override ROI size for transforms (default: from config inference_roi_size)",
     )
     parser.add_argument(
-        "--sw-batch-size", type=int, default=2,
+        "--sw-batch-size",
+        type=int,
+        default=2,
         help="Sliding window batch size (reduce for low VRAM, default: 2)",
     )
     args = parser.parse_args()
@@ -457,9 +493,7 @@ def main() -> None:
         compute_semantic=False,
     )
     with h5py.File(h5_path, "r") as f:
-        all_scan_ids = [
-            s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]
-        ]
+        all_scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
     splits = BraTSDatasetH5.load_splits_from_h5(h5_path)
     test_indices = splits.get(config.data.test_split, np.arange(len(all_scan_ids)))
 
@@ -473,14 +507,20 @@ def main() -> None:
 
     model_c = load_condition_c(ckpt_path, args.device)
     df_c = evaluate_condition(
-        model_c, dataset, all_scan_ids, test_indices,
-        "C_baseline", args.device,
+        model_c,
+        dataset,
+        all_scan_ids,
+        test_indices,
+        "C_baseline",
+        args.device,
         sw_batch_size=sw_batch_size,
     )
     del model_c
     torch.cuda.empty_cache()
     df_c.to_csv(output_dir / "condition_C_baseline.csv", index=False)
-    logger.info(f"  Mean Dice: TC={df_c['dice_tc'].mean():.4f} WT={df_c['dice_wt'].mean():.4f} ET={df_c['dice_et'].mean():.4f}")
+    logger.info(
+        f"  Mean Dice: TC={df_c['dice_tc'].mean():.4f} WT={df_c['dice_wt'].mean():.4f} ET={df_c['dice_et'].mean():.4f}"
+    )
 
     # Run per rank
     all_stats = []
@@ -497,16 +537,20 @@ def main() -> None:
             logger.warning(f"Member dir not found: {member_dir} — skipping rank={rank}")
             continue
 
-        logger.info(f"\n{'='*70}")
+        logger.info(f"\n{'=' * 70}")
         logger.info(f"RANK={rank}: member {args.member_id}")
-        logger.info(f"{'='*70}")
+        logger.info(f"{'=' * 70}")
 
         # Condition A: Full LoRA + trained decoder
         logger.info(f"\nCondition A: LoRA (rank={rank}) + trained decoder")
         model_a = load_condition_a(ckpt_path, member_dir, args.device)
         df_a = evaluate_condition(
-            model_a, dataset, all_scan_ids, test_indices,
-            f"A_lora_r{rank}", args.device,
+            model_a,
+            dataset,
+            all_scan_ids,
+            test_indices,
+            f"A_lora_r{rank}",
+            args.device,
             sw_batch_size=sw_batch_size,
         )
         del model_a
@@ -517,8 +561,12 @@ def main() -> None:
         logger.info(f"\nCondition B: Frozen encoder + trained decoder (r={rank} decoder, NO LoRA)")
         model_b = load_condition_b(ckpt_path, member_dir, args.device)
         df_b = evaluate_condition(
-            model_b, dataset, all_scan_ids, test_indices,
-            f"B_bypass_r{rank}", args.device,
+            model_b,
+            dataset,
+            all_scan_ids,
+            test_indices,
+            f"B_bypass_r{rank}",
+            args.device,
             sw_batch_size=sw_batch_size,
         )
         del model_b
@@ -547,9 +595,9 @@ def main() -> None:
     combined.to_csv(output_dir / "all_conditions.csv", index=False)
 
     # Summary table
-    logger.info(f"\n{'='*70}")
+    logger.info(f"\n{'=' * 70}")
     logger.info("SUMMARY TABLE")
-    logger.info(f"{'='*70}")
+    logger.info(f"{'=' * 70}")
     logger.info(f"{'Condition':<30} {'TC':>8} {'WT':>8} {'ET':>8} {'Mean':>8}")
     logger.info("-" * 70)
 

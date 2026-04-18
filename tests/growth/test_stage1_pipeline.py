@@ -56,20 +56,28 @@ def _create_synthetic_h5(path: str, n_patients: int = 10, seed: int = 42) -> Non
             patient_ids.append(pid)
             timepoint_idx[scan_idx] = j
 
-    # Semantic features: log-volumes with some growth trend
+    # Semantic features: log-volumes with some growth trend.
+    # Column layout (matches src/growth/data/semantic_features.py):
+    #   [log(V_total+1), log(V_NCR+1), log(V_ED+1), log(V_ET+1)]
+    # Stage 1 reads column 3 (V_ET = enhancing-mass volume) as the growth signal.
     semantic_vol = np.zeros((total_scans, 4), dtype=np.float32)
     for i in range(n_patients):
-        base_vol = rng.uniform(5.0, 12.0)  # log(V+1) baseline
+        base_vol = rng.uniform(5.0, 12.0)  # log(V_ET+1) baseline
         growth_rate = rng.uniform(-0.1, 0.5)
 
         for j in range(scans_per_patient[i]):
             idx = offsets[i] + j
-            # Total WT volume (column 0) = base + growth*t + noise
-            semantic_vol[idx, 0] = base_vol + growth_rate * j + rng.normal(0, 0.1)
-            # Sub-region volumes (columns 1-3)
-            semantic_vol[idx, 1] = semantic_vol[idx, 0] * rng.uniform(0.2, 0.5)
-            semantic_vol[idx, 2] = semantic_vol[idx, 0] * rng.uniform(0.3, 0.6)
-            semantic_vol[idx, 3] = semantic_vol[idx, 0] * rng.uniform(0.0, 0.2)
+            # ET volume (column 3) = primary growth signal.
+            semantic_vol[idx, 3] = base_vol + growth_rate * j + rng.normal(0, 0.1)
+            # NETC and SNFH (columns 1, 2): small fractions, realistic for meningioma.
+            semantic_vol[idx, 1] = semantic_vol[idx, 3] * rng.uniform(0.0, 0.05)
+            semantic_vol[idx, 2] = semantic_vol[idx, 3] * rng.uniform(0.1, 0.4)
+            # V_total (column 0) = sum of the parts (in voxel-count space, not log-space,
+            # but the synthetic data only needs to be non-zero and finite — the loader
+            # never reads column 0 anymore).
+            semantic_vol[idx, 0] = (
+                semantic_vol[idx, 1] + semantic_vol[idx, 2] + semantic_vol[idx, 3]
+            )
 
     # Metadata (partial: only first 3 patients have age/sex)
     age = np.full(total_scans, np.nan, dtype=np.float32)
@@ -256,6 +264,101 @@ class TestTrajectoryLoader:
 
         with pytest.raises(FileNotFoundError):
             load_trajectories_from_h5("/nonexistent/path.h5")
+
+    def test_loader_uses_et_volume_column_3(self, tmp_path: Path) -> None:
+        """Loader must read semantic/volume[:, 3] (V_ET), not column 0 (V_total).
+
+        Regression guard for the meningioma label fix: BraTS-MEN labels are
+        {1=NETC, 2=SNFH (edema), 3=ET}, and the clinically tracked endpoint for
+        meningioma growth is the enhancing-tumor volume — column 3 of
+        ``semantic/volume`` (per ``src/growth/data/semantic_features.py``). Loading
+        column 0 would inject SNFH/edema noise into every trajectory.
+        """
+        from growth.stages.stage1_volumetric.trajectory_loader import (
+            _ET_VOL_IDX,
+            load_trajectories_from_h5,
+        )
+
+        # Sanity: the constant itself must point at column 3.
+        assert _ET_VOL_IDX == 3, (
+            f"_ET_VOL_IDX must be 3 (V_ET), got {_ET_VOL_IDX}. "
+            "Reading the wrong column silently switches the growth target."
+        )
+
+        # Build a tiny H5 with sentinel values per-column so the loader's choice
+        # is unambiguous: column 0 = 100 (decoy), column 3 = 7 (the truth).
+        h5_path = tmp_path / "et_index_check.h5"
+        with h5py.File(h5_path, "w") as f:
+            f.attrs["version"] = "2.0"
+            f.attrs["domain"] = "MenGrowth"
+            n_scans = 4
+            f.create_dataset(
+                "scan_ids", data=np.array([f"S-{i}" for i in range(n_scans)], dtype="S20")
+            )
+            f.create_dataset("patient_ids", data=np.array(["P-0001"] * n_scans, dtype="S20"))
+            f.create_dataset("timepoint_idx", data=np.arange(n_scans, dtype=np.int32))
+
+            grp = f.create_group("longitudinal")
+            grp.create_dataset("patient_list", data=np.array(["P-0001"], dtype="S20"))
+            grp.create_dataset("patient_offsets", data=np.array([0, n_scans], dtype=np.int32))
+
+            # Column 0 (decoy) = 100, columns 1/2 = 50, column 3 (V_ET) = 7.
+            vol = np.zeros((n_scans, 4), dtype=np.float32)
+            vol[:, 0] = 100.0
+            vol[:, 1] = 50.0
+            vol[:, 2] = 50.0
+            vol[:, 3] = 7.0
+            sem = f.create_group("semantic")
+            sem.create_dataset("volume", data=vol)
+            sem.create_dataset("location", data=np.full((n_scans, 3), 0.5, dtype=np.float32))
+            sem.create_dataset("shape", data=np.zeros((n_scans, 3), dtype=np.float32))
+
+        trajs = load_trajectories_from_h5(str(h5_path))
+        assert len(trajs) == 1
+        obs = trajs[0].observations.flatten()
+        assert np.allclose(obs, 7.0), (
+            f"Loader returned {obs.tolist()}; expected all 7.0 (V_ET column). "
+            "If you see 100.0 the loader is reading V_total — the bug is back."
+        )
+
+    def test_compute_et_volumes_from_segs_counts_merged_meningioma_mass(
+        self, tmp_path: Path
+    ) -> None:
+        """Helper must count NETC ∪ ET (the merged meningioma mass), excluding edema.
+
+        Under the BSF 2-label translation, NETC and ET both belong to the solid
+        meningioma mass. The helper counts ``(seg == 1) | (seg == 3)`` so it
+        returns the meningioma-mass volume regardless of whether the segs are
+        raw BraTS-MEN GT (separate NETC/ET) or post-merge LoRA predictions
+        (label 3 already merged).
+        """
+        from growth.stages.stage1_volumetric.trajectory_loader import (
+            compute_et_volumes_from_segs,
+        )
+
+        h5_path = tmp_path / "et_seg_count.h5"
+        with h5py.File(h5_path, "w") as f:
+            f.attrs["version"] = "2.0"
+            f.attrs["domain"] = "MenGrowth"
+            # One patient, two scans. seg shape [N, 1, D, H, W] = [2, 1, 4, 4, 4].
+            seg = np.zeros((2, 1, 4, 4, 4), dtype=np.int8)
+            # Scan 0: 8 voxels of label 3 (ET) + 16 voxels of label 2 (edema, EXCLUDED).
+            seg[0, 0, :2, :2, :2] = 3
+            seg[0, 0, 2:, :2, :2] = 2
+            # Scan 1: 27 voxels of ET (label 3) + 5 voxels of NETC (label 1) → 32 mass voxels.
+            seg[1, 0, :3, :3, :3] = 3
+            seg[1, 0, 3, :, :].flat[:5] = 1
+
+            f.create_dataset("segs", data=seg)
+            grp = f.create_group("longitudinal")
+            grp.create_dataset("patient_list", data=np.array(["P-A"], dtype="S20"))
+            grp.create_dataset("patient_offsets", data=np.array([0, 2], dtype=np.int32))
+
+        result = compute_et_volumes_from_segs(str(h5_path))
+        assert "P-A" in result
+        # Expected log1p of meningioma-mass voxel counts: scan 0 = 8 (ET only),
+        # scan 1 = 27 + 5 = 32 (ET + NETC merged). Edema is excluded.
+        np.testing.assert_allclose(result["P-A"], [np.log1p(8), np.log1p(32)], rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------

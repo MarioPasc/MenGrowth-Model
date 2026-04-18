@@ -5,9 +5,9 @@ import pytest
 import torch
 
 from growth.losses.segmentation import (
-    SegmentationLoss,
     DeepSupervisionLoss,
     DiceMetric,
+    SegmentationLoss,
     create_segmentation_loss,
 )
 
@@ -242,3 +242,128 @@ class TestCreateSegmentationLoss:
         assert isinstance(loss_fn, SegmentationLoss)
         assert loss_fn.lambda_dice == 2.0
         assert loss_fn.lambda_ce == 0.5
+
+
+# =============================================================================
+# Label-convention tests for the 3-channel TC/WT/ET converter (BraTS-MEN ↔ BSF)
+#
+# These guard against a regression of the MEN convention: BraTS-MEN labels are
+# {1=NETC, 2=SNFH (edema), 3=ET (enhancing tumor — main meningioma mass)}, and
+# the BSF 3-channel sigmoid output expects TC=NETC∪ET, WT=all-tumor, ET=label 3.
+# A previous version of the code had this swapped (ET = label 1) which silently
+# broke LoRA training on meningioma data.
+# =============================================================================
+
+
+class TestLabelConversionMEN:
+    """Verify BraTS-MEN label conversion produces correct TC/WT/ET targets.
+
+    BSF effectively only models 2 tissues for meningioma (SNFH + ET); NETC is
+    **merged into ET** during the BraTS→BSF translation (NETC is part of the
+    solid meningioma mass that BSF was never trained to distinguish from ET).
+    The TC sigmoid channel has no analogue in this 2-label space and is left
+    empty (target = zeros) — the model is taught to suppress it.
+    """
+
+    def test_men_branch_labels_match_BSF_two_label_translation(self):
+        """For MEN: TC=empty, WT=(1|2|3), ET=(1|3) — NETC merged into ET."""
+        from growth.losses.segmentation import _convert_single_domain
+
+        # Synthesize a tensor [B=1, D=1, H=1, W=5] containing one of each label.
+        target = torch.tensor([[[[0, 1, 2, 3, 3]]]], dtype=torch.long).squeeze(1)
+
+        masks = _convert_single_domain(target, "MEN")  # [1, 3, 1, 1, 5]
+
+        # TC = empty (BSF has no tumor-core concept for meningioma)
+        assert masks[0, 0].sum().item() == 0, "MEN TC must be entirely empty"
+        # WT = {1, 2, 3} = all tumor = positions 1, 2, 3, 4 → 4 voxels
+        assert masks[0, 1].sum().item() == 4, "MEN WT must be all tumor (1|2|3)"
+        # ET = {1, 3} = merged_ET = positions 1, 3, 4 → 3 voxels
+        assert masks[0, 2].sum().item() == 3, "MEN ET must be NETC ∪ ET (merged)"
+
+        # NETC voxels must appear in BOTH WT and ET (merged into ET).
+        wt_mask = masks[0, 1].flatten().bool()
+        et_mask = masks[0, 2].flatten().bool()
+        assert wt_mask[1].item(), "WT must include NETC (label 1) — it is tumor"
+        assert et_mask[1].item(), "ET must include NETC (label 1) — merged into ET"
+        # SNFH (label 2) is in WT but NOT in ET (edema is not part of the solid mass).
+        assert wt_mask[2].item(), "WT must include SNFH (label 2)"
+        assert not et_mask[2].item(), "ET must not include SNFH (edema)"
+
+    def test_gli_branch_unchanged(self):
+        """Regression: GLI branch retains TC=(1|3|4), WT=(>0), ET=(3)."""
+        from growth.losses.segmentation import _convert_single_domain
+
+        target = torch.tensor([[[[0, 1, 2, 3, 4]]]], dtype=torch.long).squeeze(1)
+        masks = _convert_single_domain(target, "GLI")
+
+        assert masks[0, 0].sum().item() == 3  # TC = {1, 3, 4}
+        assert masks[0, 1].sum().item() == 4  # WT = {1, 2, 3, 4}
+        assert masks[0, 2].sum().item() == 1  # ET = {3} only
+
+    def test_dice_metric_3ch_men_recognises_merged_ET(self):
+        """Perfect prediction of (NETC ∪ ET) voxels must yield ET Dice ≈ 1.0 on MEN."""
+        from growth.losses.segmentation import DiceMetric3Ch
+
+        # GT: a small spatial volume with label 3 (ET), label 1 (NETC), label 2 (SNFH).
+        D = H = W = 4
+        target = torch.zeros(1, 1, D, H, W, dtype=torch.long)
+        target[0, 0, 1:3, 1:3, 1:3] = 3  # 8 ET voxels
+        target[0, 0, 0, 0, 0] = 1  # 1 NETC voxel — must be predicted as part of ET
+        target[0, 0, 0, 0, 1] = 2  # 1 SNFH voxel (in WT only)
+
+        # Predict ET (channel 2) over both ET region AND the NETC voxel (merged target);
+        # WT (channel 1) covers everything tumor; TC (channel 0) stays empty.
+        logits = -10.0 * torch.ones(1, 3, D, H, W)
+        logits[0, 2, 1:3, 1:3, 1:3] = 10.0  # ET part of merged target
+        logits[0, 2, 0, 0, 0] = 10.0  # NETC voxel — also predicted as ET
+        logits[0, 1, 1:3, 1:3, 1:3] = 10.0  # WT covers ET region
+        logits[0, 1, 0, 0, 0] = 10.0  # WT covers NETC voxel
+        logits[0, 1, 0, 0, 1] = 10.0  # WT covers SNFH voxel
+
+        metric = DiceMetric3Ch()
+        dice = metric(logits, target, domain="MEN")  # [B=1, 3]
+
+        assert dice.shape == (1, 3)
+        # ET (channel 2) ≈ 1.0 — we covered NETC ∪ ET perfectly
+        assert dice[0, 2].item() > 0.99, f"Expected ET Dice ≈ 1.0, got {dice[0, 2].item():.3f}"
+        # WT (channel 1) ≈ 1.0 — we covered all tumor
+        assert dice[0, 1].item() > 0.99, f"Expected WT Dice ≈ 1.0, got {dice[0, 1].item():.3f}"
+        # TC (channel 0) — empty target + empty pred → DiceMetric3Ch returns 1.0 (union==0 path)
+        assert dice[0, 0].item() > 0.99, (
+            f"Expected TC Dice ≈ 1.0 (empty/empty), got {dice[0, 0].item():.3f}"
+        )
+
+    def test_men_tc_channel_is_always_empty(self):
+        """TC target must be all zeros for MEN regardless of input labels."""
+        from growth.losses.segmentation import _convert_single_domain
+
+        target = torch.tensor([0, 1, 2, 3, 3, 1, 2, 3], dtype=torch.long).reshape(1, 8)
+        masks = _convert_single_domain(target, "MEN")
+        assert masks[0, 0].sum().item() == 0, "TC must be empty for any MEN target"
+
+    def test_men_merge_regression_caught(self):
+        """Verify NETC (label 1) is merged into ET, not dropped, not standalone."""
+        from growth.losses.segmentation import _convert_single_domain
+
+        # All-label-1 target — must be marked as ET (merged) AND as WT.
+        target = torch.ones(1, 1, 4, 4, 4, dtype=torch.long).squeeze(1)
+        masks = _convert_single_domain(target, "MEN")
+        n_vox = 4 * 4 * 4
+        assert masks[0, 0].sum().item() == 0, "TC must remain empty even if input is all NETC"
+        assert masks[0, 1].sum().item() == n_vox, "WT must include every NETC voxel (it is tumor)"
+        assert masks[0, 2].sum().item() == n_vox, (
+            "ET must include every NETC voxel (merged into ET)"
+        )
+
+        # All-label-3 target — every voxel is ET (and ET ⊂ WT).
+        target = (3 * torch.ones(1, 1, 4, 4, 4, dtype=torch.long)).squeeze(1)
+        masks = _convert_single_domain(target, "MEN")
+        assert masks[0, 2].sum().item() == n_vox, "ET channel must cover every label-3 voxel"
+        assert masks[0, 1].sum().item() == n_vox, "WT channel must cover every label-3 voxel"
+
+        # All-label-2 target — SNFH is in WT but NOT in ET (edema is not part of solid mass).
+        target = (2 * torch.ones(1, 1, 4, 4, 4, dtype=torch.long)).squeeze(1)
+        masks = _convert_single_domain(target, "MEN")
+        assert masks[0, 1].sum().item() == n_vox, "WT channel must cover SNFH (edema)"
+        assert masks[0, 2].sum().item() == 0, "ET channel must NOT contain SNFH (edema)"

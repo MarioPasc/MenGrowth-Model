@@ -16,13 +16,22 @@ BraTS-GLI Labels (glioma):
 
 BraTS-MEN Labels (meningioma):
     - 0: Background
-    - 1: ET (Enhancing Tumor)
-    - 2: NET (Non-Enhancing Tumor)
-    - 3: Cyst
+    - 1: NETC (Non-Enhancing Tumor Core; merged into ET in BSF translation)
+    - 2: SNFH (Surrounding Non-enhancing FLAIR Hyperintensity = peritumoral edema)
+    - 3: ET (Enhancing Tumor — the dominant solid meningioma mass)
 
 3-channel sigmoid output convention (TC/WT/ET):
-    GLI: TC = (1|3|4), WT = (seg>0), ET = (3)
-    MEN: TC = (1|2),   WT = (1|2|3), ET = (1)
+    GLI: TC = (1|3|4),  WT = (seg>0),   ET = (3)
+    MEN: TC = empty,    WT = (1|2|3),   ET = (1|3)
+
+Why MEN merges NETC into ET: BSF was pretrained with two effective tumor
+labels (SNFH + ET). For meningioma we translate BraTS-MEN's three-label
+scheme into that two-label native space by **merging NETC (label 1) into ET**:
+the meningioma "ET" target therefore covers the entire solid mass (necrotic
++ enhancing), which is what BSF was trained to recognize and what we need
+for downstream volume measurement. The TC sigmoid channel has no analogue
+in this 2-label space and is held empty — the model is taught to suppress it.
+Edema (SNFH = label 2) keeps its own identity inside WT.
 """
 
 import logging
@@ -314,10 +323,17 @@ def _convert_single_domain(target: torch.Tensor, domain: str) -> torch.Tensor:
         Binary masks [B, 3, D, H, W].
     """
     if domain == "MEN":
-        # MEN: 1=ET, 2=NET, 3=Cyst
-        tc = ((target == 1) | (target == 2)).float()
+        # MEN labels: 1=NETC, 2=SNFH (edema), 3=ET.
+        # BSF effectively models 2 tissues for meningioma (SNFH + ET); we
+        # translate BraTS-MEN → BSF native by **merging NETC into ET**
+        # (NETC is part of the solid meningioma mass — BSF was never taught
+        # to distinguish it from ET):
+        #   TC channel: empty (BSF has no tumor-core concept in 2-label space)
+        #   WT channel: all tumor   = (1|2|3) = merged_ET ∪ SNFH
+        #   ET channel: merged_ET   = (1|3)   = the meningioma mass as a whole
+        tc = torch.zeros_like(target, dtype=torch.float32)
         wt = ((target == 1) | (target == 2) | (target == 3)).float()
-        et = (target == 1).float()
+        et = ((target == 1) | (target == 3)).float()
     else:
         # GLI: 1=NETC, 2=SNFH, 3=ET, 4=RC
         tc = ((target == 1) | (target == 3) | (target == 4)).float()
@@ -364,7 +380,9 @@ class SegmentationLoss3Ch(nn.Module):
 
         Domain-aware conversion to [TC, WT, ET]:
             GLI (default): TC = (1|3|4), WT = (seg>0), ET = (3)
-            MEN:           TC = (1|2),   WT = (1|2|3), ET = (1)
+            MEN:           TC = empty,   WT = (1|2|3), ET = (1|3)
+            (For MEN, NETC (label 1) is merged into ET — BSF natively models
+            only SNFH + ET on meningioma. TC channel is left empty.)
 
         Args:
             target: Integer labels [B, 1, D, H, W] or [B, D, H, W].

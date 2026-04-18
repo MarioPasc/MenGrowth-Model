@@ -33,8 +33,14 @@ from growth.shared.growth_models import PatientTrajectory
 
 logger = logging.getLogger(__name__)
 
-# Index into semantic/volume for whole-tumor log-volume
-_WT_VOL_IDX = 0  # column 0 = log(V_total + 1)
+# Index into semantic/volume for the meningioma growth target.
+#
+# semantic/volume columns are [log(V_total+1), log(V_NCR+1), log(V_ED+1), log(V_ET+1)]
+# (see src/growth/data/semantic_features.py). For meningioma we track the
+# enhancing tumor (label 3 in BraTS-MEN = the solid meningioma mass), NOT the
+# whole tumor — peritumoral edema (SNFH) is non-neoplastic and would inject
+# noise into the growth signal.
+_ET_VOL_IDX = 3  # column 3 = log(V_ET + 1) = enhancing-mass volume
 
 
 def load_trajectories_from_h5(
@@ -46,10 +52,13 @@ def load_trajectories_from_h5(
     semantic_covariates: list[str] | None = None,
     skip_all_zero_volume: bool = True,
 ) -> list[PatientTrajectory]:
-    """Load per-patient volume trajectories from MenGrowth H5 file.
+    """Load per-patient enhancing-tumor (ET) volume trajectories from MenGrowth H5.
 
-    Reads ``semantic/volume`` (pre-computed log1p volumes) and the
-    longitudinal index to build ``PatientTrajectory`` objects.
+    Reads ``semantic/volume[:, 3]`` (pre-computed log1p of V_ET) and the
+    longitudinal index to build ``PatientTrajectory`` objects. The ET
+    volume corresponds to label 3 in BraTS-MEN ({1=NETC, 2=SNFH, 3=ET}),
+    i.e. the solid enhancing meningioma mass — the clinically tracked
+    endpoint for meningioma growth.
 
     Args:
         h5_path: Path to MenGrowth H5 file (v2.0 schema).
@@ -64,8 +73,8 @@ def load_trajectories_from_h5(
             covariates from the ``semantic/`` group. Supported:
             ``"sphericity"`` (from ``semantic/shape[:, 0]``). These have
             100% coverage and are always attached.
-        skip_all_zero_volume: If True, skip patients where all WT
-            volumes are zero (empty segmentations at all timepoints).
+        skip_all_zero_volume: If True, skip patients where all ET
+            volumes are zero (empty enhancing tumor at all timepoints).
 
     Returns:
         List of PatientTrajectory sorted by patient_id.
@@ -189,12 +198,12 @@ def load_trajectories_from_h5(
         else:
             times = timepoint_idx[scan_indices].astype(np.float64)
 
-        # WT log-volume (column 0 of semantic/volume)
-        obs = semantic_vol[scan_indices, _WT_VOL_IDX].astype(np.float64)
+        # ET (enhancing-tumor) log-volume — column 3 of semantic/volume.
+        obs = semantic_vol[scan_indices, _ET_VOL_IDX].astype(np.float64)
 
         # Skip patients with all-zero volumes
         if skip_all_zero_volume and np.all(obs == 0.0):
-            logger.debug(f"Skipping {pid}: all WT volumes are zero")
+            logger.debug(f"Skipping {pid}: all ET volumes are zero")
             continue
 
         # Build covariates dict from metadata + semantic features
@@ -289,19 +298,28 @@ def _build_semantic_covariates(
     return covariates if covariates else None
 
 
-def compute_wt_volumes_from_segs(
+def compute_et_volumes_from_segs(
     h5_path: str | Path,
 ) -> dict[str, np.ndarray]:
-    """Compute WT volumes directly from segmentation masks in H5.
+    """Compute meningioma-mass (merged ET) volumes directly from segmentation masks in H5.
 
     Use this as a validation path — computes volumes fresh from the
     ``segs`` dataset instead of relying on pre-computed ``semantic/volume``.
+
+    The "meningioma mass" target follows the BSF 2-label translation: NETC
+    (label 1) is part of the solid mass and is **merged into ET** (label 3).
+    This makes the helper agnostic to whether the input segs are:
+      * Raw BraTS-MEN GT with separate {1=NETC, 3=ET}, or
+      * Predicted segs from the LoRA ensemble (where label 3 already
+        contains the merged mass and label 1 is never produced).
+    In both cases the count `(seg == 1) | (seg == 3)` returns the
+    meningioma-mass voxel count.
 
     Args:
         h5_path: Path to MenGrowth H5 file.
 
     Returns:
-        Dict mapping patient_id to array of log1p(WT_volume) per scan.
+        Dict mapping patient_id to array of log1p(meningioma_mass_volume) per scan.
     """
     h5_path = Path(h5_path)
     result: dict[str, np.ndarray] = {}
@@ -321,8 +339,8 @@ def compute_wt_volumes_from_segs(
             volumes = []
             for idx in range(start, end):
                 seg = segs[idx, 0]  # [D, H, W]
-                wt_count = int(np.sum(seg > 0))
-                volumes.append(np.log1p(float(wt_count)))
+                mass_count = int(np.sum((seg == 1) | (seg == 3)))
+                volumes.append(np.log1p(float(mass_count)))
 
             result[pid] = np.array(volumes)
 

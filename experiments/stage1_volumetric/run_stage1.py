@@ -1,7 +1,8 @@
 # experiments/stage1_volumetric/run_stage1.py
 """Stage 1: Volumetric Baseline — LOPO-CV on manual volume trajectories.
 
-Loads per-patient log(V_WT + 1) trajectories directly from the MenGrowth H5,
+Loads per-patient log(V_ET + 1) trajectories directly from the MenGrowth H5
+(enhancing tumor = label 3 in BraTS-MEN; peritumoral edema is excluded),
 evaluates three growth models (ScalarGP, LME, HGP) plus an optional Gompertz
 ablation under LOPO-CV, and produces bootstrap CIs and per-patient error
 distributions.
