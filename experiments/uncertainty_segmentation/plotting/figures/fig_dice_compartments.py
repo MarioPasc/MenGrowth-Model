@@ -44,8 +44,11 @@ def plot(
         fig = ax.get_figure()
 
     stats = data.statistical_summary
-    compartments = ["tc", "wt", "et"]
-    labels = ["TC", "WT", "ET"]
+    # TC is omitted: for MEN, the TC target is always empty (BSF has no
+    # tumor-core concept in the 2-label meningioma space), so TC Dice is
+    # trivially ~1.0 and carries no information.
+    compartments = ["wt", "et"]
+    labels = ["WT", "ET"]
     x = np.arange(len(compartments))
     width = 0.3
 

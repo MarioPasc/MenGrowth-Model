@@ -9,7 +9,7 @@ Key design decisions:
     - Fresh base model reload per member (PeftModel.from_pretrained mutates base)
     - Welford algorithm for running mean/variance (avoids storing M prob maps)
     - Binary entropy per sigmoid channel (not categorical softmax)
-    - Volume from WT channel (ch1) > 0.5 threshold
+    - Volume from ET channel (ch2) > 0.5 threshold (meningioma mass)
 
 References:
     Welford, B.P. (1962). Note on a Method for Calculating Corrected Sums
@@ -55,8 +55,8 @@ class EnsemblePrediction:
         var_probs: Per-voxel variance across members [C, D, H, W].
         predictive_entropy: Binary entropy of mean probs [C, D, H, W].
         mutual_information: Epistemic uncertainty [C, D, H, W].
-        ensemble_mask: WT binary mask from mean probs [D, H, W].
-        per_member_volumes: Volume (mm³) per ensemble member.
+        ensemble_mask: ET binary mask from mean probs [D, H, W].
+        per_member_volumes: ET volume (mm³) per ensemble member.
         volume_mean: Mean volume across members (mm³).
         volume_std: Std of volume across members (mm³).
         log_volume_mean: Mean of log(V+1) across members.
@@ -67,7 +67,7 @@ class EnsemblePrediction:
         log_volume_mad: MAD of log(V+1).
         n_members: Number of ensemble members used.
         per_member_probs: Per-member probability maps (None unless requested).
-        per_member_masks: Per-member WT masks (None unless requested).
+        per_member_masks: Per-member ET masks (None unless requested).
         inference_time_sec: Total inference time for this scan (seconds).
     """
 
@@ -279,16 +279,18 @@ class EnsemblePredictor:
             h_m = compute_binary_entropy(probs_m)  # [C, D, H, W]
             mean_member_entropy += h_m / M
 
-            # Volume from WT channel (ch1) hard mask
-            wt_mask = probs_m[1] > 0.5
+            # Volume from ET channel (ch2) hard mask — the meningioma mass.
+            # For MEN, ET = merged NETC ∪ ET (labels 1|3); this is the
+            # clinically tracked endpoint for growth prediction.
+            et_mask = probs_m[2] > 0.5
             # Voxel count == mm³ (H5 pre-resampled to 1mm isotropic)
-            vol_m = float(wt_mask.sum().item())
+            vol_m = float(et_mask.sum().item())
             per_member_volumes.append(vol_m)
 
             # Optionally save per-member spatial data on CPU
             if save_per_member:
                 collected_probs.append(probs_m.cpu())
-                collected_masks.append(wt_mask.cpu())
+                collected_masks.append(et_mask.cpu())
 
             # Cleanup GPU memory
             del model, logits, probs_m, h_m, delta, delta2
@@ -301,8 +303,8 @@ class EnsemblePredictor:
         predictive_entropy = compute_binary_entropy(mean_probs)
         mutual_info = compute_mutual_information(predictive_entropy, mean_member_entropy)
 
-        # Ensemble mask from mean probabilities
-        ensemble_mask = mean_probs[1] > 0.5  # WT channel
+        # Ensemble mask from mean probabilities (ET channel = meningioma mass)
+        ensemble_mask = mean_probs[2] > 0.5  # ET channel
 
         # Volume statistics (mean/std)
         log_volumes = [math.log(v + 1) for v in per_member_volumes]

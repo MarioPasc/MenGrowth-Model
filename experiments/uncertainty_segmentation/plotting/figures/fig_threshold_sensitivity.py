@@ -1,6 +1,6 @@
 """Fig: Threshold-sensitivity of Dice per channel.
 
-Three-panel figure (WT, TC, ET). For each channel, shows:
+Two-panel figure (WT, ET). TC omitted (trivially ~1.0 for MEN). For each channel, shows:
 
 * **Per-member Dice vs. threshold**: one light-grey line per ensemble
   member, computed across scans (mean Dice at each threshold). These
@@ -124,11 +124,12 @@ def plot(
         config: Figure-specific config.
         ax: Ignored.
     """
-    figsize = config.get("figsize", [9, 2.8])
-    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    # TC omitted: trivially ~1.0 for MEN (empty target).
+    figsize = config.get("figsize", [7, 2.8])
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
 
     if data.threshold_sensitivity is None or data.threshold_sensitivity.empty:
-        for ax_i, label in zip(axes, ["WT", "TC", "ET"]):
+        for ax_i, label in zip(axes, ["WT", "ET"]):
             ax_i.text(
                 0.5, 0.5, "threshold_sensitivity.csv not found",
                 ha="center", va="center", transform=ax_i.transAxes,
@@ -138,7 +139,7 @@ def plot(
         fig.tight_layout()
         return fig
 
-    for ax_i, ch in zip(axes, ("wt", "tc", "et")):
+    for ax_i, ch in zip(axes, ("wt", "et")):
         agg = _aggregate(data.threshold_sensitivity, ch)
         _plot_one_channel(ax_i, agg, ch.upper())
 

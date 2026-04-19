@@ -151,26 +151,27 @@ def extract_ensemble_volumes(
         row["mean_mi"] = float(result.mutual_information.mean().item())
         row["mean_var"] = float(result.var_probs.mean().item())
 
-        # WT-specific (most relevant for growth prediction)
-        wt_entropy = result.predictive_entropy[1]  # WT channel
-        wt_mi = result.mutual_information[1]
-        row["wt_mean_entropy"] = float(wt_entropy.mean().item())
-        row["wt_mean_mi"] = float(wt_mi.mean().item())
+        # ET-specific uncertainty (most relevant for growth prediction).
+        # ET (ch2) = meningioma mass = the clinically tracked endpoint.
+        et_entropy = result.predictive_entropy[2]  # ET channel
+        et_mi = result.mutual_information[2]
+        row["et_mean_entropy"] = float(et_entropy.mean().item())
+        row["et_mean_mi"] = float(et_mi.mean().item())
 
-        # Boundary uncertainty (entropy at predicted boundary)
+        # Boundary uncertainty (entropy at predicted ET boundary)
         ensemble_mask = result.ensemble_mask
         if ensemble_mask.any():
             # Dilate mask to find boundary region (1-voxel)
             boundary = _find_boundary(ensemble_mask)
             if boundary.any():
-                row["wt_boundary_entropy"] = float(wt_entropy[boundary].mean().item())
-                row["wt_boundary_mi"] = float(wt_mi[boundary].mean().item())
+                row["et_boundary_entropy"] = float(et_entropy[boundary].mean().item())
+                row["et_boundary_mi"] = float(et_mi[boundary].mean().item())
             else:
-                row["wt_boundary_entropy"] = 0.0
-                row["wt_boundary_mi"] = 0.0
+                row["et_boundary_entropy"] = 0.0
+                row["et_boundary_mi"] = 0.0
         else:
-            row["wt_boundary_entropy"] = 0.0
-            row["wt_boundary_mi"] = 0.0
+            row["et_boundary_entropy"] = 0.0
+            row["et_boundary_mi"] = 0.0
 
         # Save predictions to NIfTI if configured
         if predictions_dir is not None:

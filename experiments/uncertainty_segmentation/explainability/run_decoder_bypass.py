@@ -275,7 +275,7 @@ def evaluate_condition(
                 "dice_tc": dice[0].item(),
                 "dice_wt": dice[1].item(),
                 "dice_et": dice[2].item(),
-                "dice_mean": dice.mean().item(),
+                "dice_mean": dice[1:].mean().item(),
             }
         )
 

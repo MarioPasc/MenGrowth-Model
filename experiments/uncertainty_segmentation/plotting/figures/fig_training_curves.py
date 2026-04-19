@@ -65,9 +65,9 @@ def plot(
     ax_loss.set_title("a) Training loss", loc="left", fontweight="bold")
 
     # --- Panel B: Validation Dice ---
+    # TC omitted: trivially ~1.0 for MEN (empty target).
     for col, color, lw, ls, label in [
         ("val_dice_wt", C_ENSEMBLE, 1.2, "-", "WT"),
-        ("val_dice_tc", C_BEST, 1.0, "--", "TC"),
         ("val_dice_et", C_DELTA_NEG, 1.0, ":", "ET"),
     ]:
         mean_col = f"{col}_mean"

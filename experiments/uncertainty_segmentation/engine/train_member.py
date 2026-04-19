@@ -206,7 +206,7 @@ def validate(
         use_amp: Whether to use bf16 autocast.
 
     Returns:
-        Dict with loss, dice_mean, dice_tc, dice_wt, dice_et.
+        Dict with loss, dice_mean (WT+ET only), dice_tc, dice_wt, dice_et.
     """
     model.eval()
     total_loss = 0.0
@@ -252,7 +252,7 @@ def validate(
 
     return {
         "loss": avg_loss,
-        "dice_mean": dice_tensor.mean().item(),
+        "dice_mean": dice_tensor[1:].mean().item(),
         "dice_tc": dice_tensor[0].item(),
         "dice_wt": dice_tensor[1].item(),
         "dice_et": dice_tensor[2].item(),

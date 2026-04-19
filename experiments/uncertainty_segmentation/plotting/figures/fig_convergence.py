@@ -123,25 +123,28 @@ def plot(
     config: dict,
     ax: matplotlib.axes.Axes | None = None,
 ) -> matplotlib.figure.Figure:
-    """Generate the three-panel convergence figure.
+    """Generate the two-panel convergence figure (WT + ET).
+
+    TC is omitted: for MEN, the TC target is always empty (BSF has no
+    tumor-core concept in the 2-label meningioma space), so TC Dice is
+    trivially ~1.0 and convergence analysis is uninformative.
 
     Args:
         data: All loaded experiment data. If
             ``data.ensemble_k_convergence`` is ``None``, the figure
             falls back to the sample-mean curve only.
         config: Figure-specific config from config.yaml.
-        ax: Ignored (three-panel figure creates its own axes).
+        ax: Ignored (multi-panel figure creates its own axes).
 
     Returns:
         The Figure object.
     """
-    figsize = config.get("figsize", [9, 2.8])
+    figsize = config.get("figsize", [7, 2.8])
     show_theoretical = config.get("show_theoretical", True)
-    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
 
     sample_mean_sources = [
         ("wt", data.convergence_wt, "Dice (WT)"),
-        ("tc", data.convergence_tc, "Dice (TC)"),
         ("et", data.convergence_et, "Dice (ET)"),
     ]
     ek = getattr(data, "ensemble_k_convergence", None)

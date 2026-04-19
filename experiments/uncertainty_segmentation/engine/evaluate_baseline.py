@@ -124,16 +124,16 @@ def evaluate_baseline(
         gt_binary = _convert_seg_to_binary(seg_gt, domain="MEN")
         dice = _compute_dice_per_channel(pred_binary, gt_binary)
 
-        # Voxel count == mm³ (H5 pre-resampled to 1mm isotropic)
-        vol_pred = float(pred_binary[1].sum().item())
-        vol_gt = float(gt_binary[1].sum().item())
+        # ET volume (ch2) = meningioma mass — the growth target
+        vol_pred = float(pred_binary[2].sum().item())
+        vol_gt = float(gt_binary[2].sum().item())
 
         rows.append({
             "scan_id": sid,
             "dice_tc": float(dice[0]),
             "dice_wt": float(dice[1]),
             "dice_et": float(dice[2]),
-            "dice_mean": float(dice.mean()),
+            "dice_mean": float(dice[1:].mean()),
             "volume_baseline": vol_pred,
             "volume_gt": vol_gt,
         })

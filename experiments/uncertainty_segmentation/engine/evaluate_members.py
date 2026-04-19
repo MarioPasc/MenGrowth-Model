@@ -157,15 +157,15 @@ def evaluate_per_member(
             # Dice
             dice = _compute_dice_per_channel(pred_binary, gt_binary)
 
-            # Voxel count == mm³ (H5 pre-resampled to 1mm isotropic)
-            vol_pred = float(pred_binary[1].sum().item())
+            # ET volume (ch2) = meningioma mass — the growth target
+            vol_pred = float(pred_binary[2].sum().item())
 
-            # Save per-member mask for BraTS-MEN test (thesis figures)
+            # Save per-member ET mask for BraTS-MEN test (thesis figures)
             if predictions_dir is not None:
                 scan_dir = predictions_dir / sid
                 scan_dir.mkdir(parents=True, exist_ok=True)
                 _save_3d(
-                    pred_binary[1],
+                    pred_binary[2],
                     scan_dir / f"member_{member_id}_mask.nii.gz",
                     dtype=np.int8,
                 )
@@ -177,7 +177,7 @@ def evaluate_per_member(
                     "dice_tc": float(dice[0]),
                     "dice_wt": float(dice[1]),
                     "dice_et": float(dice[2]),
-                    "dice_mean": float(dice.mean()),
+                    "dice_mean": float(dice[1:].mean()),
                     "volume_pred": vol_pred,
                 }
             )
@@ -320,9 +320,9 @@ def evaluate_ensemble_per_subject(
         gt_binary = _convert_seg_to_binary(seg_gt, domain="MEN")
         dice = _compute_dice_per_channel(ensemble_pred, gt_binary)
 
-        # Volumes
-        vol_ensemble = float(ensemble_pred[1].sum().item())
-        vol_gt = float(gt_binary[1].sum().item())
+        # ET volumes (ch2) = meningioma mass — the growth target
+        vol_ensemble = float(ensemble_pred[2].sum().item())
+        vol_gt = float(gt_binary[2].sum().item())
 
         rows.append(
             {
@@ -330,7 +330,7 @@ def evaluate_ensemble_per_subject(
                 "dice_tc": float(dice[0]),
                 "dice_wt": float(dice[1]),
                 "dice_et": float(dice[2]),
-                "dice_mean": float(dice.mean()),
+                "dice_mean": float(dice[1:].mean()),
                 "volume_ensemble": vol_ensemble,
                 "volume_gt": vol_gt,
             }

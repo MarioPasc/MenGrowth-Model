@@ -55,8 +55,9 @@ def plot(
     v_mean = vol["vol_mean"].values.astype(float)
     v_std = vol["vol_std"].values.astype(float)
 
-    # Color by wt_mean_entropy (use fallback if column has NaN/empty)
-    entropy_col = "wt_mean_entropy"
+    # Color by ET mean entropy (use fallback if column has NaN/empty).
+    # Legacy CSVs may use "wt_mean_entropy"; new runs use "et_mean_entropy".
+    entropy_col = "et_mean_entropy" if "et_mean_entropy" in vol.columns else "wt_mean_entropy"
     if entropy_col in vol.columns:
         entropy = vol[entropy_col].values.astype(float)
         valid_mask = np.isfinite(entropy) & (v_mean > 0) & (v_std > 0)
