@@ -44,6 +44,7 @@ FIGURE_NAMES = {
     "fig_calibration": "fig06_calibration",
     "fig_best_worst": "fig07_best_worst",
     "fig_dice_compartments": "fig08_dice_compartments",
+    "fig_violin_regions": "fig08b_violin_regions",
     "fig_inter_member_agreement": "fig09_inter_member_agreement",
     "fig_volume_bland_altman": "fig10_volume_bland_altman",
     "fig_volume_trajectories": "fig11_volume_trajectories",

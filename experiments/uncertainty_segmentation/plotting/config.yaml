@@ -40,7 +40,7 @@ figures:
     figsize: [4.5, 3.5]
   convergence:
     enabled: true
-    figsize: [9, 2.8]
+    figsize: [9, 3.5]
     show_theoretical: true    # 1/sqrt(k) overlay
   calibration:
     enabled: true
@@ -53,6 +53,9 @@ figures:
   dice_compartments:
     enabled: true
     figsize: [4.5, 3]
+  violin_regions:
+    enabled: true
+    figsize: [6, 4]
   inter_member_agreement:
     enabled: true
     figsize: [5, 4.5]
@@ -61,9 +64,8 @@ figures:
     figsize: [4.5, 4]
   volume_trajectories:
     enabled: true
-    figsize: [7, 5]
-    n_patients: 6             # Number of patients to show (2x3 grid)
-    patient_selection: "diverse"  # "diverse" | "first" | explicit list
+    figsize: [7, 4]
+    color_metric: "vol_std"   # Column for trajectory coloring: vol_std | mean_var
   volume_uncertainty:
     enabled: true
     figsize: [4.5, 3.5]

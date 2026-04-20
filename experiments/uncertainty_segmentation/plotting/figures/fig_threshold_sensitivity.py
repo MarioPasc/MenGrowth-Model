@@ -108,40 +108,12 @@ def _plot_one_channel(
 
     ax.set_xlabel(r"Binarization threshold $\tau$")
     ax.set_ylabel(f"Dice ({channel_label})")
-    ax.set_title(channel_label, fontweight="bold")
-    ax.legend(frameon=False, fontsize=7, loc="best")
 
 
 def plot(
     data: EnsembleResultsData,
     config: dict,
     ax: matplotlib.axes.Axes | None = None,
-) -> matplotlib.figure.Figure:
-    """Generate the three-panel threshold-sensitivity figure.
-
-    Args:
-        data: Experiment data; uses ``data.threshold_sensitivity``.
-        config: Figure-specific config.
-        ax: Ignored.
-    """
-    # TC omitted: trivially ~1.0 for MEN (empty target).
-    figsize = config.get("figsize", [7, 2.8])
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
-
-    if data.threshold_sensitivity is None or data.threshold_sensitivity.empty:
-        for ax_i, label in zip(axes, ["WT", "ET"]):
-            ax_i.text(
-                0.5, 0.5, "threshold_sensitivity.csv not found",
-                ha="center", va="center", transform=ax_i.transAxes,
-                fontsize=9, color="grey",
-            )
-            ax_i.set_title(label, fontweight="bold")
-        fig.tight_layout()
-        return fig
-
-    for ax_i, ch in zip(axes, ("wt", "et")):
-        agg = _aggregate(data.threshold_sensitivity, ch)
-        _plot_one_channel(ax_i, agg, ch.upper())
-
-    fig.tight_layout()
-    return fig
+) -> matplotlib.figure.Figure | None:
+    """Merged into fig_convergence (combined 1×2 figure). Returns None."""
+    return None
