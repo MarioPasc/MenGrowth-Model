@@ -12,6 +12,14 @@
 #   bash experiments/uncertainty_segmentation/slurm/launch.sh              # r=8 (default)
 #   bash experiments/uncertainty_segmentation/slurm/launch.sh --rank 4     # r=4 ablation
 #   bash experiments/uncertainty_segmentation/slurm/launch.sh --rank 16    # r=16 ablation
+#
+# Default regime (2026-04-22): encoder-only LoRA adaptation.
+#   - LoRA on stages [1,2,3,4] with target types (qkv, proj, fc1, fc2).
+#   - Decoder frozen; only LoRA adapters + output head (48->3 Conv3d) trainable.
+# This is now baked into config.yaml and config/picasso/config_picasso.yaml,
+# so the configuration is identical across all rank overrides.
+# The historical `--encoder-only` flag is accepted for backward compatibility
+# but is a no-op (the behaviour it used to enable is now the default).
 # =============================================================================
 
 set -euo pipefail
@@ -38,7 +46,6 @@ PICASSO_OVERRIDE="${MODULE_DIR}/config/picasso/config_picasso.yaml"
 
 # Parse arguments
 RANK_OVERRIDE=""
-ENCODER_ONLY=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --rank)
@@ -46,7 +53,10 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --encoder-only)
-            ENCODER_ONLY=1
+            # Deprecated: encoder-only is now the default, baked into
+            # config.yaml + config_picasso.yaml. Accept the flag silently
+            # so pre-existing invocations keep working.
+            echo "[WARN] --encoder-only is deprecated (now the default); flag ignored."
             shift
             ;;
         *)
@@ -66,20 +76,7 @@ if [ -n "${RANK_OVERRIDE}" ]; then
     fi
 fi
 
-# Resolve encoder-only config (optional fourth merge layer)
-ENCODER_ONLY_PATH=""
-ENCODER_ONLY_PICASSO_PATH=""
-if [ "${ENCODER_ONLY}" -eq 1 ]; then
-    ENCODER_ONLY_PATH="${MODULE_DIR}/config/encoder_only.yaml"
-    ENCODER_ONLY_PICASSO_PATH="${MODULE_DIR}/config/picasso/config_encoder_only_picasso.yaml"
-    if [ ! -f "${ENCODER_ONLY_PATH}" ]; then
-        echo "[FAIL] Encoder-only config not found: ${ENCODER_ONLY_PATH}"
-        exit 1
-    fi
-    echo "  Mode: ENCODER-ONLY (frozen decoder + trainable output head)"
-fi
-
-echo "Configuration:"
+echo "Configuration (encoder-only default: frozen decoder + trainable output head):"
 echo "  Repo:        ${REPO_SRC}"
 echo "  Base config: ${BASE_CONFIG}"
 echo "  Override:    ${PICASSO_OVERRIDE}"
@@ -110,8 +107,6 @@ import os, sys, pathlib
 base_path = '${BASE_CONFIG}'
 override_path = '${PICASSO_OVERRIDE}'
 rank_override_path = '${RANK_OVERRIDE_PATH}'
-encoder_only_path = '${ENCODER_ONLY_PATH}'
-encoder_only_picasso_path = '${ENCODER_ONLY_PICASSO_PATH}'
 
 if not os.path.exists(base_path):
     print(f'FAIL Base config not found: {base_path}')
@@ -131,15 +126,7 @@ if rank_override_path and os.path.exists(rank_override_path):
     cfg = OmegaConf.merge(cfg, rank_override)
     print(f'[config] Applied rank override: r={cfg.lora.rank}, alpha={cfg.lora.alpha}')
 
-# Apply encoder-only override (optional fourth layer)
-if encoder_only_path and os.path.exists(encoder_only_path):
-    eo = OmegaConf.load(encoder_only_path)
-    cfg = OmegaConf.merge(cfg, eo)
-    print(f'[config] Applied encoder-only: stages={list(cfg.lora.target_stages)}, freeze_decoder={cfg.training.freeze_decoder}')
-if encoder_only_picasso_path and os.path.exists(encoder_only_picasso_path):
-    eop = OmegaConf.load(encoder_only_picasso_path)
-    cfg = OmegaConf.merge(cfg, eop)
-    print('[config] Applied encoder-only picasso path override')
+print(f'[config] Effective LoRA: stages={list(cfg.lora.target_stages)}, types={list(cfg.lora.target_module_types)}, rank={cfg.lora.rank}, freeze_decoder={cfg.training.freeze_decoder}, train_output_head={cfg.training.get(\"train_output_head\", False)}')
 
 r = cfg.lora.rank
 M = cfg.ensemble.n_members

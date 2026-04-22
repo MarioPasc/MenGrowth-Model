@@ -1,55 +1,18 @@
-# Encoder-Only LoRA — Decoder Bypass Ablation
+# DEPRECATED (2026-04-22) — kept only for backward compatibility.
 #
-# Merges on top of base config.yaml. Key differences:
-#   - LoRA targets stages 1, 2, 3, 4 (the full SwinViT encoder)
-#   - LoRA adapts qkv, proj, fc1, fc2 (the full Swin block, not just qkv)
-#   - Decoder is FROZEN — only LoRA + output head trainable
-#   - Tests whether encoder adaptation alone bridges GLI→MEN domain gap
+# The encoder-only regime (frozen decoder + trainable output head, LoRA on
+# stages [1,2,3,4] with target types qkv+proj+fc1+fc2) is now the DEFAULT
+# configuration, baked into:
+#   - experiments/uncertainty_segmentation/config.yaml
+#   - experiments/uncertainty_segmentation/config/picasso/config_picasso.yaml
 #
-# Why include stage 4?
-#   Stage 4's input is the modulated output of stage 3 (which IS adapted).
-#   Leaving stage 4 frozen creates a within-network distribution shift: the
-#   frozen layers4 weights expect the OLD (pretrained) feature distribution
-#   from stage 3, but get the NEW (LoRA-modulated) one. Adapting stage 4
-#   closes that gap. Empirically (verify_extended_lora_report.md): adding
-#   stage 4 costs ~6 MB of peak activation memory at spatial=96^3 — stage 4
-#   operates at 4^3 tokens, so storage is negligible — but it doubles the
-#   trainable parameter count because layers4 has dim=768 (the deepest
-#   stage carries the most parameters per block).
+# The slurm launcher no longer applies this file. If you need to re-enable
+# full-decoder training, create a new override that sets:
+#   lora.target_stages: [3, 4]
+#   lora.target_module_types: ["qkv"]
+#   training.freeze_decoder: false
+#   training.train_output_head: false
+# and merge it on top via an explicit launcher argument.
 #
-# Trainable parameters per ensemble member (extended types, stages [1,2,3,4]):
-#   r=2  ->  46,080         r=8  ->  184,320         r=32 ->  737,280
-#   r=4  ->  92,160         r=16 ->  368,640
-#
-# Caveat (extended target_module_types):
-#   With 4× more adapters per block at the same alpha/r=2.0, the effective
-#   per-block update-norm is ~4× larger than qkv-only at the same rank. This
-#   is the intended stronger intervention for the MLP-bias test, but means
-#   qkv-only and extended configs at the same rank are NOT directly
-#   comparable in effective perturbation magnitude. Compare across ranks
-#   within-regime (extended-vs-extended or qkv-only-vs-qkv-only).
-#
-# Usage:
-#   bash experiments/uncertainty_segmentation/slurm/launch.sh --encoder-only
-#   OR merge manually:
-#     config = OmegaConf.merge(base, picasso, encoder_only)
-
-experiment:
-  name: "lora_encoder_only"
-  description: "LoRA encoder-only ablation: frozen decoder + trainable output head (extended targets, stages 1-4)"
-
-lora:
-  target_stages: [1, 2, 3, 4]    # Full SwinViT encoder — closes within-network distribution shift
-  target_module_types:           # Extend beyond qkv-only to the full Swin block:
-    - "qkv"                      #   .attn.qkv  — combined Q,K,V projection
-    - "proj"                     #   .attn.proj — attention output projection
-    - "fc1"                      #   .mlp.fc1   — dim -> 4*dim   (linear1 in MONAI)
-    - "fc2"                      #   .mlp.fc2   — 4*dim -> dim   (linear2 in MONAI)
-
-training:
-  freeze_decoder: true            # CRITICAL: freeze the entire decoder
-  train_output_head: true         # Unfreeze ONLY model.out (48→3 Conv3d, ~147 params)
-  learning_rate:
-    encoder: 1.0e-4               # LoRA adapter LR (same as before)
-    decoder: 1.0e-4               # Unused when freeze_decoder=true (kept for schema compat)
-    output_head: 1.0e-3           # Output head LR (higher — only 147 params, needs fast adaptation)
+# This file is intentionally empty (no keys) so that any stray OmegaConf
+# merge referencing it is a no-op.

@@ -36,17 +36,27 @@ ensemble:
 
 # =============================================================================
 # LoRA configuration (fixed rank per run)
+#
+# Default regime (2026-04-22): encoder-only adaptation.
+#   - Full SwinViT encoder adapted (stages 1-4).
+#   - Extended target module types (qkv + proj + fc1 + fc2) — full Swin block.
+#   - Decoder is frozen; only LoRA adapters + output head are trainable.
+# Rationale: closes within-network distribution shift when adapting deep
+# stages (stage 4's input is the modulated output of stage 3); tests whether
+# encoder adaptation alone bridges the GLI->MEN domain gap. Rank overrides
+# (config/picasso/config_r{2,4,16,32}.yaml) layer on top and only change
+# rank/alpha, so this default holds across the full rank ablation sweep.
 # =============================================================================
 lora:
   rank: 8                   # r (fixed for all members in this run)
   alpha: 16                 # alpha (scaling = alpha/r = 2.0)
   dropout: 0.1              # LoRA dropout
-  target_stages: [3, 4]     # SwinViT stages to adapt
-  target_module_types: ["qkv"]   # Linear layers per block to adapt.
-                                  # Subset of ("qkv","proj","fc1","fc2").
-                                  # qkv-only preserves historical behaviour for
-                                  # the full-decoder rank ablations.
-                                  # encoder_only.yaml overrides this to the full set.
+  target_stages: [1, 2, 3, 4]    # Full SwinViT encoder — closes within-network distribution shift
+  target_module_types:           # Full Swin block (extended beyond qkv-only):
+    - "qkv"                      #   .attn.qkv  — combined Q,K,V projection
+    - "proj"                     #   .attn.proj — attention output projection
+    - "fc1"                      #   .mlp.fc1   — dim -> 4*dim   (linear1 in MONAI)
+    - "fc2"                      #   .mlp.fc2   — 4*dim -> dim   (linear2 in MONAI)
   use_dora: false           # DoRA variant (Weight-Decomposed LoRA)
 
 # =============================================================================
@@ -58,7 +68,8 @@ training:
   val_batch_size: 1
   learning_rate:
     encoder: 1.0e-4         # LoRA adapter LR
-    decoder: 1.0e-4         # Decoder LR
+    decoder: 1.0e-4         # Unused when freeze_decoder=true (kept for schema compat)
+    output_head: 1.0e-3     # Output head LR (only ~147 params, higher LR for fast adaptation)
   weight_decay: 1.0e-5
   early_stopping:
     patience: 20
@@ -76,7 +87,8 @@ training:
 
   # Model configuration
   decoder_type: "original"  # Use full SwinUNETR decoder (not lightweight head)
-  freeze_decoder: false     # Train decoder alongside LoRA adapters
+  freeze_decoder: true      # Encoder-only default: decoder weights are frozen
+  train_output_head: true   # Unfreeze ONLY model.out (48->3 Conv3d, ~147 params)
   out_channels: 3           # Segmentation output channels (TC, WT, ET)
 
 # =============================================================================
