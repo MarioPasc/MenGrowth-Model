@@ -14,7 +14,6 @@ from experiments.uncertainty_segmentation.plotting.data_loader import (
     EnsembleResultsData,
 )
 from experiments.uncertainty_segmentation.plotting.style import (
-    C_BEST,
     C_DELTA_NEG,
     C_ENSEMBLE,
     C_MEMBERS,
@@ -47,27 +46,30 @@ def plot(
         epochs,
         curves["train_loss_mean"] - curves["train_loss_std"],
         curves["train_loss_mean"] + curves["train_loss_std"],
-        alpha=0.2, color=C_MEMBERS,
+        alpha=0.2,
+        color=C_MEMBERS,
     )
-    ax_loss.plot(epochs, curves["train_loss_mean"], color=C_MEMBERS,
-                 lw=1.2, label="Train loss")
+    ax_loss.plot(epochs, curves["train_loss_mean"], color=C_MEMBERS, lw=1.2, label="Train loss")
     ax_loss.fill_between(
         epochs,
         curves["val_loss_mean"] - curves["val_loss_std"],
         curves["val_loss_mean"] + curves["val_loss_std"],
-        alpha=0.2, color=C_ENSEMBLE,
+        alpha=0.2,
+        color=C_ENSEMBLE,
     )
-    ax_loss.plot(epochs, curves["val_loss_mean"], color=C_ENSEMBLE,
-                 lw=1.2, label="Val loss")
+    ax_loss.plot(epochs, curves["val_loss_mean"], color=C_ENSEMBLE, lw=1.2, label="Val loss")
     ax_loss.set_xlabel("Epoch")
     ax_loss.set_ylabel("Loss (Dice + CE)")
     ax_loss.legend(frameon=False)
     ax_loss.set_title("a) Training loss", loc="left", fontweight="bold")
 
     # --- Panel B: Validation Dice ---
-    # TC omitted: trivially ~1.0 for MEN (empty target).
+    # BraTS-hierarchical training targets: TC=(1|3), WT=(seg>0), ET=(3).
+    # WT is the top-line "whole tumor (incl. edema)" metric; ET the
+    # enhancing-only metric; TC the tumor core.
     for col, color, lw, ls, label in [
         ("val_dice_wt", C_ENSEMBLE, 1.2, "-", "WT"),
+        ("val_dice_tc", C_MEMBERS, 1.0, "--", "TC"),
         ("val_dice_et", C_DELTA_NEG, 1.0, ":", "ET"),
     ]:
         mean_col = f"{col}_mean"
@@ -77,17 +79,18 @@ def plot(
             epochs,
             curves[mean_col] - curves[std_col],
             curves[mean_col] + curves[std_col],
-            alpha=alpha, color=color,
+            alpha=alpha,
+            color=color,
         )
-        ax_dice.plot(epochs, curves[mean_col], color=color,
-                     lw=lw, ls=ls, label=label)
+        ax_dice.plot(epochs, curves[mean_col], color=color, lw=lw, ls=ls, label=label)
 
     ax_dice.set_xlabel("Epoch")
     ax_dice.set_ylabel("Validation Dice")
     ax_dice.set_ylim(0, 1)
     ax_dice.legend(frameon=False, ncol=3)
-    ax_dice.set_title("b) Validation Dice (mean +/- std across M members)",
-                      loc="left", fontweight="bold")
+    ax_dice.set_title(
+        "b) Validation Dice (mean +/- std across M members)", loc="left", fontweight="bold"
+    )
 
     fig.tight_layout()
     return fig

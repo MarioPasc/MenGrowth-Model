@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import matplotlib.axes
 import matplotlib.figure
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -40,8 +39,11 @@ def _aggregate(df: pd.DataFrame, channel: str) -> pd.DataFrame:
     col = f"dice_{channel}"
     if col not in df.columns:
         return pd.DataFrame(columns=["source", "threshold", "dice_mean"])
-    return df.groupby(["source", "threshold"])[col].mean().reset_index().rename(
-        columns={col: "dice_mean"}
+    return (
+        df.groupby(["source", "threshold"])[col]
+        .mean()
+        .reset_index()
+        .rename(columns={col: "dice_mean"})
     )
 
 
@@ -52,9 +54,14 @@ def _plot_one_channel(
 ) -> None:
     if df_agg.empty:
         ax.text(
-            0.5, 0.5, "No data",
-            ha="center", va="center", transform=ax.transAxes,
-            fontsize=9, color="grey",
+            0.5,
+            0.5,
+            "No data",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=9,
+            color="grey",
         )
         ax.set_title(channel_label, fontweight="bold")
         return
@@ -67,28 +74,41 @@ def _plot_one_channel(
     for src, sub in member_df.groupby("source"):
         sub = sub.sort_values("threshold")
         ax.plot(
-            sub["threshold"].values, sub["dice_mean"].values,
-            "-", color=C_MEMBERS, alpha=0.35, lw=0.7,
+            sub["threshold"].values,
+            sub["dice_mean"].values,
+            "-",
+            color=C_MEMBERS,
+            alpha=0.35,
+            lw=0.7,
         )
         if len(sub) > 0:
             imax = int(sub["dice_mean"].values.argmax())
-            member_optima.append((
-                float(sub["threshold"].values[imax]),
-                float(sub["dice_mean"].values[imax]),
-            ))
+            member_optima.append(
+                (
+                    float(sub["threshold"].values[imax]),
+                    float(sub["dice_mean"].values[imax]),
+                )
+            )
 
     # Ensemble (heavy)
     if not ens_df.empty:
         ax.plot(
-            ens_df["threshold"].values, ens_df["dice_mean"].values,
-            "-", color=C_ENSEMBLE, lw=1.8,
+            ens_df["threshold"].values,
+            ens_df["dice_mean"].values,
+            "-",
+            color=C_ENSEMBLE,
+            lw=1.8,
             label=r"Ensemble ($M$ members)",
         )
         imax = int(ens_df["dice_mean"].values.argmax())
         tau_star = float(ens_df["threshold"].values[imax])
         d_star = float(ens_df["dice_mean"].values[imax])
         ax.axvline(
-            tau_star, ls="--", color=C_ENSEMBLE, lw=0.8, alpha=0.6,
+            tau_star,
+            ls="--",
+            color=C_ENSEMBLE,
+            lw=0.8,
+            alpha=0.6,
             label=rf"Ensemble $\tau^\ast={tau_star:.2f}$ (Dice={d_star:.3f})",
         )
 
@@ -98,8 +118,12 @@ def _plot_one_channel(
         y_top = ax.get_ylim()[1] if ax.has_data() else 1.0
         # Place markers just below the top so they aren't clipped.
         ax.scatter(
-            taus, np.full_like(taus, y_top - 0.01 * max(1.0, abs(y_top))),
-            marker="|", color=C_BASELINE, s=30, alpha=0.6,
+            taus,
+            np.full_like(taus, y_top - 0.01 * max(1.0, abs(y_top))),
+            marker="|",
+            color=C_BASELINE,
+            s=30,
+            alpha=0.6,
             label=rf"Per-member $\tau^\ast$ (n={len(taus)})",
         )
 

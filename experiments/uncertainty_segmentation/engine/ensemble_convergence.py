@@ -93,9 +93,7 @@ def compute_ensemble_k_dice(
     gt = gt_binary.to(device=device, dtype=torch.float32)
     shape = probs_list[0].shape
     if gt.shape != shape:
-        raise ValueError(
-            f"Shape mismatch: probs {shape} vs gt {gt.shape}"
-        )
+        raise ValueError(f"Shape mismatch: probs {shape} vs gt {gt.shape}")
 
     running_sum = torch.zeros_like(probs_list[0], dtype=torch.float32)
     rows: list[dict] = []
@@ -109,12 +107,14 @@ def compute_ensemble_k_dice(
         running_sum = running_sum + probs_m.to(device=device, dtype=torch.float32)
         ensemble_k = (running_sum / k > threshold).to(torch.float32)
         dice = _dice_per_channel(ensemble_k, gt).detach().cpu()
-        rows.append({
-            "k": k,
-            "dice_tc": float(dice[0]),
-            "dice_wt": float(dice[1]),
-            "dice_et": float(dice[2]),
-        })
+        rows.append(
+            {
+                "k": k,
+                "dice_tc": float(dice[0]),
+                "dice_wt": float(dice[1]),
+                "dice_et": float(dice[2]),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -154,13 +154,15 @@ def compute_threshold_sensitivity(
         for t in thresholds:
             pred = (probs_m > t).to(torch.float32)
             d = _dice_per_channel(pred, gt).detach().cpu()
-            rows.append({
-                "source": f"member_{m}",
-                "threshold": t,
-                "dice_tc": float(d[0]),
-                "dice_wt": float(d[1]),
-                "dice_et": float(d[2]),
-            })
+            rows.append(
+                {
+                    "source": f"member_{m}",
+                    "threshold": t,
+                    "dice_tc": float(d[0]),
+                    "dice_wt": float(d[1]),
+                    "dice_et": float(d[2]),
+                }
+            )
 
     # Full-ensemble mean probs (do not rely on a pre-computed mean from
     # the caller — re-derive from probs_list to keep this function
@@ -171,13 +173,15 @@ def compute_threshold_sensitivity(
     for t in thresholds:
         pred = (mean_probs > t).to(torch.float32)
         d = _dice_per_channel(pred, gt).detach().cpu()
-        rows.append({
-            "source": "ensemble",
-            "threshold": t,
-            "dice_tc": float(d[0]),
-            "dice_wt": float(d[1]),
-            "dice_et": float(d[2]),
-        })
+        rows.append(
+            {
+                "source": "ensemble",
+                "threshold": t,
+                "dice_tc": float(d[0]),
+                "dice_wt": float(d[1]),
+                "dice_et": float(d[2]),
+            }
+        )
 
     return pd.DataFrame(rows)
 
@@ -206,7 +210,7 @@ def load_per_member_probs(scan_dir: Path) -> list[torch.Tensor]:
         name = p.name
         if name.startswith("member_") and name.endswith("_probs.nii.gz"):
             try:
-                m = int(name[len("member_"):-len("_probs.nii.gz")])
+                m = int(name[len("member_") : -len("_probs.nii.gz")])
             except ValueError:
                 continue
             paths.append((m, p))
@@ -235,9 +239,7 @@ def compute_for_scan_from_disk(
     """
     probs_list = load_per_member_probs(scan_dir)
     if not probs_list:
-        raise FileNotFoundError(
-            f"No member_*_probs.nii.gz files under {scan_dir}"
-        )
+        raise FileNotFoundError(f"No member_*_probs.nii.gz files under {scan_dir}")
     ek = compute_ensemble_k_dice(probs_list, gt_binary)
     ts = compute_threshold_sensitivity(probs_list, gt_binary, thresholds)
     return ek, ts

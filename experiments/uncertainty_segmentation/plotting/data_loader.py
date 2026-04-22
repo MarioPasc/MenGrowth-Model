@@ -24,24 +24,24 @@ class EnsembleResultsData:
     run_dir: Path
 
     # Training
-    training_curves: pd.DataFrame          # aggregated_training_curves.csv
+    training_curves: pd.DataFrame  # aggregated_training_curves.csv
 
     # Evaluation
-    per_member_dice: pd.DataFrame          # per_member_test_dice.csv
-    ensemble_dice: pd.DataFrame            # ensemble_test_dice.csv
-    baseline_dice: pd.DataFrame            # baseline_test_dice.csv
-    paired_differences: pd.DataFrame       # paired_differences.csv
-    convergence_wt: pd.DataFrame           # convergence_dice_wt.csv
-    convergence_tc: pd.DataFrame           # convergence_dice_tc.csv
-    convergence_et: pd.DataFrame           # convergence_dice_et.csv
-    statistical_summary: dict[str, Any]    # statistical_summary.json
-    calibration: dict[str, Any]            # calibration.json
+    per_member_dice: pd.DataFrame  # per_member_test_dice.csv
+    ensemble_dice: pd.DataFrame  # ensemble_test_dice.csv
+    baseline_dice: pd.DataFrame  # baseline_test_dice.csv
+    paired_differences: pd.DataFrame  # paired_differences.csv
+    convergence_wt: pd.DataFrame  # convergence_dice_wt.csv
+    convergence_tc: pd.DataFrame  # convergence_dice_tc.csv
+    convergence_et: pd.DataFrame  # convergence_dice_et.csv
+    statistical_summary: dict[str, Any]  # statistical_summary.json
+    calibration: dict[str, Any]  # calibration.json
 
     # Volumes (may be None if inference hasn't run)
     mengrowth_volumes: pd.DataFrame | None  # mengrowth_ensemble_volumes.csv
 
     # Predictions directory (may be None)
-    predictions_dir: Path | None           # predictions/
+    predictions_dir: Path | None  # predictions/
 
     # Epistemic-uncertainty diagnostics (populated by epistemic_metrics.py).
     # All optional: None if the diagnostic pipeline has not run yet.
@@ -170,15 +170,11 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
         raise FileNotFoundError(f"Required file missing: {stats_path}")
 
     stats = _read_json(stats_path)
-    calibration = _read_json(calib_path) if calib_path.exists() else stats.get(
-        "calibration", {}
-    )
+    calibration = _read_json(calib_path) if calib_path.exists() else stats.get("calibration", {})
     logger.info("  Loaded statistical_summary.json + calibration.json")
 
     # --- Optional files ---
-    mengrowth_volumes = _read_csv_optional(
-        vol_dir / "mengrowth_ensemble_volumes.csv"
-    )
+    mengrowth_volumes = _read_csv_optional(vol_dir / "mengrowth_ensemble_volumes.csv")
     if mengrowth_volumes is not None:
         logger.info("  Loaded mengrowth_volumes (%d rows)", len(mengrowth_volumes))
     else:
@@ -197,8 +193,9 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
     sample_scans: list[str] = []
     if predictions_dir is not None:
         sample_scans = _find_sample_scans(predictions_dir, n_members)
-        logger.info("  Found %d scans with full per-member predictions: %s",
-                     len(sample_scans), sample_scans)
+        logger.info(
+            "  Found %d scans with full per-member predictions: %s", len(sample_scans), sample_scans
+        )
 
     # Epistemic diagnostics (cached CSVs + JSON, optional).
     bias_diag = _read_csv_optional(eval_dir / "bias_diagnostics.csv")
@@ -214,9 +211,7 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
         logger.info("  Loaded bias_dominance_threshold (%d rows)", len(k_star_df))
 
     # Cross-rank summary lives next to sibling ranks, not inside run_dir.
-    cross_rank_path = (
-        run_dir.parent / "epistemic_summary" / "cross_rank_epistemic_summary.csv"
-    )
+    cross_rank_path = run_dir.parent / "epistemic_summary" / "cross_rank_epistemic_summary.csv"
     cross_rank = _read_csv_optional(cross_rank_path)
     if cross_rank is not None:
         logger.info("  Loaded cross_rank_summary (%d rows)", len(cross_rank))
@@ -232,7 +227,8 @@ def load_results(run_dir: Path) -> EnsembleResultsData:
     if threshold_df is not None:
         logger.info(
             "  Loaded threshold_sensitivity: %d rows, %d thresholds",
-            len(threshold_df), threshold_df["threshold"].nunique(),
+            len(threshold_df),
+            threshold_df["threshold"].nunique(),
         )
 
     return EnsembleResultsData(

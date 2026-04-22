@@ -64,7 +64,9 @@ def extract_ensemble_volumes(
     with h5py.File(h5_path, "r") as f:
         scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
         patient_ids = [s.decode() if isinstance(s, bytes) else s for s in f["patient_ids"][:]]
-        timepoint_idx = f["timepoint_idx"][:] if "timepoint_idx" in f else np.zeros(len(scan_ids), dtype=int)
+        timepoint_idx = (
+            f["timepoint_idx"][:] if "timepoint_idx" in f else np.zeros(len(scan_ids), dtype=int)
+        )
         n_total = len(scan_ids)
 
     # Determine indices to process
@@ -96,9 +98,11 @@ def extract_ensemble_volumes(
     save_per_member_all = config.inference.get("save_per_member_masks_all", False)
     n_sample_scans = config.inference.get("n_sample_scans", 5)
     sample_strategy = config.inference.get("sample_scan_strategy", "spread")
-    sample_indices = set(
-        select_sample_indices(len(dataset), n_sample_scans, sample_strategy)
-    ) if save_samples else set()
+    sample_indices = (
+        set(select_sample_indices(len(dataset), n_sample_scans, sample_strategy))
+        if save_samples
+        else set()
+    )
 
     # Collect results
     rows: list[dict] = []
@@ -151,27 +155,27 @@ def extract_ensemble_volumes(
         row["mean_mi"] = float(result.mutual_information.mean().item())
         row["mean_var"] = float(result.var_probs.mean().item())
 
-        # ET-specific uncertainty (most relevant for growth prediction).
-        # ET (ch2) = meningioma mass = the clinically tracked endpoint.
-        et_entropy = result.predictive_entropy[2]  # ET channel
-        et_mi = result.mutual_information[2]
-        row["et_mean_entropy"] = float(et_entropy.mean().item())
-        row["et_mean_mi"] = float(et_mi.mean().item())
+        # Meningioma-mass-specific uncertainty (from BSF ch0 = BraTS-TC
+        # = labels 1|3). This is the clinical volume label.
+        men_entropy = result.predictive_entropy[0]  # BSF ch0 (meningioma)
+        men_mi = result.mutual_information[0]
+        row["men_mean_entropy"] = float(men_entropy.mean().item())
+        row["men_mean_mi"] = float(men_mi.mean().item())
 
-        # Boundary uncertainty (entropy at predicted ET boundary)
+        # Boundary uncertainty at the predicted meningioma boundary
         ensemble_mask = result.ensemble_mask
         if ensemble_mask.any():
             # Dilate mask to find boundary region (1-voxel)
             boundary = _find_boundary(ensemble_mask)
             if boundary.any():
-                row["et_boundary_entropy"] = float(et_entropy[boundary].mean().item())
-                row["et_boundary_mi"] = float(et_mi[boundary].mean().item())
+                row["men_boundary_entropy"] = float(men_entropy[boundary].mean().item())
+                row["men_boundary_mi"] = float(men_mi[boundary].mean().item())
             else:
-                row["et_boundary_entropy"] = 0.0
-                row["et_boundary_mi"] = 0.0
+                row["men_boundary_entropy"] = 0.0
+                row["men_boundary_mi"] = 0.0
         else:
-            row["et_boundary_entropy"] = 0.0
-            row["et_boundary_mi"] = 0.0
+            row["men_boundary_entropy"] = 0.0
+            row["men_boundary_mi"] = 0.0
 
         # Save predictions to NIfTI if configured
         if predictions_dir is not None:

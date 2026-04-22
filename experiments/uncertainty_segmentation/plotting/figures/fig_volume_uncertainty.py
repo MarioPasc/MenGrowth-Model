@@ -55,9 +55,17 @@ def plot(
     v_mean = vol["vol_mean"].values.astype(float)
     v_std = vol["vol_std"].values.astype(float)
 
-    # Color by ET mean entropy (use fallback if column has NaN/empty).
-    # Legacy CSVs may use "wt_mean_entropy"; new runs use "et_mean_entropy".
-    entropy_col = "et_mean_entropy" if "et_mean_entropy" in vol.columns else "wt_mean_entropy"
+    # Color by meningioma-mass mean entropy. The volume label is BSF
+    # ch0 (BraTS-TC = labels 1|3 = meningioma mass), so
+    # men_mean_entropy is the uncertainty on the volume estimate
+    # itself. Legacy CSVs (pre-refactor) may use "wt_mean_entropy",
+    # "tc_mean_entropy", or "et_mean_entropy"; fall back if present.
+    for cand in ("men_mean_entropy", "wt_mean_entropy", "tc_mean_entropy", "et_mean_entropy"):
+        if cand in vol.columns:
+            entropy_col = cand
+            break
+    else:
+        entropy_col = "men_mean_entropy"
     if entropy_col in vol.columns:
         entropy = vol[entropy_col].values.astype(float)
         valid_mask = np.isfinite(entropy) & (v_mean > 0) & (v_std > 0)
@@ -69,8 +77,7 @@ def plot(
     v_s = v_std[valid_mask]
     ent = entropy[valid_mask]
 
-    sc = ax_a.scatter(v_m, v_s, c=ent, s=14, alpha=0.7,
-                      cmap="YlOrRd", edgecolors="none", zorder=3)
+    sc = ax_a.scatter(v_m, v_s, c=ent, s=14, alpha=0.7, cmap="YlOrRd", edgecolors="none", zorder=3)
     ax_a.set_xscale("log")
     ax_a.set_yscale("log")
 
@@ -80,8 +87,9 @@ def plot(
     slope, intercept, r_val, p_val, _ = sp_stats.linregress(log_m, log_s)
     x_fit = np.linspace(log_m.min(), log_m.max(), 100)
     y_fit = slope * x_fit + intercept
-    ax_a.plot(10**x_fit, 10**y_fit, "k--", lw=1.0, alpha=0.7,
-              label=f"slope={slope:.2f}, r={r_val:.2f}")
+    ax_a.plot(
+        10**x_fit, 10**y_fit, "k--", lw=1.0, alpha=0.7, label=f"slope={slope:.2f}, r={r_val:.2f}"
+    )
 
     cbar = fig.colorbar(sc, ax=ax_a, shrink=0.8, pad=0.02)
     cbar.set_label("WT entropy", fontsize=7)
@@ -98,22 +106,40 @@ def plot(
     lv_mad = vol["logvol_mad_scaled"].values.astype(float)
 
     valid_b = np.isfinite(lv_mean) & np.isfinite(lv_std)
-    ax_b.scatter(lv_mean[valid_b], lv_std[valid_b], s=14, alpha=0.6,
-                 color=C_ENSEMBLE, edgecolors="none", zorder=3,
-                 label="log-vol std")
+    ax_b.scatter(
+        lv_mean[valid_b],
+        lv_std[valid_b],
+        s=14,
+        alpha=0.6,
+        color=C_ENSEMBLE,
+        edgecolors="none",
+        zorder=3,
+        label="log-vol std",
+    )
 
     valid_mad = np.isfinite(lv_mean) & np.isfinite(lv_mad)
-    ax_b.scatter(lv_mean[valid_mad], lv_mad[valid_mad], s=14, alpha=0.4,
-                 color=C_MEDIAN, marker="^", edgecolors="none", zorder=3,
-                 label="log-vol MAD (scaled)")
+    ax_b.scatter(
+        lv_mean[valid_mad],
+        lv_mad[valid_mad],
+        s=14,
+        alpha=0.4,
+        color=C_MEDIAN,
+        marker="^",
+        edgecolors="none",
+        zorder=3,
+        label="log-vol MAD (scaled)",
+    )
 
     ax_b.set_xlabel("log(V+1) mean")
     ax_b.set_ylabel("log(V+1) uncertainty")
     ax_b.legend(frameon=False, fontsize=7, loc="upper left")
-    ax_b.set_title("b) Log-volume space (linear)", loc="left",
-                   fontweight="bold")
+    ax_b.set_title("b) Log-volume space (linear)", loc="left", fontweight="bold")
 
-    fig.suptitle("Heteroscedasticity: uncertainty scales with tumour size",
-                 fontweight="bold", fontsize=10, y=1.02)
+    fig.suptitle(
+        "Heteroscedasticity: uncertainty scales with tumour size",
+        fontweight="bold",
+        fontsize=10,
+        y=1.02,
+    )
     fig.tight_layout()
     return fig

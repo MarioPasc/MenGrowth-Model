@@ -16,22 +16,42 @@ BraTS-GLI Labels (glioma):
 
 BraTS-MEN Labels (meningioma):
     - 0: Background
-    - 1: NETC (Non-Enhancing Tumor Core; merged into ET in BSF translation)
+    - 1: NETC (Non-Enhancing Tumor Core)
     - 2: SNFH (Surrounding Non-enhancing FLAIR Hyperintensity = peritumoral edema)
-    - 3: ET (Enhancing Tumor — the dominant solid meningioma mass)
+    - 3: ET (Enhancing Tumor)
 
-3-channel sigmoid output convention (TC/WT/ET):
-    GLI: TC = (1|3|4),  WT = (seg>0),   ET = (3)
-    MEN: TC = empty,    WT = (1|2|3),   ET = (1|3)
+Training convention: BSF-aligned hierarchical TC / WT / ET (BraTS).
+The three training targets are the standard BraTS hierarchical regions,
+matching what the finetuned BrainSegFounder decoder already emits on
+meningioma (verified empirically — see ``check_wt_vs_edema`` diagnostic).
+Keeping BSF's pretrained output head aligned with its training minimises
+the amount the LoRA adapters have to change and preserves the priors
+encoded in the pretrained weights.
 
-Why MEN merges NETC into ET: BSF was pretrained with two effective tumor
-labels (SNFH + ET). For meningioma we translate BraTS-MEN's three-label
-scheme into that two-label native space by **merging NETC (label 1) into ET**:
-the meningioma "ET" target therefore covers the entire solid mass (necrotic
-+ enhancing), which is what BSF was trained to recognize and what we need
-for downstream volume measurement. The TC sigmoid channel has no analogue
-in this 2-label space and is held empty — the model is taught to suppress it.
-Edema (SNFH = label 2) keeps its own identity inside WT.
+    MEN: TC = (==1) | (==3)            # tumor core  (NETC ∪ ET)
+         WT = (seg > 0)                # whole tumor (NETC ∪ SNFH ∪ ET)
+         ET = (==3)                    # enhancing tumor
+
+    GLI: TC = (==1) | (==3) | (==4)
+         WT = (seg > 0)
+         ET = (==3)
+
+Downstream clinical label convention (disjoint regions). The three
+training channels are overlapping; for volumes, plots, and statistics
+we derive *disjoint* clinical regions satisfying
+``TC_necrotic ⊂ WT_meningioma``, ``WT_meningioma ⊥ ED_edema``,
+``TC_necrotic ⊥ ED_edema``:
+
+    WT_meningioma (meningioma mass, labels 1|3) = ch0 ≥ τ            (BraTS-TC)
+    ET_enhancing  (labels == 3)                 = ch2 ≥ τ            (BraTS-ET)
+    TC_necrotic   (label == 1 alone)            = WT_men ∧ ¬ET_enh
+    ED_edema      (label == 2 alone)            = (ch1 ≥ τ) ∧ ¬WT_men
+
+The clinical **volume label for MenGrowth / BraTS-MEN = WT_meningioma**
+(= BSF ch0 thresholded + connected-components cleaned). Helper:
+``growth.inference.postprocess.derive_disjoint_regions``. See the
+critical-conventions note and ``project_label_convention_tc_wt_ed``
+memory entry for the authoritative statement.
 """
 
 import logging
@@ -299,43 +319,40 @@ def create_segmentation_loss(
 # =============================================================================
 # 3-Channel Approach (Sigmoid per channel, no explicit background)
 # =============================================================================
-# BrainSegFounder was trained with 3 output channels using sigmoid activation
-# per channel. This allows using the FULL pretrained decoder including output
-# layer, which is critical for frozen baseline comparisons.
+# Three output channels, independent sigmoid activation per channel.
+# BraTS-hierarchical TC / WT / ET — matches what the finetuned
+# BrainSegFounder output head emits natively on meningioma, so LoRA +
+# output-head training keeps the pretrained priors.
 #
-# Channel mapping (hierarchical overlapping regions, MONAI BraTS convention):
-#   - Channel 0: TC (Tumor Core) = NCR ∪ ET = (label==1) | (label==3)
-#   - Channel 1: WT (Whole Tumor) = NCR ∪ ED ∪ ET = (label==1) | (label==2) | (label==3)
-#   - Channel 2: ET (Enhancing Tumor) = (label==3)
+# Channel mapping (per-voxel binary targets, hierarchical / overlapping):
+#   - Channel 0: TC (Tumor Core)     = (label==1) | (label==3) [ | (label==4) for GLI]
+#   - Channel 1: WT (Whole Tumor)    = (seg > 0)               ⊃ TC, includes edema
+#   - Channel 2: ET (Enhancing Tumor)= (label==3)              ⊂ TC
 #
-# Background is implicit (where all channels < threshold).
+# DOWNSTREAM — ``growth.inference.postprocess.derive_disjoint_regions``
+# derives clinical disjoint regions (meningioma / necrotic / edema)
+# from these three channels. See module docstring and memory entry.
 # =============================================================================
 
 
 def _convert_single_domain(target: torch.Tensor, domain: str) -> torch.Tensor:
-    """Convert integer labels to [TC, WT, ET] binary masks for a single domain.
+    """Convert integer labels to [TC, WT, ET] binary masks (BraTS-hierarchical).
 
     Args:
         target: Integer labels [B, D, H, W] (no channel dim).
         domain: "MEN" or "GLI".
 
     Returns:
-        Binary masks [B, 3, D, H, W].
+        Binary masks [B, 3, D, H, W] stacked along channel dim as [TC, WT, ET].
     """
     if domain == "MEN":
         # MEN labels: 1=NETC, 2=SNFH (edema), 3=ET.
-        # BSF effectively models 2 tissues for meningioma (SNFH + ET); we
-        # translate BraTS-MEN → BSF native by **merging NETC into ET**
-        # (NETC is part of the solid meningioma mass — BSF was never taught
-        # to distinguish it from ET):
-        #   TC channel: empty (BSF has no tumor-core concept in 2-label space)
-        #   WT channel: all tumor   = (1|2|3) = merged_ET ∪ SNFH
-        #   ET channel: merged_ET   = (1|3)   = the meningioma mass as a whole
-        tc = torch.zeros_like(target, dtype=torch.float32)
-        wt = ((target == 1) | (target == 2) | (target == 3)).float()
-        et = ((target == 1) | (target == 3)).float()
+        tc = ((target == 1) | (target == 3)).float()
+        wt = (target > 0).float()
+        et = (target == 3).float()
     else:
-        # GLI: 1=NETC, 2=SNFH, 3=ET, 4=RC
+        # GLI labels: 1=NETC, 2=SNFH, 3=ET, 4=RC (resection cavity, counted
+        # as tumor tissue for the BraTS TC definition).
         tc = ((target == 1) | (target == 3) | (target == 4)).float()
         wt = (target > 0).float()
         et = (target == 3).float()
@@ -378,11 +395,12 @@ class SegmentationLoss3Ch(nn.Module):
     ) -> torch.Tensor:
         """Convert integer labels [B, 1, D, H, W] to binary masks [B, 3, D, H, W].
 
-        Domain-aware conversion to [TC, WT, ET]:
-            GLI (default): TC = (1|3|4), WT = (seg>0), ET = (3)
-            MEN:           TC = empty,   WT = (1|2|3), ET = (1|3)
-            (For MEN, NETC (label 1) is merged into ET — BSF natively models
-            only SNFH + ET on meningioma. TC channel is left empty.)
+        Domain-aware conversion to [TC, WT, ET] (BraTS-hierarchical):
+            MEN: TC=(1|3),   WT=(seg>0), ET=(3)
+            GLI: TC=(1|3|4), WT=(seg>0), ET=(3)
+            Downstream code (volume, plots, stats) derives disjoint
+            clinical regions via
+            ``growth.inference.postprocess.derive_disjoint_regions``.
 
         Args:
             target: Integer labels [B, 1, D, H, W] or [B, D, H, W].

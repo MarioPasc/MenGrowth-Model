@@ -9,7 +9,11 @@ Key design decisions:
     - Fresh base model reload per member (PeftModel.from_pretrained mutates base)
     - Welford algorithm for running mean/variance (avoids storing M prob maps)
     - Binary entropy per sigmoid channel (not categorical softmax)
-    - Volume from ET channel (ch2) > 0.5 threshold (meningioma mass)
+    - Volume measured from BSF ch0 (BraTS-TC = meningioma mass
+      = labels 1|3) after connected-components cleanup. ch1
+      (BraTS-WT) includes edema and is NOT used as the volume label;
+      edema is derived separately via
+      ``growth.inference.postprocess.derive_disjoint_regions``.
 
 References:
     Welford, B.P. (1962). Note on a Method for Calculating Corrected Sums
@@ -28,6 +32,7 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig
 
+from growth.inference.postprocess import remove_small_components
 from growth.inference.sliding_window import sliding_window_segment
 from growth.models.encoder.lora_adapter import LoRASwinViT
 from growth.models.encoder.swin_loader import load_full_swinunetr
@@ -55,8 +60,11 @@ class EnsemblePrediction:
         var_probs: Per-voxel variance across members [C, D, H, W].
         predictive_entropy: Binary entropy of mean probs [C, D, H, W].
         mutual_information: Epistemic uncertainty [C, D, H, W].
-        ensemble_mask: ET binary mask from mean probs [D, H, W].
-        per_member_volumes: ET volume (mm³) per ensemble member.
+        ensemble_mask: Meningioma-mass binary mask from mean probs
+            [D, H, W] — derived from BSF ch0 (BraTS-TC = labels 1|3)
+            after CC cleanup.
+        per_member_volumes: Meningioma-mass volume (mm³) per ensemble
+            member (from BSF ch0 per member, same CC cleanup).
         volume_mean: Mean volume across members (mm³).
         volume_std: Std of volume across members (mm³).
         log_volume_mean: Mean of log(V+1) across members.
@@ -67,7 +75,8 @@ class EnsemblePrediction:
         log_volume_mad: MAD of log(V+1).
         n_members: Number of ensemble members used.
         per_member_probs: Per-member probability maps (None unless requested).
-        per_member_masks: Per-member ET masks (None unless requested).
+        per_member_masks: Per-member meningioma-mass masks (None
+            unless requested).
         inference_time_sec: Total inference time for this scan (seconds).
     """
 
@@ -129,11 +138,16 @@ class EnsemblePredictor:
         self.sw_overlap = config.inference.sw_overlap
         self.sw_mode = config.inference.sw_mode
 
+        # Connected-components cleanup: drop predicted components smaller
+        # than this voxel count. 0 disables postprocessing. Edema may be
+        # bilateral so we do NOT keep-largest; size-threshold preserves
+        # multi-blob regions.
+        self._min_component_voxels = int(config.inference.get("min_component_voxels", 64))
+
         # Discover trained members
         self.available_members = self._discover_members()
         logger.info(
-            f"EnsemblePredictor: {len(self.available_members)}/{self.n_members} "
-            f"members available"
+            f"EnsemblePredictor: {len(self.available_members)}/{self.n_members} members available"
         )
 
     def _discover_members(self) -> list[int]:
@@ -237,7 +251,7 @@ class EnsemblePredictor:
         assert M >= 1, "No trained ensemble members available"
 
         _, C_in, D, H, W = images.shape
-        C = self.config.training.get("out_channels", 3)  # TC, WT, ET
+        C = self.config.training.get("out_channels", 3)  # BraTS TC, WT, ET
 
         # Welford accumulators (on device for speed)
         mean_probs = torch.zeros(C, D, H, W, device=self.device)
@@ -279,21 +293,23 @@ class EnsemblePredictor:
             h_m = compute_binary_entropy(probs_m)  # [C, D, H, W]
             mean_member_entropy += h_m / M
 
-            # Volume from ET channel (ch2) hard mask — the meningioma mass.
-            # For MEN, ET = merged NETC ∪ ET (labels 1|3); this is the
-            # clinically tracked endpoint for growth prediction.
-            et_mask = probs_m[2] > 0.5
+            # Volume from BSF ch0 (BraTS-TC = labels 1|3) hard mask —
+            # this is the meningioma mass. Note: BSF ch1 (BraTS-WT)
+            # includes edema and is NOT the clinical volume label.
+            men_mask = probs_m[0] > 0.5
+            if self._min_component_voxels > 0:
+                men_mask = remove_small_components(men_mask, min_voxels=self._min_component_voxels)
             # Voxel count == mm³ (H5 pre-resampled to 1mm isotropic)
-            vol_m = float(et_mask.sum().item())
+            vol_m = float(men_mask.sum().item())
             per_member_volumes.append(vol_m)
 
             # Optionally save per-member spatial data on CPU
             if save_per_member:
                 collected_probs.append(probs_m.cpu())
-                collected_masks.append(et_mask.cpu())
+                collected_masks.append(men_mask.cpu())
 
             # Cleanup GPU memory
-            del model, logits, probs_m, h_m, delta, delta2
+            del model, logits, probs_m, h_m, delta, delta2, men_mask
             torch.cuda.empty_cache()
 
         # Finalize statistics
@@ -303,21 +319,23 @@ class EnsemblePredictor:
         predictive_entropy = compute_binary_entropy(mean_probs)
         mutual_info = compute_mutual_information(predictive_entropy, mean_member_entropy)
 
-        # Ensemble mask from mean probabilities (ET channel = meningioma mass)
-        ensemble_mask = mean_probs[2] > 0.5  # ET channel
+        # Ensemble meningioma mask from mean BSF ch0 (BraTS-TC = labels
+        # 1|3 = meningioma mass). Optional connected-components cleanup
+        # removes isolated speckle while preserving multi-blob regions.
+        ensemble_mask = mean_probs[0] > 0.5  # BraTS-TC channel (meningioma)
+        if self._min_component_voxels > 0:
+            ensemble_mask = remove_small_components(
+                ensemble_mask, min_voxels=self._min_component_voxels
+            )
 
         # Volume statistics (mean/std)
         log_volumes = [math.log(v + 1) for v in per_member_volumes]
 
         if M > 1:
             vol_mean = sum(per_member_volumes) / M
-            vol_std = (
-                sum((v - vol_mean) ** 2 for v in per_member_volumes) / (M - 1)
-            ) ** 0.5
+            vol_std = (sum((v - vol_mean) ** 2 for v in per_member_volumes) / (M - 1)) ** 0.5
             logvol_mean = sum(log_volumes) / M
-            logvol_std = (
-                sum((lv - logvol_mean) ** 2 for lv in log_volumes) / (M - 1)
-            ) ** 0.5
+            logvol_std = (sum((lv - logvol_mean) ** 2 for lv in log_volumes) / (M - 1)) ** 0.5
         else:
             vol_mean = per_member_volumes[0]
             vol_std = 0.0
@@ -326,16 +344,12 @@ class EnsemblePredictor:
 
         # Robust volume statistics (median/MAD)
         vol_median = float(statistics.median(per_member_volumes))
-        vol_mad = float(
-            statistics.median([abs(v - vol_median) for v in per_member_volumes])
-        )
+        vol_mad = float(statistics.median([abs(v - vol_median) for v in per_member_volumes]))
         logvol_median = float(statistics.median(log_volumes))
-        logvol_mad = float(
-            statistics.median([abs(lv - logvol_median) for lv in log_volumes])
-        )
+        logvol_mad = float(statistics.median([abs(lv - logvol_median) for lv in log_volumes]))
 
         scan_time = time.time() - scan_start
-        logger.info(f"  Scan inference: {scan_time:.1f}s ({scan_time/M:.1f}s/member)")
+        logger.info(f"  Scan inference: {scan_time:.1f}s ({scan_time / M:.1f}s/member)")
 
         return EnsemblePrediction(
             mean_probs=mean_probs.cpu(),

@@ -2,8 +2,13 @@
 """NIfTI saving of ensemble predictions for thesis figures and analysis.
 
 Two saving modes:
-    1. All scans: ensemble WT hard mask (int8, ~1-7 MB compressed)
-    2. Sample scans: full per-member predictions, ensemble probs, uncertainty maps
+    1. All scans: ensemble meningioma-mass hard mask (int8, ~1-7 MB
+       compressed). Derived from BSF ch0 (BraTS-TC = labels 1|3) with
+       connected-components cleanup.
+    2. Sample scans: full per-member predictions, ensemble probs, uncertainty maps.
+Training uses BraTS-hierarchical TC/WT/ET; downstream clinical
+disjoint regions (meningioma / necrotic / edema / enhancing) are
+derived via ``growth.inference.postprocess.derive_disjoint_regions``.
 
 NIfTI convention:
     - 3D masks [D, H, W] → save directly (nibabel interprets as spatial axes)
@@ -33,10 +38,14 @@ def save_ensemble_mask(
     output_dir: Path,
     scan_id: str,
 ) -> Path:
-    """Save ensemble WT hard mask as NIfTI.
+    """Save ensemble meningioma-mass hard mask as NIfTI.
+
+    The caller (``EnsemblePredictor.predict_scan``) thresholds BSF ch0
+    (BraTS-TC = labels 1|3) of the mean probabilities at 0.5 and applies
+    connected-components cleanup. This is the clinical meningioma mass.
 
     Args:
-        mask: Binary WT mask [D, H, W] (bool or float).
+        mask: Binary meningioma-mass mask [D, H, W] (bool or float).
         output_dir: Predictions base directory.
         scan_id: Scan identifier (used as subdirectory name).
 
@@ -101,20 +110,18 @@ def save_multilabel_mask(
     scan_id: str,
     filename: str = "segmentation.nii.gz",
 ) -> Path:
-    """Save a multi-label segmentation mask in BraTS convention.
+    """Save a multi-label segmentation mask in BraTS integer convention.
 
-    Converts 3-channel sigmoid probabilities (TC/WT/ET) to integer labels:
+    Converts 3-channel sigmoid probabilities (BraTS-hierarchical
+    TC / WT / ET as trained) to raw BraTS integer labels:
         0 = Background
-        1 = NCR/NET (in TC but not ET) — only produced for GLI predictions
-        2 = ED / SNFH (in WT but not TC)
-        3 = ET (enhancing tumor)
+        1 = NETC (necrotic tumor core) — TC but not ET
+        2 = SNFH (edema)               — WT but not TC
+        3 = ET  (enhancing tumor)      — ET channel
 
-    This is the inverse of the TC/WT/ET → integer label mapping used during
-    training. For MEN-trained models the TC channel is held empty (BSF natively
-    models 2 tumor labels for meningioma; NETC is **merged into ET** during
-    training — see ``growth.losses.segmentation._convert_single_domain``), so
-    the output mask contains only labels {0, 2=SNFH, 3=merged_ET}: label 1 is
-    never produced and the entire solid meningioma mass appears as label 3.
+    Uses the inverse of the hierarchical conversion in
+    ``growth.losses.segmentation._convert_single_domain`` so the output
+    NIfTI can be compared voxel-wise to the ground truth.
 
     Args:
         probs: Sigmoid probabilities [3, D, H, W] (TC=ch0, WT=ch1, ET=ch2).
@@ -128,15 +135,15 @@ def save_multilabel_mask(
     scan_dir = output_dir / scan_id
     scan_dir.mkdir(parents=True, exist_ok=True)
 
-    # Threshold to binary
-    tc = probs[0] > 0.5  # Tumor Core
-    wt = probs[1] > 0.5  # Whole Tumor
-    et = probs[2] > 0.5  # Enhancing Tumor
+    # Threshold to binary (BraTS-hierarchical)
+    tc = probs[0] > 0.5  # BraTS-TC: necrotic ∪ enhancing
+    wt = probs[1] > 0.5  # BraTS-WT: whole tumor (includes edema)
+    et = probs[2] > 0.5  # BraTS-ET: enhancing only
 
-    # Convert to BraTS integer labels
+    # Convert to BraTS integer labels.
     seg = torch.zeros_like(probs[0], dtype=torch.int8)
-    seg[wt & ~tc] = 2  # ED: in WT but not TC
-    seg[tc & ~et] = 1  # NCR/NET: in TC but not ET
+    seg[wt & ~tc] = 2  # SNFH / edema (in WT but not TC)
+    seg[tc & ~et] = 1  # NETC / necrotic core (in TC but not ET)
     seg[et] = 3  # ET: enhancing
 
     out_path = scan_dir / filename
@@ -153,10 +160,11 @@ def save_per_member_masks_all(
     output_dir: Path,
     scan_id: str,
 ) -> None:
-    """Save per-member WT masks for a scan (lightweight, for all scans).
+    """Save per-member meningioma-mass masks for a scan.
 
-    Only saves the binary WT masks (int8), not full probability maps.
-    Each mask is ~1-7MB compressed. For M=5, total ~5-35MB per scan.
+    Only saves the binary meningioma-mass masks (int8) — BSF ch0
+    (BraTS-TC = labels 1|3) after CC cleanup — not full probability
+    maps. Each mask is ~1-7MB compressed. For M=5, total ~5-35MB per scan.
 
     Args:
         result: EnsemblePrediction (per_member_masks must be populated).

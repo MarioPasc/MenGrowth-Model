@@ -17,6 +17,7 @@ from omegaconf import DictConfig
 
 from growth.data.bratsmendata import BraTSDatasetH5
 from growth.data.transforms import get_h5_val_transforms
+from growth.inference.postprocess import remove_small_components
 from growth.inference.sliding_window import sliding_window_segment
 from growth.models.encoder.swin_loader import load_full_swinunetr
 
@@ -47,8 +48,10 @@ def evaluate_baseline(
         force: Recompute even if CSV exists.
 
     Returns:
-        DataFrame with columns: scan_id, dice_tc, dice_wt, dice_et,
-        dice_mean, volume_ensemble, volume_gt. One row per scan.
+        DataFrame with columns: scan_id, dice_tc, dice_wt, dice_ed,
+        dice_mean, volume_baseline, volume_gt. One row per scan. Volume
+        is the WT voxel count (meningioma mass, edema excluded) after
+        connected-components cleanup.
     """
     resolved_run_dir = get_run_dir(config, override=run_dir)
     output_path = resolved_run_dir / "evaluation" / "baseline_test_dice.csv"
@@ -58,9 +61,7 @@ def evaluate_baseline(
         return pd.read_csv(output_path)
 
     # Load frozen model
-    checkpoint_path = str(
-        Path(config.paths.checkpoint_dir) / config.paths.checkpoint_filename
-    )
+    checkpoint_path = str(Path(config.paths.checkpoint_dir) / config.paths.checkpoint_filename)
     out_channels = config.training.get("out_channels", 3)
 
     logger.info("Loading frozen BrainSegFounder (no adaptation)...")
@@ -78,6 +79,7 @@ def evaluate_baseline(
     sw_batch_size = config.inference.sw_batch_size
     sw_overlap = config.inference.sw_overlap
     sw_mode = config.inference.sw_mode
+    min_component_voxels = int(config.inference.get("min_component_voxels", 64))
 
     # Test dataset
     h5_path = config.paths.men_h5_file
@@ -92,9 +94,7 @@ def evaluate_baseline(
 
     # Load scan IDs from H5 metadata (BUG-2 fix)
     with h5py.File(h5_path, "r") as f:
-        all_scan_ids = [
-            s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]
-        ]
+        all_scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
     splits = BraTSDatasetH5.load_splits_from_h5(h5_path)
     test_indices = splits.get(config.data.test_split, np.arange(len(all_scan_ids)))
 
@@ -112,7 +112,8 @@ def evaluate_baseline(
 
         with torch.no_grad():
             logits = sliding_window_segment(
-                model, images,
+                model,
+                images,
                 roi_size=sw_roi_size,
                 sw_batch_size=sw_batch_size,
                 overlap=sw_overlap,
@@ -124,28 +125,33 @@ def evaluate_baseline(
         gt_binary = _convert_seg_to_binary(seg_gt, domain="MEN")
         dice = _compute_dice_per_channel(pred_binary, gt_binary)
 
-        # ET volume (ch2) = meningioma mass — the growth target
-        vol_pred = float(pred_binary[2].sum().item())
-        vol_gt = float(gt_binary[2].sum().item())
+        # Meningioma-mass volume from BSF ch0 (BraTS-TC = labels 1|3)
+        # with CC cleanup. This is the clinical volume label.
+        pred_men = remove_small_components(pred_binary[0].bool(), min_voxels=min_component_voxels)
+        gt_men = gt_binary[0].bool()
+        vol_pred = float(pred_men.sum().item())
+        vol_gt = float(gt_men.sum().item())
 
-        rows.append({
-            "scan_id": sid,
-            "dice_tc": float(dice[0]),
-            "dice_wt": float(dice[1]),
-            "dice_et": float(dice[2]),
-            "dice_mean": float(dice[1:].mean()),
-            "volume_baseline": vol_pred,
-            "volume_gt": vol_gt,
-        })
+        # BraTS-hierarchical Dice (what the model is trained on).
+        # Downstream disjoint-region stats can be derived via
+        # growth.inference.postprocess.derive_disjoint_regions.
+        rows.append(
+            {
+                "scan_id": sid,
+                "dice_tc": float(dice[0]),
+                "dice_wt": float(dice[1]),
+                "dice_et": float(dice[2]),
+                "dice_mean": float(dice[1:].mean()),
+                "volume_baseline": vol_pred,
+                "volume_gt": vol_gt,
+            }
+        )
 
     df = pd.DataFrame(rows)
 
     # Save
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
-    logger.info(
-        f"Baseline: mean Dice WT={df['dice_wt'].mean():.4f}, "
-        f"saved to {output_path}"
-    )
+    logger.info(f"Baseline: mean Dice WT={df['dice_wt'].mean():.4f}, saved to {output_path}")
 
     return df

@@ -18,7 +18,6 @@ Reuses from the codebase:
     - SegmentationLoss3Ch, DiceMetric3Ch for training objectives
 """
 
-import contextlib
 import csv
 import logging
 import sys
@@ -30,7 +29,7 @@ import torch.nn as nn
 import yaml
 from omegaconf import DictConfig, OmegaConf
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau, SequentialLR
+from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -70,9 +69,7 @@ def create_ensemble_member_model(
     Returns:
         LoRAOriginalDecoderModel ready for training.
     """
-    checkpoint_path = str(
-        Path(config.paths.checkpoint_dir) / config.paths.checkpoint_filename
-    )
+    checkpoint_path = str(Path(config.paths.checkpoint_dir) / config.paths.checkpoint_filename)
 
     # Load full SwinUNETR with pretrained encoder + decoder weights
     full_model = load_full_swinunetr(
@@ -143,9 +140,11 @@ def create_optimizer(
     decoder_params = model.get_decoder_params()
 
     # Use separate output_head LR when in encoder-only mode
-    decoder_lr = config.training.learning_rate.get(
-        "output_head", config.training.learning_rate.decoder
-    ) if config.training.get("train_output_head", False) else config.training.learning_rate.decoder
+    decoder_lr = (
+        config.training.learning_rate.get("output_head", config.training.learning_rate.decoder)
+        if config.training.get("train_output_head", False)
+        else config.training.learning_rate.decoder
+    )
 
     param_groups = [
         {
@@ -206,7 +205,12 @@ def validate(
         use_amp: Whether to use bf16 autocast.
 
     Returns:
-        Dict with loss, dice_mean (WT+ET only), dice_tc, dice_wt, dice_et.
+        Dict with loss, dice_mean (average of WT+ET, BraTS convention),
+        dice_tc, dice_wt, dice_et. Channels are BraTS-hierarchical
+        (TC=1|3, WT=seg>0, ET=3) matching the training targets; the
+        model is aligned with BSF's pretrained head. Downstream clinical
+        disjoint regions are derived via
+        ``growth.inference.postprocess.derive_disjoint_regions``.
     """
     model.eval()
     total_loss = 0.0
@@ -221,9 +225,7 @@ def validate(
         images = batch["image"].to(device)
         segs = batch["seg"].to(device)
 
-        with torch.autocast(
-            device_type="cuda", dtype=torch.bfloat16, enabled=use_amp
-        ):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
             pred = model(images)
             loss = seg_loss_fn(pred, segs, domain="MEN")
 
@@ -233,10 +235,7 @@ def validate(
         num_batches += 1
 
         if not _INTERACTIVE and (step + 1) % log_interval == 0:
-            logger.info(
-                f"  [val] {step + 1}/{n_total} batches "
-                f"({100 * (step + 1) / n_total:.0f}%)"
-            )
+            logger.info(f"  [val] {step + 1}/{n_total} batches ({100 * (step + 1) / n_total:.0f}%)")
 
     if num_batches == 0:
         return {
@@ -298,9 +297,7 @@ def train_epoch(
         images = batch["image"].to(device)
         segs = batch["seg"].to(device)
 
-        with torch.autocast(
-            device_type="cuda", dtype=torch.bfloat16, enabled=use_amp
-        ):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
             pred = model(images)
             loss = seg_loss_fn(pred, segs, domain="MEN")
 
@@ -422,8 +419,7 @@ def train_single_member(
     logging.getLogger().addHandler(log_handler)
 
     try:
-        return _train_member_inner(config, member_id, device, seed_m,
-                                   resolved_run_dir, member_dir)
+        return _train_member_inner(config, member_id, device, seed_m, resolved_run_dir, member_dir)
     finally:
         logging.getLogger().removeHandler(log_handler)
         log_handler.close()
@@ -464,10 +460,7 @@ def _train_member_inner(
         include_gaussian_smooth=config.data.get("augment_gaussian_smooth", False),
     )
 
-    logger.info(
-        f"Data: {len(train_loader.dataset)} train, "
-        f"{len(val_loader.dataset)} val samples"
-    )
+    logger.info(f"Data: {len(train_loader.dataset)} train, {len(val_loader.dataset)} val samples")
 
     # 5. Optimizer & scheduler
     optimizer, scheduler_info = create_optimizer(model, config)
@@ -490,9 +483,15 @@ def _train_member_inner(
     # 8. CSV log
     log_path = member_dir / "training_log.csv"
     csv_columns = [
-        "epoch", "train_loss",
-        "val_loss", "val_dice_mean", "val_dice_tc", "val_dice_wt", "val_dice_et",
-        "lr", "epoch_time_sec",
+        "epoch",
+        "train_loss",
+        "val_loss",
+        "val_dice_mean",
+        "val_dice_tc",
+        "val_dice_wt",
+        "val_dice_et",
+        "lr",
+        "epoch_time_sec",
     ]
     with open(log_path, "w", newline="") as f:
         csv.writer(f).writerow(csv_columns)
@@ -524,7 +523,11 @@ def _train_member_inner(
 
         # Train
         train_metrics = train_epoch(
-            model, train_loader, seg_loss_fn, optimizer, device,
+            model,
+            train_loader,
+            seg_loss_fn,
+            optimizer,
+            device,
             gradient_clip=gradient_clip,
             use_amp=use_amp,
             grad_accum_steps=grad_accum_steps,
@@ -532,7 +535,11 @@ def _train_member_inner(
 
         # Validate
         val_metrics = validate(
-            model, val_loader, seg_loss_fn, dice_metric, device,
+            model,
+            val_loader,
+            seg_loss_fn,
+            dice_metric,
+            device,
             use_amp=use_amp,
         )
 
@@ -573,10 +580,15 @@ def _train_member_inner(
             f"ETA: {eta_sec / 60:.0f}min"
         )
         csv_row = [
-            epoch + 1, train_metrics["loss"],
-            val_metrics["loss"], val_metrics["dice_mean"],
-            val_metrics["dice_tc"], val_metrics["dice_wt"], val_metrics["dice_et"],
-            current_lr, round(epoch_time, 1),
+            epoch + 1,
+            train_metrics["loss"],
+            val_metrics["loss"],
+            val_metrics["dice_mean"],
+            val_metrics["dice_tc"],
+            val_metrics["dice_wt"],
+            val_metrics["dice_et"],
+            current_lr,
+            round(epoch_time, 1),
         ]
         with open(log_path, "a", newline="") as f:
             csv.writer(f).writerow(csv_row)

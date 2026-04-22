@@ -63,10 +63,7 @@ def plot(
     # Data extraction — per scan_id for paired tests
     baseline = data.baseline_dice.set_index("scan_id")
     ensemble = data.ensemble_dice.set_index("scan_id")
-    individual = (
-        data.per_member_dice.groupby("scan_id")[["dice_wt", "dice_et"]]
-        .mean()
-    )
+    individual = data.per_member_dice.groupby("scan_id")[["dice_wt", "dice_et"]].mean()
 
     # Align on common scan_ids
     common = baseline.index.intersection(ensemble.index).intersection(individual.index)
@@ -103,8 +100,12 @@ def plot(
                 continue
 
             parts = ax.violinplot(
-                vals_clean, positions=[pos], widths=width,
-                showmeans=False, showmedians=False, showextrema=False,
+                vals_clean,
+                positions=[pos],
+                widths=width,
+                showmeans=False,
+                showmedians=False,
+                showextrema=False,
             )
             for pc in parts["bodies"]:
                 pc.set_facecolor(color)
@@ -113,8 +114,13 @@ def plot(
 
             q25, med, q75 = np.percentile(vals_clean, [25, 50, 75])
             ax.scatter(
-                [pos], [med], color=color, s=20, zorder=5,
-                edgecolors="k", linewidths=0.5,
+                [pos],
+                [med],
+                color=color,
+                s=20,
+                zorder=5,
+                edgecolors="k",
+                linewidths=0.5,
             )
             ax.vlines(pos, q25, q75, color=color, lw=2.0, zorder=4)
 
@@ -145,7 +151,9 @@ def plot(
 
             try:
                 stat_result = stats.wilcoxon(
-                    a_vals, b_vals, alternative="two-sided",
+                    a_vals,
+                    b_vals,
+                    alternative="two-sided",
                 )
                 p = stat_result.pvalue
             except (ValueError, ZeroDivisionError):
@@ -166,11 +174,17 @@ def plot(
             ax.plot(
                 [x1, x1, x2, x2],
                 [y, y + bracket_h, y + bracket_h, y],
-                lw=0.7, color=color,
+                lw=0.7,
+                color=color,
             )
             ax.text(
-                (x1 + x2) / 2, y + bracket_h + 0.005,
-                label, ha="center", va="bottom", fontsize=6.5, color=color,
+                (x1 + x2) / 2,
+                y + bracket_h + 0.005,
+                label,
+                ha="center",
+                va="bottom",
+                fontsize=6.5,
+                color=color,
             )
             bracket_idx += 1
 
@@ -179,7 +193,8 @@ def plot(
         bracket_y_start
         + 2 * (2 * intra_pair_gap + inter_group_gap)
         + intra_pair_gap
-        + bracket_h + 0.05
+        + bracket_h
+        + 0.05
     )
     ax.set_ylim(-0.05, top_y)
     ax.set_yticks(np.arange(0, 1.01, 0.2))
@@ -187,15 +202,23 @@ def plot(
     # Legend — outside the plot, at the bottom, full label names
     patches = [
         mpatches.Patch(
-            facecolor=C_WT, alpha=0.55, label="Whole Tumor (WT)",
+            facecolor=C_WT,
+            alpha=0.55,
+            label="Whole Tumor (WT)",
         ),
         mpatches.Patch(
-            facecolor=C_ET, alpha=0.55, label="Enhancing Tumor (ET)",
+            facecolor=C_ET,
+            alpha=0.55,
+            label="Enhancing Tumor (ET)",
         ),
     ]
     fig.legend(
-        handles=patches, loc="lower center", ncol=2,
-        frameon=False, fontsize=8, bbox_to_anchor=(0.5, -0.02),
+        handles=patches,
+        loc="lower center",
+        ncol=2,
+        frameon=False,
+        fontsize=8,
+        bbox_to_anchor=(0.5, -0.02),
     )
 
     fig.tight_layout()

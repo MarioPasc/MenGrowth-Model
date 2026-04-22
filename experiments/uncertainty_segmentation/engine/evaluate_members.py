@@ -20,6 +20,7 @@ from omegaconf import DictConfig
 
 from growth.data.bratsmendata import BraTSDatasetH5
 from growth.data.transforms import get_h5_val_transforms
+from growth.inference.postprocess import remove_small_components
 from growth.inference.sliding_window import sliding_window_segment
 
 from .ensemble_convergence import (
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 def _convert_seg_to_binary(seg: torch.Tensor, domain: str = "MEN") -> torch.Tensor:
-    """Convert integer seg labels to 3-channel binary masks (TC/WT/ET).
+    """Convert integer seg labels to 3-channel binary masks [TC, WT, ED].
 
     Thin wrapper around :func:`growth.losses.segmentation._convert_single_domain`
     so the MEN/GLI label mapping lives in a single source of truth.
@@ -102,10 +103,14 @@ def evaluate_per_member(
 
     Returns:
         DataFrame with columns: member_id, scan_id, dice_tc, dice_wt,
-        dice_et, dice_mean, volume_pred. Has M × N_test rows.
+        dice_et, dice_mean, volume_pred. Has M × N_test rows. Dice
+        columns are BraTS-hierarchical (TC=1|3, WT=seg>0, ET=3) —
+        matching the training targets. volume_pred is the meningioma
+        mass voxel count (BSF ch0 = BraTS-TC) after CC cleanup.
     """
     predictor = EnsemblePredictor(config, device=device, run_dir=run_dir)
     M = len(predictor.available_members)
+    min_component_voxels = int(config.inference.get("min_component_voxels", 64))
 
     # Load test dataset
     h5_path = config.paths.men_h5_file
@@ -157,15 +162,19 @@ def evaluate_per_member(
             # Dice
             dice = _compute_dice_per_channel(pred_binary, gt_binary)
 
-            # ET volume (ch2) = meningioma mass — the growth target
-            vol_pred = float(pred_binary[2].sum().item())
+            # Meningioma-mass volume from BSF ch0 (BraTS-TC = labels
+            # 1|3). CC cleanup before counting voxels.
+            pred_men = remove_small_components(
+                pred_binary[0].bool(), min_voxels=min_component_voxels
+            )
+            vol_pred = float(pred_men.sum().item())
 
-            # Save per-member ET mask for BraTS-MEN test (thesis figures)
+            # Save per-member meningioma-mass mask (thesis figures)
             if predictions_dir is not None:
                 scan_dir = predictions_dir / sid
                 scan_dir.mkdir(parents=True, exist_ok=True)
                 _save_3d(
-                    pred_binary[2],
+                    pred_men,
                     scan_dir / f"member_{member_id}_mask.nii.gz",
                     dtype=np.int8,
                 )

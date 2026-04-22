@@ -25,20 +25,23 @@ class TestConvertSingleDomain:
     """Tests for the module-level _convert_single_domain function."""
 
     def test_gli_labels(self) -> None:
-        """GLI: 1=NETC, 2=SNFH, 3=ET, 4=RC → TC=(1|3|4), WT=(>0), ET=(3)."""
+        """GLI: 1=NETC, 2=SNFH, 3=ET, 4=RC (BraTS-hierarchical target).
+
+        TC = (1|3|4), WT = (seg>0), ET = (3)
+        """
         seg = torch.tensor([[[[0, 1, 2, 3, 4]]]])  # [1, 1, 1, 5]
         seg = seg.squeeze(1)  # [1, 1, 5]
         result = _convert_single_domain(seg, "GLI")  # [1, 3, 1, 5]
 
-        tc = result[0, 0, 0]  # [5]
+        tc = result[0, 0, 0]
         wt = result[0, 1, 0]
         et = result[0, 2, 0]
 
-        # bg=0: TC=0, WT=0, ET=0
+        # bg=0: all zero
         assert tc[0] == 0 and wt[0] == 0 and et[0] == 0
         # NETC=1: TC=1, WT=1, ET=0
         assert tc[1] == 1 and wt[1] == 1 and et[1] == 0
-        # SNFH=2: TC=0, WT=1, ET=0
+        # SNFH=2: TC=0, WT=1 (WT includes edema), ET=0
         assert tc[2] == 0 and wt[2] == 1 and et[2] == 0
         # ET=3: TC=1, WT=1, ET=1
         assert tc[3] == 1 and wt[3] == 1 and et[3] == 1
@@ -46,12 +49,14 @@ class TestConvertSingleDomain:
         assert tc[4] == 1 and wt[4] == 1 and et[4] == 0
 
     def test_men_labels(self) -> None:
-        """MEN: 1=NETC (merged into ET), 2=SNFH (edema), 3=ET → TC=empty, WT=(1|2|3), ET=(1|3).
+        """MEN: 1=NETC, 2=SNFH, 3=ET (BraTS-hierarchical target).
 
-        BSF effectively models 2 tissues for meningioma (SNFH + ET); NETC is
-        part of the solid meningioma mass and is **merged into the ET target**
-        during the BraTS→BSF translation. The TC sigmoid channel has no
-        analogue in this 2-label space and is left empty (target = zeros).
+            TC = (1|3), WT = (seg>0), ET = (3)
+
+        Downstream clinical regions (``WT_meningioma ⊥ ED_edema``) are
+        derived from these hierarchical channels via
+        ``growth.inference.postprocess.derive_disjoint_regions``, not
+        by altering the training target.
         """
         seg = torch.tensor([[[[0, 1, 2, 3]]]])  # [1, 1, 1, 4]
         seg = seg.squeeze(1)  # [1, 1, 4]
@@ -63,14 +68,16 @@ class TestConvertSingleDomain:
 
         # bg=0: all zero
         assert tc[0] == 0 and wt[0] == 0 and et[0] == 0
-        # NETC=1: TC=0 (always empty), WT=1 (in tumor), ET=1 (merged into ET)
-        assert tc[1] == 0 and wt[1] == 1 and et[1] == 1
-        # SNFH=2: TC=0, WT=1 (in tumor), ET=0 (edema is not part of the mass)
+        # NETC=1: TC=1, WT=1, ET=0
+        assert tc[1] == 1 and wt[1] == 1 and et[1] == 0
+        # SNFH=2: TC=0, WT=1 (includes edema), ET=0
         assert tc[2] == 0 and wt[2] == 1 and et[2] == 0
-        # ET=3: TC=0, WT=1 (in tumor), ET=1 (the original enhancing tumor)
-        assert tc[3] == 0 and wt[3] == 1 and et[3] == 1
-        # Strong assertion: TC channel must be entirely empty for MEN
-        assert tc.sum().item() == 0, "MEN TC channel must always be all zeros"
+        # ET=3: TC=1, WT=1, ET=1
+        assert tc[3] == 1 and wt[3] == 1 and et[3] == 1
+
+        # BraTS-hierarchical invariants: ET ⊂ TC ⊂ WT.
+        assert ((et.bool() & tc.bool()) == et.bool()).all()
+        assert ((tc.bool() & wt.bool()) == tc.bool()).all()
 
     def test_all_background(self) -> None:
         """All background labels should produce all-zero masks."""

@@ -89,7 +89,7 @@ training:
   decoder_type: "original"  # Use full SwinUNETR decoder (not lightweight head)
   freeze_decoder: true      # Encoder-only default: decoder weights are frozen
   train_output_head: true   # Unfreeze ONLY model.out (48->3 Conv3d, ~147 params)
-  out_channels: 3           # Segmentation output channels (TC, WT, ET)
+  out_channels: 3           # Segmentation output channels (BraTS-hierarchical TC, WT, ET)
 
 # =============================================================================
 # Loss configuration
@@ -122,8 +122,12 @@ inference:
   sw_batch_size: 4                # Patches per forward pass
   sw_overlap: 0.5                 # Overlap fraction
   sw_mode: "gaussian"             # Blending mode
-  save_ensemble_masks: true               # Save WT hard mask + multi-label NIfTI for all scans
-  save_per_member_masks_all: false        # Save per-member WT masks for ALL scans (large!)
+  min_component_voxels: 64        # Postprocessing: drop predicted CCs smaller than this
+                                  #   voxel count. Size-threshold (NOT keep-largest) to
+                                  #   preserve multi-blob regions (e.g. bilateral edema).
+                                  #   0 disables. Applied per-channel binary mask.
+  save_ensemble_masks: true               # Save meningioma-mass hard mask + multi-label NIfTI for all scans
+  save_per_member_masks_all: false        # Save per-member meningioma masks for ALL scans (large!)
   save_per_member_probs_all: false        # Save per-member 3-channel soft probs (uint8) for ALL
                                           # test scans. Required for Dice(ensemble_k) curves
                                           # and threshold-sensitivity analysis. ~20 MB/member/scan

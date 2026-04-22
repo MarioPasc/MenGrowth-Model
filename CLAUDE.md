@@ -87,8 +87,8 @@ VARIANCE DECOMPOSITION:
 | **ROI (training)** | 128×128×128 | BrainSegFounder fine-tuning convention |
 | **ROI (features)** | 192×192×192 | 100% MEN tumor containment |
 | **encoder10 output** | `[B, 768, 4, 4, 4]` (128³ input) | SwinUNETR architecture |
-| **Seg output** | 3-ch sigmoid: Ch0=TC, Ch1=WT, Ch2=ET | Hierarchical overlapping |
-| **Input labels** | 0=BG, 1=NCR, 2=ED, 3=ET | BraTS convention |
+| **Seg output** | 3-ch sigmoid: Ch0=TC(1\|3), Ch1=WT(>0), Ch2=ET(==3) | BSF-aligned BraTS-hierarchical training; disjoint clinical regions derived downstream |
+| **Input labels** | 0=BG, 1=NETC, 2=SNFH (edema), 3=ET | BraTS-MEN raw integers |
 | **BSF checkpoint** | `finetuned_model_fold_0.pt` (BSF-Tiny, 62M params) | Cox et al. 2024 |
 | **Longitudinal cohort** | 31–58 patients, ~3.6 obs/patient, ~10 scanners | Private Andalusian cohort |
 | **Max predictors (N=31)** | 2–3 parameters | Riley et al. 2019 (pmsampsize) |

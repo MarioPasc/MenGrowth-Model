@@ -9,39 +9,59 @@ Defined in `MODALITY_KEYS` in `src/growth/data/transforms.py`.
 128×128×128 (matching BrainSegFounder fine-tuning). NOT 96³.
 encoder10 output: `[B, 768, 4, 4, 4]` with 128³ input.
 
-## Segmentation Convention (TC/WT/ET)
-BrainSegFounder uses 3-channel sigmoid output (hierarchical overlapping). The
-mapping from raw integer labels to TC/WT/ET is **domain-dependent** because
-BraTS-MEN and BraTS-GLI assign different semantics to the same integers.
+## Segmentation Convention
+Three-channel sigmoid output. Raw BraTS-MEN integer labels are
+1=NETC, 2=SNFH (edema), 3=ET; BraTS-GLI adds 4=RC.
 
-| Raw label  | BraTS-GLI            | BraTS-MEN                          |
-|-----------:|----------------------|------------------------------------|
-| 0          | Background           | Background                         |
-| 1          | NETC (necrotic core) | NETC (rare in meningioma)          |
-| 2          | SNFH (edema)         | SNFH (peritumoral edema)           |
-| 3          | ET (enhancing tumor) | ET (enhancing meningioma — main mass) |
-| 4          | RC (resection cavity)| —                                  |
+| Raw label | BraTS-GLI            | BraTS-MEN                 |
+|----------:|----------------------|---------------------------|
+| 0         | Background           | Background                |
+| 1         | NETC (necrotic core) | NETC (rare in meningioma) |
+| 2         | SNFH (edema)         | SNFH (peritumoral edema)  |
+| 3         | ET (enhancing tumor) | ET (enhancing meningioma) |
+| 4         | RC (resection cavity)| —                         |
 
-3-channel target conversion (must match what BSF was pretrained to output):
+### Training target: BraTS-hierarchical (BSF-aligned)
+The model is trained against the standard BraTS hierarchical regions
+that the finetuned BrainSegFounder decoder already emits on
+meningioma. This keeps the pretrained output head aligned and
+minimises what LoRA has to learn.
 
-- **GLI**: `TC = (1|3|4)`, `WT = (seg>0)`, `ET = (3)`
-- **MEN**: `TC = empty (zeros)`, `WT = (1|2|3)`, `ET = (1|3)`
+- **MEN**: `TC = (==1) | (==3)`, `WT = (seg > 0)`, `ET = (==3)`
+- **GLI**: `TC = (==1) | (==3) | (==4)`, `WT = (seg > 0)`, `ET = (==3)`
 
-For MEN, BSF effectively only models 2 tissues — SNFH (edema) and ET (enhancing tumor) —
-so we translate BraTS-MEN → BSF native by **merging NETC (label 1) into ET**. NETC is
-part of the solid meningioma mass; BSF was never trained to distinguish it from ET, so
-folding it in gives the model a single coherent "meningioma mass" target. The TC sigmoid
-channel has no analogue in this 2-label space and is held empty (target = zeros, model
-learns to suppress it). Downstream growth uses ET volume = the merged mass.
-
-Single source of truth: `_convert_single_domain` in `src/growth/losses/segmentation.py`.
+Hierarchy: `ET ⊂ TC ⊂ WT`. Single source of truth:
+`_convert_single_domain` in `src/growth/losses/segmentation.py`.
 **Never** redefine this conversion locally — import the helper.
 
-### Stage 1 volume target (meningioma growth)
-For meningioma growth modeling (Stage 1) the tracked endpoint is the
-**enhancing-tumor (ET) volume = label 3**, not the whole-tumor (WT) volume.
-SNFH/edema (label 2) is non-neoplastic and would inject noise into the
-trajectory. `semantic/volume[:, 3]` is `log(V_ET + 1)`.
+### Downstream label convention: disjoint clinical regions
+For volumes, plots, and statistics we derive **disjoint** per-voxel
+regions from the three hierarchical channels. These satisfy
+`TC_necrotic ⊂ WT_meningioma`, `WT_meningioma ⊥ ED_edema`,
+`TC_necrotic ⊥ ED_edema`:
+
+- `WT_meningioma (labels 1|3) = ch0 ≥ τ`          (= BraTS-TC)
+- `ET_enhancing  (label == 3) = ch2 ≥ τ`          (= BraTS-ET)
+- `TC_necrotic   (label == 1) = WT_men ∧ ¬ET_enh`
+- `ED_edema      (label == 2) = (ch1 ≥ τ) ∧ ¬WT_men`
+
+Helper: `growth.inference.postprocess.derive_disjoint_regions`.
+Do not recompute this inline — import the helper.
+
+### Volume target for MenGrowth / BraTS-MEN
+Meningioma volume = `WT_meningioma` (BSF ch0 thresholded + CC-cleaned).
+ED is tracked separately; BraTS-WT (ch1, includes edema) is NOT the
+volume label. Prior H5 semantic features may still store
+`semantic/volume[:, 3]` as `log(V_ET + 1)` — Stage 1 code uses this
+directly and is isolated from the LoRA-uncertainty pipeline.
+
+### Postprocessing
+Binary masks pass through
+`growth.inference.postprocess.remove_small_components(mask, min_voxels=64)`
+— drops 3D connected components below a voxel-size threshold (26-
+connectivity). Size-threshold, **not** keep-largest: edema can be
+legitimately bilateral. Configurable via `inference.min_component_voxels`
+in `experiments/uncertainty_segmentation/config.yaml`.
 
 ## Preprocessing Pipeline
 - Training: `CropForegroundd` → `SpatialPadd(128³)` → `RandSpatialCropd(128³)`

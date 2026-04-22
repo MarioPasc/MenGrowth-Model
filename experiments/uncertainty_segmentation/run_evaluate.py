@@ -20,14 +20,12 @@ import json
 import logging
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from .engine.ensemble_inference import EnsemblePredictor
 from .engine.evaluate_baseline import evaluate_baseline
 from .engine.evaluate_members import evaluate_ensemble_per_subject, evaluate_per_member
 from .engine.paths import get_run_dir
@@ -99,12 +97,16 @@ def run_full_evaluation(
         logger.info("STEP 1/6: Per-member test-set evaluation")
         logger.info("=" * 60)
         per_member_df = evaluate_per_member(
-            config, device=device, run_dir=run_dir,
+            config,
+            device=device,
+            run_dir=run_dir,
             predictions_dir=test_predictions_dir,
         )
         per_member_df.to_csv(per_member_path, index=False)
         step_time = time.time() - step_start
-        logger.info(f"Saved: {per_member_path} ({len(per_member_df)} rows) [{step_time/60:.1f}min]")
+        logger.info(
+            f"Saved: {per_member_path} ({len(per_member_df)} rows) [{step_time / 60:.1f}min]"
+        )
         summary["per_member_rows"] = len(per_member_df)
     elif per_member_path.exists():
         per_member_df = pd.read_csv(per_member_path)
@@ -120,13 +122,16 @@ def run_full_evaluation(
     logger.info("STEP 2/6: Ensemble evaluation (per-subject)")
     logger.info("=" * 60)
     ensemble_df, calibration_data = evaluate_ensemble_per_subject(
-        config, device=device, run_dir=run_dir, collect_calibration=True,
+        config,
+        device=device,
+        run_dir=run_dir,
+        collect_calibration=True,
         predictions_dir=test_predictions_dir,
         eval_dir=eval_dir,
     )
     ensemble_df.to_csv(ensemble_path, index=False)
     step_time = time.time() - step_start
-    logger.info(f"Saved: {ensemble_path} ({len(ensemble_df)} rows) [{step_time/60:.1f}min]")
+    logger.info(f"Saved: {ensemble_path} ({len(ensemble_df)} rows) [{step_time / 60:.1f}min]")
 
     summary["ensemble_dice_wt_mean"] = float(ensemble_df["dice_wt"].mean())
     summary["ensemble_dice_wt_std"] = float(ensemble_df["dice_wt"].std())
@@ -141,7 +146,9 @@ def run_full_evaluation(
             config, device=device, run_dir=run_dir, force=force_baseline
         )
         step_time = time.time() - step_start
-        logger.info(f"  Baseline WT Dice: {baseline_df['dice_wt'].mean():.4f} [{step_time/60:.1f}min]")
+        logger.info(
+            f"  Baseline WT Dice: {baseline_df['dice_wt'].mean():.4f} [{step_time / 60:.1f}min]"
+        )
         summary["baseline_dice_wt_mean"] = float(baseline_df["dice_wt"].mean())
     elif (eval_dir / "baseline_test_dice.csv").exists():
         baseline_df = pd.read_csv(eval_dir / "baseline_test_dice.csv")
@@ -183,8 +190,7 @@ def run_full_evaluation(
             if config.evaluation.get("compute_reliability", True):
                 rel = compute_reliability_data(cal_probs, cal_labels, n_bins=n_bins)
                 cal_results["reliability"] = {
-                    k: v.tolist() if isinstance(v, np.ndarray) else v
-                    for k, v in rel.items()
+                    k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in rel.items()
                 }
 
             # Save calibration separately
@@ -219,14 +225,23 @@ def run_full_evaluation(
         if baseline_df is not None:
             common_scans = set(ensemble_df["scan_id"]) & set(baseline_df["scan_id"])
             if common_scans:
-                ens_aligned = ensemble_df[ensemble_df["scan_id"].isin(common_scans)].sort_values("scan_id")
-                bas_aligned = baseline_df[baseline_df["scan_id"].isin(common_scans)].sort_values("scan_id")
-                paired = pd.DataFrame({
-                    "scan_id": ens_aligned["scan_id"].values,
-                    "dice_tc_delta": ens_aligned["dice_tc"].values - bas_aligned["dice_tc"].values,
-                    "dice_wt_delta": ens_aligned["dice_wt"].values - bas_aligned["dice_wt"].values,
-                    "dice_et_delta": ens_aligned["dice_et"].values - bas_aligned["dice_et"].values,
-                })
+                ens_aligned = ensemble_df[ensemble_df["scan_id"].isin(common_scans)].sort_values(
+                    "scan_id"
+                )
+                bas_aligned = baseline_df[baseline_df["scan_id"].isin(common_scans)].sort_values(
+                    "scan_id"
+                )
+                paired = pd.DataFrame(
+                    {
+                        "scan_id": ens_aligned["scan_id"].values,
+                        "dice_tc_delta": ens_aligned["dice_tc"].values
+                        - bas_aligned["dice_tc"].values,
+                        "dice_wt_delta": ens_aligned["dice_wt"].values
+                        - bas_aligned["dice_wt"].values,
+                        "dice_et_delta": ens_aligned["dice_et"].values
+                        - bas_aligned["dice_et"].values,
+                    }
+                )
                 paired_path = eval_dir / "paired_differences.csv"
                 paired.to_csv(paired_path, index=False)
                 logger.info(f"Saved: {paired_path} ({len(paired)} scan deltas)")
@@ -318,16 +333,19 @@ def main() -> int:
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--config-override", type=str, default=None)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--run-dir", type=str, default=None,
-                        help="Override run directory (from SLURM).")
-    parser.add_argument("--force-baseline", action="store_true",
-                        help="Recompute baseline even if cached.")
-    parser.add_argument("--skip-per-member", action="store_true",
-                        help="Skip per-member evaluation (use cached if available).")
-    parser.add_argument("--skip-baseline", action="store_true",
-                        help="Skip baseline evaluation.")
-    parser.add_argument("--skip-stats", action="store_true",
-                        help="Skip statistical summary.")
+    parser.add_argument(
+        "--run-dir", type=str, default=None, help="Override run directory (from SLURM)."
+    )
+    parser.add_argument(
+        "--force-baseline", action="store_true", help="Recompute baseline even if cached."
+    )
+    parser.add_argument(
+        "--skip-per-member",
+        action="store_true",
+        help="Skip per-member evaluation (use cached if available).",
+    )
+    parser.add_argument("--skip-baseline", action="store_true", help="Skip baseline evaluation.")
+    parser.add_argument("--skip-stats", action="store_true", help="Skip statistical summary.")
     args = parser.parse_args()
 
     config = OmegaConf.load(args.config)
