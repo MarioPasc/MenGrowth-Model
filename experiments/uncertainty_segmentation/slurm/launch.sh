@@ -12,6 +12,10 @@
 #   bash experiments/uncertainty_segmentation/slurm/launch.sh              # r=8 (default)
 #   bash experiments/uncertainty_segmentation/slurm/launch.sh --rank 4     # r=4 ablation
 #   bash experiments/uncertainty_segmentation/slurm/launch.sh --rank 16    # r=16 ablation
+#   bash experiments/uncertainty_segmentation/slurm/launch.sh --rank 32 --dry-run
+#       # Resolve + log merged config, skip SLURM submission. Use this
+#       # before every real launch to eyeball the config — training
+#       # takes many GPU hours.
 #
 # Default regime (2026-04-22): encoder-only LoRA adaptation.
 #   - LoRA on stages [1,2,3,4] with target types (qkv, proj, fc1, fc2).
@@ -46,11 +50,16 @@ PICASSO_OVERRIDE="${MODULE_DIR}/config/picasso/config_picasso.yaml"
 
 # Parse arguments
 RANK_OVERRIDE=""
+DRY_RUN=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --rank)
             RANK_OVERRIDE="$2"
             shift 2
+            ;;
+        --dry-run|-n)
+            DRY_RUN=1
+            shift
             ;;
         --encoder-only)
             # Deprecated: encoder-only is now the default, baked into
@@ -101,12 +110,13 @@ MERGED_OUTPUT=""
 MERGE_RC=0
 MERGED_OUTPUT=$(python3 -c "
 from omegaconf import OmegaConf
-import os, sys, pathlib
+import os, sys, pathlib, tempfile
 
 # Always start from the complete base config
 base_path = '${BASE_CONFIG}'
 override_path = '${PICASSO_OVERRIDE}'
 rank_override_path = '${RANK_OVERRIDE_PATH}'
+dry_run = int('${DRY_RUN}') == 1
 
 if not os.path.exists(base_path):
     print(f'FAIL Base config not found: {base_path}')
@@ -126,13 +136,59 @@ if rank_override_path and os.path.exists(rank_override_path):
     cfg = OmegaConf.merge(cfg, rank_override)
     print(f'[config] Applied rank override: r={cfg.lora.rank}, alpha={cfg.lora.alpha}')
 
-print(f'[config] Effective LoRA: stages={list(cfg.lora.target_stages)}, types={list(cfg.lora.target_module_types)}, rank={cfg.lora.rank}, freeze_decoder={cfg.training.freeze_decoder}, train_output_head={cfg.training.get(\"train_output_head\", False)}')
+# Human-readable summary of every field that matters for training +
+# downstream semantics. This is the last line of defence before
+# consuming many GPU hours — read it carefully.
+print('')
+print('[resolved] Training target / model:')
+print(f'    out_channels              = {cfg.training.out_channels}  (BraTS-hierarchical TC/WT/ET)')
+print(f'    freeze_decoder            = {cfg.training.freeze_decoder}')
+print(f'    train_output_head         = {cfg.training.get(\"train_output_head\", False)}')
+print(f'    epochs                    = {cfg.training.epochs}')
+print(f'    batch_size × grad_accum   = {cfg.training.batch_size} × {cfg.training.grad_accum_steps}')
+print(f'    use_amp                   = {cfg.training.use_amp}')
+print(f'    warmup_epochs             = {cfg.training.get(\"warmup_epochs\", 0)}')
+print(f'    early_stopping.patience   = {cfg.training.early_stopping.patience}')
+print('[resolved] LoRA:')
+print(f'    rank / alpha              = {cfg.lora.rank} / {cfg.lora.alpha}  (scaling = {cfg.lora.alpha / cfg.lora.rank:.2f})')
+print(f'    dropout                   = {cfg.lora.dropout}')
+print(f'    target_stages             = {list(cfg.lora.target_stages)}')
+print(f'    target_module_types       = {list(cfg.lora.target_module_types)}')
+print(f'    use_dora                  = {cfg.lora.use_dora}')
+print('[resolved] Ensemble:')
+print(f'    n_members                 = {cfg.ensemble.n_members}')
+print(f'    base_seed                 = {cfg.ensemble.base_seed}')
+print('[resolved] Data:')
+print(f'    modalities                = {list(cfg.data.modalities)}  (must be [t2f,t1c,t1n,t2w])')
+print(f'    train/val ROI             = {list(cfg.data.roi_size)} / {list(cfg.data.val_roi_size)}')
+print(f'    inference ROI             = {list(cfg.data.get(\"inference_roi_size\", cfg.data.val_roi_size))}')
+print(f'    train/val/test split      = {cfg.data.train_split} / {cfg.data.val_split} / {cfg.data.test_split}')
+print('[resolved] Inference / postprocess:')
+print(f'    sw_roi_size               = {list(cfg.inference.sw_roi_size)}')
+print(f'    sw_overlap                = {cfg.inference.sw_overlap}')
+print(f'    min_component_voxels      = {cfg.inference.get(\"min_component_voxels\", 0)}  (CC cleanup size-threshold; 0 disables)')
+print(f'    save_per_member_probs_all = {cfg.inference.get(\"save_per_member_probs_all\", False)}')
+print('[resolved] Paths (must exist on Picasso):')
+print(f'    checkpoint   = {cfg.paths.checkpoint_dir}/{cfg.paths.checkpoint_filename}')
+print(f'    men_h5_file  = {cfg.paths.men_h5_file}')
+print(f'    mengrowth_h5 = {cfg.paths.mengrowth_h5_file}')
+print(f'    gli_h5_file  = {cfg.paths.gli_h5_file}')
+print(f'    output_dir   = {cfg.experiment.output_dir}')
+print('')
 
 r = cfg.lora.rank
 M = cfg.ensemble.n_members
 s = cfg.ensemble.base_seed
 out = cfg.experiment.output_dir
 run_dir = f'{out}/r{r}_M{M}_s{s}'
+
+# In --dry-run mode the Picasso output_dir is not writable from a login
+# node / local machine. Redirect the snapshot to a temp directory so
+# the user can still inspect the fully-merged YAML.
+if dry_run:
+    tmp_root = tempfile.mkdtemp(prefix='lora_ens_dryrun_')
+    run_dir = f'{tmp_root}/r{r}_M{M}_s{s}'
+    print(f'[dry-run] Redirecting run_dir to {run_dir}')
 
 # Create run dir and save resolved config
 pathlib.Path(run_dir).mkdir(parents=True, exist_ok=True)
@@ -173,6 +229,20 @@ echo "  Config:   ${CONFIG_PATH}"
 echo "  Members:  ${N_MEMBERS}"
 echo "  Logs:     ${SLURM_LOG_DIR}"
 echo ""
+
+# ========================================================================
+# DRY RUN — exit here (before pre-flight + sbatch) so --dry-run works
+# even when Picasso-side paths are not reachable locally.
+# ========================================================================
+if [ "${DRY_RUN}" -eq 1 ]; then
+    echo "=========================================="
+    echo "DRY RUN — no jobs submitted"
+    echo "=========================================="
+    echo "The merged configuration above is what train_worker / evaluate_worker"
+    echo "/ inference_worker would consume, via ${CONFIG_PATH}."
+    echo "Re-run without --dry-run (on Picasso) to submit the SLURM chain."
+    exit 0
+fi
 
 # ========================================================================
 # PRE-FLIGHT CHECKS
