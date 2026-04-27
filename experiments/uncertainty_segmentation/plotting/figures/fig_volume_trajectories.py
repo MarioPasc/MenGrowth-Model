@@ -48,8 +48,6 @@ def plot(
         logger.warning("MenGrowth volumes not available — skipping Fig 11")
         return None
 
-    import pandas as pd
-
     vol = data.mengrowth_volumes
     figsize = config.get("figsize", [7, 4])
     color_metric = config.get("color_metric", "vol_std")
@@ -86,13 +84,17 @@ def plot(
 
         # Ribbon: median +/- std
         ax.fill_between(
-            t, v_median - v_std, v_median + v_std,
-            alpha=0.12, color=color, linewidth=0,
+            t,
+            v_median - v_std,
+            v_median + v_std,
+            alpha=0.12,
+            color=color,
+            linewidth=0,
         )
         ax.plot(t, v_median, "o-", color=color, ms=3, lw=1.0, alpha=0.8)
 
     ax.set_xlabel("Timepoint")
-    ax.set_ylabel("ET Volume (mm\u00b3)")
+    ax.set_ylabel("Meningioma Volume (mm\u00b3)")
 
     # Colorbar
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -108,8 +110,13 @@ def plot(
     cbar.ax.tick_params(labelsize=7)
 
     ax.text(
-        0.02, 0.98, f"N = {n_patients} patients",
-        transform=ax.transAxes, fontsize=8, va="top", ha="left",
+        0.02,
+        0.98,
+        f"N = {n_patients} patients",
+        transform=ax.transAxes,
+        fontsize=8,
+        va="top",
+        ha="left",
     )
 
     fig.tight_layout()

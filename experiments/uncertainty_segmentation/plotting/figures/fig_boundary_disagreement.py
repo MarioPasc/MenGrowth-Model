@@ -19,7 +19,13 @@ import numpy as np
 from experiments.uncertainty_segmentation.plotting.data_loader import (
     EnsembleResultsData,
 )
-from experiments.uncertainty_segmentation.plotting.style import C_ENSEMBLE
+from experiments.uncertainty_segmentation.plotting.style import (
+    C_ENSEMBLE,
+    REGION_CH_INDEX,
+    REGION_DISPLAY_SHORT,
+)
+
+_ = REGION_CH_INDEX, REGION_DISPLAY_SHORT  # used in plot()
 
 logger = logging.getLogger(__name__)
 
@@ -119,8 +125,7 @@ def plot(
 
     pred_dir = data.predictions_dir / scan_id
     if not pred_dir.exists():
-        logger.warning("Prediction dir not found for %s — skipping Fig 13",
-                       scan_id)
+        logger.warning("Prediction dir not found for %s — skipping Fig 13", scan_id)
         return None
 
     # Load ensemble mask
@@ -144,14 +149,18 @@ def plot(
 
     M = len(member_masks)
 
-    # WT mask: channel 1 in the 4D mask, or the full mask if 3D
-    def _get_wt(mask: np.ndarray) -> np.ndarray:
+    region = config.get("region", "tc")
+    ch_idx = REGION_CH_INDEX.get(region, 0)
+    region_short = REGION_DISPLAY_SHORT.get(region, region.upper())
+    logger.info("Fig 13: using region=%s (ch%d = %s)", region, ch_idx, region_short)
+
+    def _get_region(mask: np.ndarray) -> np.ndarray:
         if mask.ndim == 4:
-            return (mask[..., 1] > 0.5).astype(np.uint8)
+            return (mask[..., ch_idx] > 0.5).astype(np.uint8)
         return (mask > 0).astype(np.uint8)
 
-    ens_wt = _get_wt(ens_mask)
-    member_wts = [_get_wt(m) for m in member_masks]
+    ens_wt = _get_region(ens_mask)
+    member_wts = [_get_region(m) for m in member_masks]
 
     # Find best slice
     slice_idx = _find_best_slice(ens_wt, slice_axis)
@@ -173,8 +182,7 @@ def plot(
 
     # --- Panel A: MRI with ensemble contour ---
     ax_a.imshow(bg_slice.T, cmap="gray", origin="lower", aspect="equal")
-    ax_a.contour(ens_slice.T, levels=[0.5], colors=[C_ENSEMBLE],
-                 linewidths=1.5)
+    ax_a.contour(ens_slice.T, levels=[0.5], colors=[C_ENSEMBLE], linewidths=1.5)
     ax_a.set_title("a) Ensemble prediction", fontweight="bold", fontsize=9)
     ax_a.axis("off")
 
@@ -183,25 +191,25 @@ def plot(
     cmap_members = plt.cm.tab10
     for i, ms in enumerate(member_slices):
         color = cmap_members(i / max(M - 1, 1))
-        ax_b.contour(ms.T, levels=[0.5], colors=[color], linewidths=0.7,
-                     alpha=0.8)
+        ax_b.contour(ms.T, levels=[0.5], colors=[color], linewidths=0.7, alpha=0.8)
     ax_b.set_title("b) Per-member contours", fontweight="bold", fontsize=9)
     ax_b.axis("off")
 
     # --- Panel C: Agreement map ---
     agreement = np.sum(member_slices, axis=0)
-    im = ax_c.imshow(agreement.T, cmap="YlOrRd", origin="lower",
-                     aspect="equal", vmin=0, vmax=M)
-    ax_c.contour(ens_slice.T, levels=[0.5], colors=["white"],
-                 linewidths=0.8, linestyles="--")
+    im = ax_c.imshow(agreement.T, cmap="YlOrRd", origin="lower", aspect="equal", vmin=0, vmax=M)
+    ax_c.contour(ens_slice.T, levels=[0.5], colors=["white"], linewidths=0.8, linestyles="--")
     cbar = fig.colorbar(im, ax=ax_c, shrink=0.8, pad=0.02)
     cbar.set_label(f"Agreement (0\u2013{M})", fontsize=7)
     cbar.ax.tick_params(labelsize=6)
     ax_c.set_title("c) Agreement map", fontweight="bold", fontsize=9)
     ax_c.axis("off")
 
-    fig.suptitle(f"Boundary disagreement \u2014 {scan_id} "
-                 f"({slice_axis} slice {slice_idx})",
-                 fontweight="bold", fontsize=10, y=1.02)
+    fig.suptitle(
+        f"Boundary disagreement \u2014 {scan_id} ({slice_axis} slice {slice_idx})",
+        fontweight="bold",
+        fontsize=10,
+        y=1.02,
+    )
     fig.tight_layout()
     return fig

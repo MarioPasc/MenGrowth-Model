@@ -18,6 +18,12 @@ import numpy as np
 from experiments.uncertainty_segmentation.plotting.data_loader import (
     EnsembleResultsData,
 )
+from experiments.uncertainty_segmentation.plotting.style import (
+    REGION_CH_INDEX,
+    REGION_DISPLAY_SHORT,
+)
+
+_ = REGION_CH_INDEX, REGION_DISPLAY_SHORT  # used in plot()
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +87,7 @@ def plot(
 
     pred_dir = data.predictions_dir / scan_id
     if not pred_dir.exists():
-        logger.warning("Prediction dir not found for %s — skipping Fig 14",
-                       scan_id)
+        logger.warning("Prediction dir not found for %s — skipping Fig 14", scan_id)
         return None
 
     # Load entropy and MI maps
@@ -90,28 +95,35 @@ def plot(
     mi_vol = _load_nifti_data(pred_dir / "mutual_information.nii.gz")
 
     if entropy_vol is None and mi_vol is None:
-        logger.warning("No entropy/MI NIfTI found for %s — skipping Fig 14",
-                       scan_id)
+        logger.warning("No entropy/MI NIfTI found for %s — skipping Fig 14", scan_id)
         return None
 
-    # Extract WT channel if 4D (channel 1)
-    def _extract_wt(vol: np.ndarray | None) -> np.ndarray | None:
+    region = config.get("region", "tc")
+    ch_idx = REGION_CH_INDEX.get(region, 0)
+    region_short = REGION_DISPLAY_SHORT.get(region, region.upper())
+    logger.info("Fig 14: using region=%s (ch%d = %s)", region, ch_idx, region_short)
+
+    def _extract_region(vol: np.ndarray | None) -> np.ndarray | None:
         if vol is None:
             return None
         if vol.ndim == 4:
-            return vol[..., 1]
+            return vol[..., ch_idx]
         return vol
 
-    entropy_3d = _extract_wt(entropy_vol)
-    mi_3d = _extract_wt(mi_vol)
+    entropy_3d = _extract_region(entropy_vol)
+    mi_3d = _extract_region(mi_vol)
 
     # Load ensemble mask for contour reference
     ens_mask = _load_nifti_data(pred_dir / "ensemble_mask.nii.gz")
     ens_wt = None
     if ens_mask is not None:
-        ens_wt = (ens_mask[..., 1] > 0.5).astype(np.uint8) if ens_mask.ndim == 4 else (ens_mask > 0).astype(np.uint8)
+        ens_wt = (
+            (ens_mask[..., ch_idx] > 0.5).astype(np.uint8)
+            if ens_mask.ndim == 4
+            else (ens_mask > 0).astype(np.uint8)
+        )
 
-    # Load background
+    # Load background (always use WT channel for anatomical context)
     bg_vol = _load_nifti_data(pred_dir / "ensemble_probs.nii.gz")
     if bg_vol is not None and bg_vol.ndim == 4:
         bg_3d = bg_vol[..., 1]
@@ -145,15 +157,22 @@ def plot(
 
         # Mask out near-zero uncertainty for cleaner overlay
         unc_masked = np.ma.masked_where(unc_slice < 1e-6, unc_slice)
-        im = ax_i.imshow(unc_masked.T, cmap=cmap, origin="lower",
-                         aspect="equal", alpha=0.6,
-                         vmin=0, vmax=float(np.nanpercentile(unc_slice, 99)))
+        im = ax_i.imshow(
+            unc_masked.T,
+            cmap=cmap,
+            origin="lower",
+            aspect="equal",
+            alpha=0.6,
+            vmin=0,
+            vmax=float(np.nanpercentile(unc_slice, 99)),
+        )
 
         # Ensemble contour reference
         if ens_wt is not None:
             ens_slice = _get_slice(ens_wt, slice_idx, "axial")
-            ax_i.contour(ens_slice.T, levels=[0.5], colors=["white"],
-                         linewidths=0.8, linestyles="--")
+            ax_i.contour(
+                ens_slice.T, levels=[0.5], colors=["white"], linewidths=0.8, linestyles="--"
+            )
 
         cbar = fig.colorbar(im, ax=ax_i, shrink=0.8, pad=0.02)
         cbar.set_label(title.split("(")[1].rstrip(")"), fontsize=7)
@@ -161,7 +180,11 @@ def plot(
         ax_i.set_title(title, fontweight="bold", fontsize=9)
         ax_i.axis("off")
 
-    fig.suptitle(f"Uncertainty overlay \u2014 {scan_id} (axial slice {slice_idx})",
-                 fontweight="bold", fontsize=10, y=1.02)
+    fig.suptitle(
+        f"Uncertainty overlay \u2014 {scan_id} (axial slice {slice_idx})",
+        fontweight="bold",
+        fontsize=10,
+        y=1.02,
+    )
     fig.tight_layout()
     return fig

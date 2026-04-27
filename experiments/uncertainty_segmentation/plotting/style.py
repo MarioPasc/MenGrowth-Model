@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 
 from experiments.utils.settings import (
     ENSEMBLE_COLORS,
-    PLOT_SETTINGS,
     apply_ieee_style,
     get_significance_stars,
 )
@@ -31,6 +30,24 @@ C_FILL: str = ENSEMBLE_COLORS["fill"]
 C_MEDIAN: str = ENSEMBLE_COLORS["median"]
 MEMBER_CMAP = plt.cm.Set3
 
+# ---------------------------------------------------------------------------
+# BraTS-hierarchical region constants (TC / WT / ET)
+# ---------------------------------------------------------------------------
+
+C_TC: str = "#009E73"
+C_WT: str = "#0072B2"
+C_ET: str = "#D55E00"
+
+REGION_KEYS: tuple[str, ...] = ("tc", "wt", "et")
+REGION_DISPLAY: dict[str, str] = {
+    "tc": "Tumor Core (TC)",
+    "wt": "Whole Tumor (WT)",
+    "et": "Enhancing Tumor (ET)",
+}
+REGION_DISPLAY_SHORT: dict[str, str] = {"tc": "TC", "wt": "WT", "et": "ET"}
+REGION_COLORS: dict[str, str] = {"tc": C_TC, "wt": C_WT, "et": C_ET}
+REGION_CH_INDEX: dict[str, int] = {"tc": 0, "wt": 1, "et": 2}
+
 
 def setup_style(style_config: dict | None = None) -> None:
     """Configure matplotlib for publication-quality ensemble figures.
@@ -45,26 +62,27 @@ def setup_style(style_config: dict | None = None) -> None:
     cfg = style_config or {}
 
     # Ensemble-specific overrides
-    mpl.rcParams.update({
-        "font.family": cfg.get("font_family", "serif"),
-        "font.serif": cfg.get("font_serif",
-                               ["CMU Serif", "DejaVu Serif", "Times New Roman"]),
-        "font.size": cfg.get("font_size", 9),
-        "axes.titlesize": cfg.get("axes_title_size", 10),
-        "axes.labelsize": cfg.get("font_size", 9),
-        "xtick.labelsize": cfg.get("tick_size", 8),
-        "ytick.labelsize": cfg.get("tick_size", 8),
-        "legend.fontsize": cfg.get("legend_size", 8),
-        "figure.dpi": cfg.get("figure_dpi", 150),
-        "savefig.dpi": cfg.get("save_dpi", 300),
-        "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.05,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "axes.grid": False,
-        "pdf.fonttype": cfg.get("pdf_fonttype", 42),
-        "ps.fonttype": 42,
-    })
+    mpl.rcParams.update(
+        {
+            "font.family": cfg.get("font_family", "serif"),
+            "font.serif": cfg.get("font_serif", ["CMU Serif", "DejaVu Serif", "Times New Roman"]),
+            "font.size": cfg.get("font_size", 9),
+            "axes.titlesize": cfg.get("axes_title_size", 10),
+            "axes.labelsize": cfg.get("font_size", 9),
+            "xtick.labelsize": cfg.get("tick_size", 8),
+            "ytick.labelsize": cfg.get("tick_size", 8),
+            "legend.fontsize": cfg.get("legend_size", 8),
+            "figure.dpi": cfg.get("figure_dpi", 150),
+            "savefig.dpi": cfg.get("save_dpi", 300),
+            "savefig.bbox": "tight",
+            "savefig.pad_inches": 0.05,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "axes.grid": False,
+            "pdf.fonttype": cfg.get("pdf_fonttype", 42),
+            "ps.fonttype": 42,
+        }
+    )
 
 
 def significance_label(p: float) -> str:
@@ -101,6 +119,10 @@ def add_stat_bracket(
     """
     ax.plot([x1, x1, x2, x2], [y, y + h, y + h, y], lw=0.8, c="k")
     ax.text(
-        (x1 + x2) / 2, y + h, text,
-        ha="center", va="bottom", fontsize=fontsize,
+        (x1 + x2) / 2,
+        y + h,
+        text,
+        ha="center",
+        va="bottom",
+        fontsize=fontsize,
     )

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import time
 from pathlib import Path
 
@@ -58,6 +57,14 @@ FIGURE_NAMES = {
 # addition to the per-run figures/ directory, so the cross-rank artifact
 # has a single canonical home.
 CROSS_RANK_FIGURES: set[str] = {"fig_epistemic_diagnosis"}
+
+SUPPLEMENTARY_ELIGIBLE: set[str] = {
+    "fig_performance_comparison",
+    "fig_paired_comparison",
+    "fig_forest_plot",
+    "fig_best_worst",
+    "fig_inter_member_agreement",
+}
 
 
 def _load_config(config_path: Path | None) -> dict:
@@ -123,7 +130,9 @@ def generate_figures(
         epistemic_metrics.run_for_rank(run_dir, force=force_recompute)
     except FileNotFoundError as exc:
         logger.warning(
-            "Epistemic compute skipped for %s: %s", run_dir.name, exc,
+            "Epistemic compute skipped for %s: %s",
+            run_dir.name,
+            exc,
         )
     try:
         epistemic_metrics.run_cross_rank(run_dir, force=force_recompute)
@@ -132,8 +141,11 @@ def generate_figures(
 
     # Load data
     data = load_results(run_dir)
-    logger.info("Data loaded: %d test scans, %d members",
-                data.n_test_scans, data.n_members)
+    logger.info("Data loaded: %d test scans, %d members", data.n_test_scans, data.n_members)
+    logger.info("Label system: 3-channel BraTS-hierarchical (TC, WT, ET)")
+    logger.info("  TC (ch0): labels 1|3 = meningioma mass (tumor core)")
+    logger.info("  WT (ch1): seg > 0   = whole tumor incl. edema")
+    logger.info("  ET (ch2): label 3   = enhancing tumor")
 
     # Apply style
     setup_style(style_config)
@@ -154,7 +166,8 @@ def generate_figures(
 
     for name, module in selected.items():
         fig_config = figures_config.get(
-            name.replace("fig_", ""), {},
+            name.replace("fig_", ""),
+            {},
         )
 
         # Check enabled flag
@@ -196,16 +209,40 @@ def generate_figures(
         if extra_path is not None:
             logger.info(
                 "[OK]   %s  (%.1fs) -> %s (+ %s)",
-                name, elapsed, out_path.name, extra_path,
+                name,
+                elapsed,
+                out_path.name,
+                extra_path,
             )
         else:
             logger.info("[OK]   %s  (%.1fs) -> %s", name, elapsed, out_path.name)
         n_ok += 1
 
+        # Supplementary TC / ET variants for single-region figures
+        if name in SUPPLEMENTARY_ELIGIBLE:
+            for supp_region in ("tc", "et"):
+                supp_config = {**fig_config, "region": supp_region}
+                try:
+                    fig_supp = module.plot(data, supp_config)
+                except Exception:
+                    logger.exception("[FAIL] %s_%s (supplementary)", name, supp_region)
+                    n_fail += 1
+                    continue
+                if fig_supp is None:
+                    continue
+                supp_path = out / f"{out_name}_{supp_region}.{save_fmt}"
+                fig_supp.savefig(supp_path, dpi=save_dpi, transparent=transparent)
+                plt.close(fig_supp)
+                logger.info("[OK]   %s_%s (supplementary) -> %s", name, supp_region, supp_path.name)
+                n_ok += 1
+
     total_time = time.time() - t_total
     logger.info(
         "Done: %d generated, %d skipped, %d failed (%.1fs total)",
-        n_ok, n_skip, n_fail, total_time,
+        n_ok,
+        n_skip,
+        n_fail,
+        total_time,
     )
     logger.info("Figures saved to %s/", out)
 
@@ -216,36 +253,135 @@ def main() -> None:
         description="Generate LoRA-Ensemble publication figures.",
     )
     parser.add_argument(
-        "run_dir", type=str,
+        "run_dir",
+        type=str,
         help="Path to run directory (e.g., r8_M10_s42/)",
     )
     parser.add_argument(
-        "--config", type=str, default=None,
+        "--config",
+        type=str,
+        default=None,
         help="Path to plot config YAML",
     )
     parser.add_argument(
-        "--output", type=str, default=None,
+        "--output",
+        type=str,
+        default=None,
         help="Output directory for figures",
     )
     parser.add_argument(
-        "--format", type=str, default=None,
+        "--format",
+        type=str,
+        default=None,
         choices=["pdf", "png", "svg"],
         help="Output format",
     )
     parser.add_argument(
-        "--dpi", type=int, default=None,
+        "--dpi",
+        type=int,
+        default=None,
         help="Output DPI",
     )
     parser.add_argument(
-        "--only", nargs="+", default=None,
+        "--only",
+        nargs="+",
+        default=None,
         help="Generate only these figures (by registry name)",
     )
     parser.add_argument(
-        "--force-recompute", action="store_true",
+        "--force-recompute",
+        action="store_true",
         help="Bypass cached epistemic-diagnostics CSVs and recompute.",
     )
 
+    # Inter-LoRA comparison mode
+    inter_group = parser.add_argument_group(
+        "inter-lora",
+        "Inter-rank LoRA comparison report",
+    )
+    inter_group.add_argument(
+        "--inter-lora",
+        action="store_true",
+        help="Generate inter-rank comparison report. "
+        "run_dir must be the ROOT directory containing r*_M*_s* subdirs.",
+    )
+    inter_group.add_argument(
+        "--ranks",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Filter to specific ranks (e.g., --ranks 4 8 16 32)",
+    )
+    inter_group.add_argument(
+        "--baseline-dir",
+        type=str,
+        default=None,
+        help="Explicit baseline directory override",
+    )
+    inter_group.add_argument(
+        "--select-subjects",
+        nargs="*",
+        default=["auto"],
+        help="Scan IDs for Qual1 (default: auto-select)",
+    )
+    inter_group.add_argument(
+        "--bootstrap-n",
+        type=int,
+        default=1000,
+        help="Number of bootstrap resamples",
+    )
+    inter_group.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed",
+    )
+    inter_group.add_argument(
+        "--skip",
+        nargs="+",
+        default=None,
+        choices=["quant1", "quant2", "qual1", "qual2", "tables"],
+        help="Skip specific outputs",
+    )
+    inter_group.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail on any missing artefact",
+    )
+    inter_group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Discover and validate only, no rendering",
+    )
+
     args = parser.parse_args()
+
+    if args.inter_lora:
+        from experiments.uncertainty_segmentation.plotting.inter_lora.orchestrate import (
+            generate_inter_lora_report,
+        )
+
+        subjects = args.select_subjects
+        if len(subjects) == 1 and subjects[0] == "auto":
+            subjects = "auto"
+
+        generate_inter_lora_report(
+            root_dir=args.run_dir,
+            out_root=args.output,
+            config_path=args.config,
+            ranks=args.ranks,
+            baseline_dir=args.baseline_dir,
+            select_subjects=subjects,
+            bootstrap_n=args.bootstrap_n,
+            seed=args.seed,
+            dpi=args.dpi or 600,
+            fmt=args.format or "pdf",
+            skip=set(args.skip) if args.skip else None,
+            strict=args.strict,
+            dry_run=args.dry_run,
+            force_recompute=args.force_recompute,
+        )
+        return
 
     generate_figures(
         run_dir=args.run_dir,

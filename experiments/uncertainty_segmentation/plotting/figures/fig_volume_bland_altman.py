@@ -61,17 +61,15 @@ def plot(
 
     # Color by sign of difference
     colors = np.where(v_diff >= 0, C_DELTA_POS, C_DELTA_NEG)
-    ax.scatter(v_mean, v_diff, c=colors, s=14, alpha=0.6,
-               edgecolors="none", zorder=3)
+    ax.scatter(v_mean, v_diff, c=colors, s=14, alpha=0.6, edgecolors="none", zorder=3)
 
     # Reference and limit lines
     ax.axhline(0, color="k", ls="--", lw=0.7, alpha=0.5)
-    ax.axhline(bias, color=C_ENSEMBLE, lw=1.2, ls="-",
-               label=f"Bias = {bias:.0f} mm\u00b3")
-    ax.axhline(loa_upper, color=C_ENSEMBLE, lw=0.8, ls="--",
-               label=f"+1.96 SD = {loa_upper:.0f}")
-    ax.axhline(loa_lower, color=C_ENSEMBLE, lw=0.8, ls="--",
-               label=f"\u22121.96 SD = {loa_lower:.0f}")
+    ax.axhline(bias, color=C_ENSEMBLE, lw=1.2, ls="-", label=f"Bias = {bias:.0f} mm\u00b3")
+    ax.axhline(loa_upper, color=C_ENSEMBLE, lw=0.8, ls="--", label=f"+1.96 SD = {loa_upper:.0f}")
+    ax.axhline(
+        loa_lower, color=C_ENSEMBLE, lw=0.8, ls="--", label=f"\u22121.96 SD = {loa_lower:.0f}"
+    )
 
     # Log x-scale (volumes span orders of magnitude)
     ax.set_xscale("log")
@@ -80,17 +78,20 @@ def plot(
 
     # Text box with summary
     ax.text(
-        0.03, 0.97,
+        0.03,
+        0.97,
         f"Bias = {bias:.0f} mm\u00b3\n"
         f"95% LoA: [{loa_lower:.0f}, {loa_upper:.0f}]\n"
         f"n = {len(v_diff)}",
-        transform=ax.transAxes, fontsize=7,
-        va="top", ha="left",
+        transform=ax.transAxes,
+        fontsize=7,
+        va="top",
+        ha="left",
         bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow", alpha=0.9),
     )
 
     ax.legend(frameon=False, fontsize=7, loc="lower right")
-    ax.set_title("Bland-Altman: Ensemble vs GT volume", fontweight="bold")
+    ax.set_title("Bland-Altman: Ensemble vs GT meningioma volume", fontweight="bold")
 
     fig.tight_layout()
     return fig

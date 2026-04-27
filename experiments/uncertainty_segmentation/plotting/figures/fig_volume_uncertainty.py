@@ -92,7 +92,8 @@ def plot(
     )
 
     cbar = fig.colorbar(sc, ax=ax_a, shrink=0.8, pad=0.02)
-    cbar.set_label("WT entropy", fontsize=7)
+    entropy_display = entropy_col.replace("_", " ").replace("men ", "MEN ")
+    cbar.set_label(entropy_display, fontsize=7)
     cbar.ax.tick_params(labelsize=6)
 
     ax_a.set_xlabel("Mean volume (mm\u00b3)")

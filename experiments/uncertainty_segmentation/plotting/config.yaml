@@ -52,10 +52,10 @@ figures:
     n_cases: 5
   dice_compartments:
     enabled: true
-    figsize: [4.5, 3]
+    figsize: [5.5, 3]
   violin_regions:
     enabled: true
-    figsize: [6, 4]
+    figsize: [8, 4.5]
   inter_member_agreement:
     enabled: true
     figsize: [5, 4.5]
@@ -74,11 +74,13 @@ figures:
     figsize: [8, 4]
     scan_id: null             # null = auto-select from sample scans
     slice_axis: "axial"       # axial | coronal | sagittal
+    region: "tc"              # tc | wt | et — BraTS channel for spatial analysis
   uncertainty_overlay:
     enabled: true
     figsize: [7, 3]
     scan_id: null
     metric: "mutual_information"  # mutual_information | entropy
+    region: "tc"                  # tc | wt | et — BraTS channel for spatial analysis
   epistemic_diagnosis:
     # Merged bias-variance landscape + calibration-per-rank figure.
     # Cross-rank by nature: overlays all sibling ranks in one plot.
@@ -86,3 +88,30 @@ figures:
     figsize: [10.5, 4.2]
     log_scale: true               # log-log axes for bias-vs-std scatter
     ranks: [4, 8, 16]             # filter; set to null/omit to auto-include all siblings
+
+# ─── Inter-LoRA comparison (--inter-lora mode) ───
+inter_lora:
+  brats_h5: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_MEN.h5
+  mengrowth_h5: /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v5_final/h5_format/MenGrowth.h5
+  style:
+    font_size: 9
+    axes_title_size: 10
+    tick_size: 8
+    legend_size: 8
+    save_dpi: 600
+  figures:
+    quant1_dice_vs_rank:
+      enabled: true
+      n_boot: 1000
+      seed: 42
+    quant2_calib_epistemic:
+      enabled: false
+    qual1_slice_grid:
+      enabled: true
+    qual2_clustered_heatmap:
+      enabled: false
+  tables:
+    tab1_summary:
+      enabled: true
+    tab2_paired:
+      enabled: true

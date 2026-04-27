@@ -9,7 +9,7 @@ Right panel — Dice vs binarization threshold tau:
   * Ensemble Dice vs threshold (squares, solid)
   * Mean per-member Dice vs threshold (circles, dashed)
 
-Both panels show WT and ET as separate colors.
+Both panels show TC, WT, and ET as separate colors.
 """
 
 from __future__ import annotations
@@ -25,12 +25,11 @@ import pandas as pd
 from experiments.uncertainty_segmentation.plotting.data_loader import (
     EnsembleResultsData,
 )
-from experiments.uncertainty_segmentation.plotting.style import C_BASELINE
-
-C_WT = "#0072B2"
-C_ET = "#D55E00"
-REGION_COLORS = {"wt": C_WT, "et": C_ET}
-
+from experiments.uncertainty_segmentation.plotting.style import (
+    C_BASELINE,
+    REGION_COLORS,
+    REGION_DISPLAY,
+)
 
 # ── convergence helpers ──────────────────────────────────────────────
 
@@ -56,7 +55,7 @@ def _plot_convergence(
     data: EnsembleResultsData,
     show_theoretical: bool,
 ) -> None:
-    sm_sources = {"wt": data.convergence_wt, "et": data.convergence_et}
+    sm_sources = {"tc": data.convergence_tc, "wt": data.convergence_wt, "et": data.convergence_et}
     ek = getattr(data, "ensemble_k_convergence", None)
     ek_dict: dict[str, pd.DataFrame] = ek if isinstance(ek, dict) else {}
 
@@ -262,13 +261,13 @@ def plot(
 
     # ── Region colour legend (top centre, outside plots) ──
     region_handles = [
-        mpatches.Patch(facecolor=C_WT, alpha=0.7, label="Whole Tumor (WT)"),
-        mpatches.Patch(facecolor=C_ET, alpha=0.7, label="Enhancing Tumor (ET)"),
+        mpatches.Patch(facecolor=REGION_COLORS[r], alpha=0.7, label=REGION_DISPLAY[r])
+        for r in REGION_COLORS
     ]
     fig.legend(
         handles=region_handles,
         loc="upper center",
-        ncol=2,
+        ncol=3,
         frameon=False,
         fontsize=8,
         bbox_to_anchor=(0.5, 1.06),

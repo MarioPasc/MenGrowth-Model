@@ -11,14 +11,16 @@ import logging
 import matplotlib.axes
 import matplotlib.figure
 import matplotlib.pyplot as plt
-import numpy as np
 import seaborn as sns
 
 from experiments.uncertainty_segmentation.plotting.data_loader import (
     EnsembleResultsData,
 )
+from experiments.uncertainty_segmentation.plotting.style import REGION_DISPLAY_SHORT
 
 logger = logging.getLogger(__name__)
+
+_ = REGION_DISPLAY_SHORT  # used in plot()
 
 
 def plot(
@@ -42,9 +44,15 @@ def plot(
     else:
         fig = ax.get_figure()
 
-    # Pivot per_member_dice to [scan_id x member_id] on dice_wt
+    region = config.get("region", "wt")
+    region_short = REGION_DISPLAY_SHORT[region]
+    dice_col = f"dice_{region}"
+
+    # Pivot per_member_dice to [scan_id x member_id]
     pivot = data.per_member_dice.pivot(
-        index="scan_id", columns="member_id", values="dice_wt",
+        index="scan_id",
+        columns="member_id",
+        values=dice_col,
     )
     M = pivot.shape[1]
 
@@ -74,13 +82,14 @@ def plot(
 
     # Title annotation with statistics
     agreement = data.statistical_summary.get("inter_member_agreement", {})
-    mean_r = agreement.get("mean_pairwise_correlation_wt", float("nan"))
-    icc = agreement.get("icc_wt", float("nan"))
+    mean_r = agreement.get(f"mean_pairwise_correlation_{region}", float("nan"))
+    icc = agreement.get(f"icc_{region}", float("nan"))
 
     ax.set_title(
-        f"Inter-member agreement (WT Dice)\n"
+        f"Inter-member agreement ({region_short} Dice)\n"
         f"Mean pairwise r = {mean_r:.3f}    ICC(3,1) = {icc:.3f}",
-        fontweight="bold", fontsize=9,
+        fontweight="bold",
+        fontsize=9,
     )
 
     fig.tight_layout()
