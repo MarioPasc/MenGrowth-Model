@@ -47,6 +47,8 @@ DRY_RUN=0
 SELECTED_MODELS=""
 SKIP_PULL=0
 SKIP_EXTRACT=0
+SEQUENTIAL=0
+KEEP_SIF=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -67,9 +69,19 @@ while [[ $# -gt 0 ]]; do
             SKIP_EXTRACT=1
             shift
             ;;
+        --sequential)
+            # Quota-safe mode: pull → submit (sbatch --wait) → delete SIF → next.
+            # Run inside tmux/nohup; the launcher blocks until each job finishes.
+            SEQUENTIAL=1
+            shift
+            ;;
+        --keep-sif)
+            KEEP_SIF=1
+            shift
+            ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--dry-run] [--skip-pull] [--skip-extract] [--models MODEL1 MODEL2 ...]"
+            echo "Usage: $0 [--dry-run] [--skip-pull] [--skip-extract] [--sequential] [--keep-sif] [--models MODEL1 MODEL2 ...]"
             exit 1
             ;;
     esac
@@ -85,6 +97,7 @@ echo "  SIF dir:    ${SIF_DIR}"
 echo "  Log dir:    ${LOG_DIR}"
 echo "  Conda env:  ${CONDA_ENV_NAME}"
 echo "  Dry run:    ${DRY_RUN}"
+echo "  Sequential: ${SEQUENTIAL}  (keep_sif=${KEEP_SIF})"
 echo ""
 
 # Create directories
@@ -108,9 +121,26 @@ export SINGULARITY_TMPDIR="${SIF_DIR}/.singularity_tmp"
 mkdir -p "${SINGULARITY_CACHEDIR}" "${SINGULARITY_TMPDIR}"
 echo "  SINGULARITY_CACHEDIR=${SINGULARITY_CACHEDIR}"
 echo "  SINGULARITY_TMPDIR=${SINGULARITY_TMPDIR}"
+
+# Wipe partial build trees from any prior failed pull (these can hold tens of GB
+# under .singularity_tmp/build-temp-*/rootfs and silently eat the fscratch quota).
+clean_singularity_tmp() {
+    if [ -d "${SINGULARITY_TMPDIR}" ]; then
+        find "${SINGULARITY_TMPDIR}" -maxdepth 1 -mindepth 1 -name 'build-*' -exec rm -rf {} + 2>/dev/null || true
+    fi
+}
+clean_singularity_tmp
+echo "  Quota: $(quota -s 2>/dev/null | awk 'NR==3 {print $1, $2, $3, $4}' || echo 'n/a')"
 echo ""
 
+if [ "${SEQUENTIAL}" -eq 1 ]; then
+    echo "[sequential] Step 1 batch pull skipped — pulls happen per-model after Step 2."
+    echo ""
+fi
+
 for entry in "${MODELS[@]}"; do
+    [ "${SEQUENTIAL}" -eq 1 ] && break
+
     IFS='|' read -r model_id docker_image year interface <<< "${entry}"
 
     # Filter by selected models if specified
@@ -185,6 +215,112 @@ WORKER_SCRIPT="${SCRIPT_DIR}/benchmark_worker.sh"
 if [ ! -f "${WORKER_SCRIPT}" ]; then
     echo "ERROR: Worker script not found: ${WORKER_SCRIPT}"
     exit 1
+fi
+
+# ------------------------------------------------------------------------
+# SEQUENTIAL MODE: pull → sbatch --wait → (optionally) delete SIF → next.
+# Avoids fscratch quota overflow by holding at most one large SIF on disk
+# at a time. Run inside tmux/nohup — sbatch --wait blocks until the job
+# completes (queue + run).
+# ------------------------------------------------------------------------
+if [ "${SEQUENTIAL}" -eq 1 ]; then
+    SEQ_RESULTS=()
+    for entry in "${MODELS[@]}"; do
+        IFS='|' read -r model_id docker_image year interface <<< "${entry}"
+
+        if [ -n "${SELECTED_MODELS}" ]; then
+            if ! echo "${SELECTED_MODELS}" | grep -qw "${model_id}"; then
+                continue
+            fi
+        fi
+
+        sif_name="$(echo "${docker_image}" | tr '/:' '_').sif"
+        sif_path="${SIF_DIR}/${sif_name}"
+        meta_path="${OUTPUT_DIR}/models/${model_id}/run_metadata.json"
+
+        echo ""
+        echo "------------------------------------------"
+        echo "[seq] ${model_id} (${docker_image})"
+        echo "------------------------------------------"
+
+        # Skip if a SUCCESS run already exists.
+        if [ -f "${meta_path}" ] && grep -q '"status": "SUCCESS"' "${meta_path}" 2>/dev/null; then
+            echo "  [DONE] previous SUCCESS in ${meta_path} — skipping"
+            SEQ_RESULTS+=("${model_id}:SKIP_DONE")
+            continue
+        fi
+
+        # PULL (idempotent)
+        if [ "${SKIP_PULL}" -eq 1 ] && [ ! -f "${sif_path}" ]; then
+            echo "  [WARN] --skip-pull set and SIF missing — skipping ${model_id}"
+            SEQ_RESULTS+=("${model_id}:SKIP_NO_SIF")
+            continue
+        fi
+        if [ ! -f "${sif_path}" ]; then
+            clean_singularity_tmp
+            echo "  [PULL] ${docker_image}"
+            if [ "${DRY_RUN}" -eq 0 ]; then
+                if ! singularity pull "${sif_path}" "docker://${docker_image}"; then
+                    echo "  [FAIL] pull failed for ${model_id}"
+                    clean_singularity_tmp
+                    SEQ_RESULTS+=("${model_id}:PULL_FAIL")
+                    continue
+                fi
+                echo "         → $(du -h "${sif_path}" | cut -f1)"
+            fi
+        else
+            echo "  [OK]   SIF exists ($(du -h "${sif_path}" | cut -f1))"
+        fi
+
+        # SUBMIT (blocking)
+        JOB_NAME="bm_${model_id}"
+        LOG_OUT="${LOG_DIR}/${model_id}_%j.out"
+        LOG_ERR="${LOG_DIR}/${model_id}_%j.err"
+
+        SBATCH_CMD="sbatch --wait \
+            --job-name=${JOB_NAME} \
+            --output=${LOG_OUT} \
+            --error=${LOG_ERR} \
+            --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
+            ${WORKER_SCRIPT}"
+
+        if [ "${DRY_RUN}" -eq 1 ]; then
+            echo "  [DRY]  ${SBATCH_CMD}"
+            SEQ_RESULTS+=("${model_id}:DRY")
+        else
+            echo "  [WAIT] sbatch --wait ${JOB_NAME} (blocking until job completes)"
+            set +e
+            eval "${SBATCH_CMD}"
+            JOB_RC=$?
+            set -e
+            if [ ${JOB_RC} -eq 0 ]; then
+                echo "  [DONE] ${model_id} job exit=0"
+                SEQ_RESULTS+=("${model_id}:OK")
+                if [ "${KEEP_SIF}" -eq 0 ]; then
+                    echo "  [RM]   ${sif_path} (use --keep-sif to retain)"
+                    rm -f "${sif_path}"
+                fi
+            else
+                echo "  [FAIL] ${model_id} job exit=${JOB_RC} — keeping SIF for debug"
+                SEQ_RESULTS+=("${model_id}:JOB_FAIL_${JOB_RC}")
+            fi
+        fi
+
+        # Always purge the build scratch between models — even successful pulls
+        # may leave several GB under .singularity_tmp.
+        clean_singularity_tmp
+        echo "  [free] $(df -h "${SIF_DIR}" | awk 'NR==2 {print $4" free on "$6}')"
+    done
+
+    echo ""
+    echo "=========================================="
+    echo "SEQUENTIAL SUMMARY"
+    echo "=========================================="
+    for r in "${SEQ_RESULTS[@]}"; do echo "  ${r}"; done
+    echo ""
+    echo "Run evaluation:"
+    echo "  python3 ${BENCHMARK_DIR}/evaluate_benchmark.py --output-dir ${OUTPUT_DIR}"
+    exit 0
 fi
 
 SUBMITTED_JOBS=()
