@@ -90,6 +90,31 @@ def _build_report_summary(data: InterLoraData, out_root: Path) -> None:
                 f"{bias_best['pct_bias_dominated']:.1%} at r={int(bias_best['rank'])}",
             )
 
+    # Convergence summary from quant3 cached data
+    conv_path = out_root / "data" / "quant3_convergence_data.json"
+    if conv_path.exists():
+        import json as _json
+
+        with open(conv_path) as _f:
+            conv_data = _json.load(_f)
+        lines.append("\n## Convergence Summary")
+        for label in ["tc", "wt", "et"]:
+            best_rank = None
+            best_k20 = -1.0
+            for rank_str, labels in conv_data.items():
+                ek = labels.get(label, {}).get("ensemble_k", {})
+                y_vals = ek.get("y", [])
+                if y_vals:
+                    final_dice = y_vals[-1]
+                    if final_dice > best_k20:
+                        best_k20 = final_dice
+                        best_rank = rank_str
+            if best_rank is not None:
+                lines.append(
+                    f"- **{label.upper()}**: best full-ensemble Dice = "
+                    f"{best_k20:.3f} at r={best_rank}",
+                )
+
     summary_path = out_root / "report_summary.md"
     summary_path.write_text("\n".join(lines) + "\n")
     logger.info("Report summary written to %s", summary_path)
@@ -223,6 +248,7 @@ def generate_inter_lora_report(
     skip_map = {
         "quant1": "quant1_dice_vs_rank",
         "quant2": "quant2_calib_epistemic",
+        "quant3": "quant3_convergence_vs_rank",
         "qual1": "qual1_slice_grid",
         "qual2": "qual2_clustered_heatmap",
     }
