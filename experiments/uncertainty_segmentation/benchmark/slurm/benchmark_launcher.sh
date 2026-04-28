@@ -99,6 +99,17 @@ echo "=========================================="
 
 module load singularity 2>/dev/null || true
 
+# Redirect Singularity's cache + build tmp to fscratch.
+# Default /tmp on Picasso login node is small and RAM-backed → squashfs
+# build for >10 GB images is OOM-killed ("create command failed: signal: killed").
+# /fscratch is large and disk-backed.
+export SINGULARITY_CACHEDIR="${SIF_DIR}/.singularity_cache"
+export SINGULARITY_TMPDIR="${SIF_DIR}/.singularity_tmp"
+mkdir -p "${SINGULARITY_CACHEDIR}" "${SINGULARITY_TMPDIR}"
+echo "  SINGULARITY_CACHEDIR=${SINGULARITY_CACHEDIR}"
+echo "  SINGULARITY_TMPDIR=${SINGULARITY_TMPDIR}"
+echo ""
+
 for entry in "${MODELS[@]}"; do
     IFS='|' read -r model_id docker_image year interface <<< "${entry}"
 
