@@ -181,7 +181,14 @@ EXTRACTION_DIR="${OUTPUT_DIR}/extraction"
 MANIFEST="${EXTRACTION_DIR}/manifest.json"
 
 if [ "${SKIP_EXTRACT}" -eq 1 ]; then
-    echo "  [SKIP] --skip-extract"
+    if [ ! -f "${MANIFEST}" ]; then
+        echo "  [ERROR] --skip-extract but manifest not found: ${MANIFEST}"
+        echo "          Run extraction first:"
+        echo "            sbatch --wait ${SCRIPT_DIR}/extract_worker.sh"
+        exit 1
+    fi
+    N_VERIFIED=$(python3 -c "import json; print(json.load(open('${MANIFEST}'))['n_patients'])" 2>/dev/null || echo "?")
+    echo "  [SKIP] --skip-extract (manifest: ${N_VERIFIED} patients)"
 elif [ -f "${MANIFEST}" ]; then
     N_EXTRACTED=$(python3 -c "import json; print(json.load(open('${MANIFEST}'))['n_patients'])" 2>/dev/null || echo "?")
     echo "  [OK]   Manifest exists: ${N_EXTRACTED} patients already extracted"
