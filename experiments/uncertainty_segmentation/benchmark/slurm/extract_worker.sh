@@ -38,14 +38,19 @@ MANIFEST="${EXTRACTION_DIR}/manifest.json"
 CONDA_ENV_NAME="mengrowth"
 LIMIT="${LIMIT:-}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BENCHMARK_DIR="$(dirname "${SCRIPT_DIR}")"
+# SLURM copies scripts to /var/spool/slurmd/, so BASH_SOURCE does not
+# resolve to the original repo path on compute nodes. Accept REPO_ROOT
+# as an env var (export it via sbatch --export, or set it before sbatch).
+REPO_ROOT="${REPO_ROOT:-/mnt/home/users/tic_163_uma/mpascual/execs/growth/MenGrowth-Model}"
+BENCHMARK_DIR="${REPO_ROOT}/experiments/uncertainty_segmentation/benchmark"
 
 echo "=============================================="
 echo "BENCHMARK EXTRACTION"
 echo "=============================================="
 echo "  Job ID:     ${SLURM_JOB_ID:-local}"
 echo "  Node:       $(hostname)"
+echo "  Repo:       ${REPO_ROOT}"
+echo "  Script:     ${BENCHMARK_DIR}/extract_h5_to_nifti.py"
 echo "  H5:         ${H5_FILE}"
 echo "  Output:     ${EXTRACTION_DIR}"
 echo "  Limit:      ${LIMIT:-all}"
@@ -97,6 +102,15 @@ echo "=========================================="
 echo "PRE-CHECKS"
 echo "=========================================="
 
+EXTRACT_SCRIPT="${BENCHMARK_DIR}/extract_h5_to_nifti.py"
+if [ ! -f "${EXTRACT_SCRIPT}" ]; then
+    echo "ERROR: Extraction script not found: ${EXTRACT_SCRIPT}"
+    echo "       Set REPO_ROOT to the MenGrowth-Model checkout on this cluster."
+    echo "       Example: sbatch --export=ALL,REPO_ROOT=/path/to/MenGrowth-Model ..."
+    exit 1
+fi
+echo "[OK] Extraction script: ${EXTRACT_SCRIPT}"
+
 if [ ! -f "${H5_FILE}" ]; then
     echo "ERROR: H5 file not found: ${H5_FILE}"
     exit 1
@@ -123,7 +137,7 @@ echo "=========================================="
 
 mkdir -p "${EXTRACTION_DIR}"
 
-EXTRACT_CMD="python ${BENCHMARK_DIR}/extract_h5_to_nifti.py --h5 ${H5_FILE} --output ${EXTRACTION_DIR}"
+EXTRACT_CMD="python ${EXTRACT_SCRIPT} --h5 ${H5_FILE} --output ${EXTRACTION_DIR}"
 if [ -n "${LIMIT}" ]; then
     EXTRACT_CMD="${EXTRACT_CMD} --limit ${LIMIT}"
 fi
