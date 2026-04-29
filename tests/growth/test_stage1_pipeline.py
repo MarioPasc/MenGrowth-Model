@@ -58,23 +58,26 @@ def _create_synthetic_h5(path: str, n_patients: int = 10, seed: int = 42) -> Non
 
     # Semantic features: log-volumes with some growth trend.
     # Column layout (matches src/growth/data/semantic_features.py):
-    #   [log(V_total+1), log(V_NCR+1), log(V_ED+1), log(V_ET+1)]
-    # Stage 1 reads column 3 (V_ET = enhancing-mass volume) as the growth signal.
-    semantic_vol = np.zeros((total_scans, 4), dtype=np.float32)
+    #   [log(V_total+1), log(V_NCR+1), log(V_ED+1), log(V_ET+1), log(V_MEN+1)]
+    # Stage 1 reads column 4 (V_MEN = NCR+ET, labels 1|3) as the growth signal.
+    semantic_vol = np.zeros((total_scans, 5), dtype=np.float32)
     for i in range(n_patients):
-        base_vol = rng.uniform(5.0, 12.0)  # log(V_ET+1) baseline
+        base_vol = rng.uniform(5.0, 12.0)  # log(V_MEN+1) baseline
         growth_rate = rng.uniform(-0.1, 0.5)
 
         for j in range(scans_per_patient[i]):
             idx = offsets[i] + j
-            # ET volume (column 3) = primary growth signal.
+            # ET volume (column 3): dominant component of meningioma mass.
             semantic_vol[idx, 3] = base_vol + growth_rate * j + rng.normal(0, 0.1)
-            # NETC and SNFH (columns 1, 2): small fractions, realistic for meningioma.
+            # NETC (column 1): small fraction, realistic for meningioma.
             semantic_vol[idx, 1] = semantic_vol[idx, 3] * rng.uniform(0.0, 0.05)
+            # MEN volume (column 4) = NCR + ET in voxel space, then log1p.
+            ncr_raw = np.expm1(max(semantic_vol[idx, 1], 0.0))
+            et_raw = np.expm1(max(semantic_vol[idx, 3], 0.0))
+            semantic_vol[idx, 4] = np.log1p(ncr_raw + et_raw)
+            # SNFH/edema (column 2): non-neoplastic, excluded from growth target.
             semantic_vol[idx, 2] = semantic_vol[idx, 3] * rng.uniform(0.1, 0.4)
-            # V_total (column 0) = sum of the parts (in voxel-count space, not log-space,
-            # but the synthetic data only needs to be non-zero and finite — the loader
-            # never reads column 0 anymore).
+            # V_total (column 0): sum of all components.
             semantic_vol[idx, 0] = (
                 semantic_vol[idx, 1] + semantic_vol[idx, 2] + semantic_vol[idx, 3]
             )
@@ -265,29 +268,27 @@ class TestTrajectoryLoader:
         with pytest.raises(FileNotFoundError):
             load_trajectories_from_h5("/nonexistent/path.h5")
 
-    def test_loader_uses_et_volume_column_3(self, tmp_path: Path) -> None:
-        """Loader must read semantic/volume[:, 3] (V_ET), not column 0 (V_total).
+    def test_loader_uses_men_volume_column_4(self, tmp_path: Path) -> None:
+        """Loader must read semantic/volume[:, 4] (V_MEN = labels 1|3).
 
-        Regression guard for the meningioma label fix: BraTS-MEN labels are
-        {1=NETC, 2=SNFH (edema), 3=ET}, and the clinically tracked endpoint for
-        meningioma growth is the enhancing-tumor volume — column 3 of
-        ``semantic/volume`` (per ``src/growth/data/semantic_features.py``). Loading
-        column 0 would inject SNFH/edema noise into every trajectory.
+        Regression guard: the meningioma growth target is the meningioma
+        mass volume (NCR + ET, labels 1|3, BSF ch0 = TC), stored in column 4
+        of ``semantic/volume``. Loading column 0 (total, includes edema) or
+        column 3 (ET only, misses NCR) would give wrong volumes.
         """
         from growth.stages.stage1_volumetric.trajectory_loader import (
-            _ET_VOL_IDX,
+            _MEN_VOL_IDX,
             load_trajectories_from_h5,
         )
 
-        # Sanity: the constant itself must point at column 3.
-        assert _ET_VOL_IDX == 3, (
-            f"_ET_VOL_IDX must be 3 (V_ET), got {_ET_VOL_IDX}. "
+        assert _MEN_VOL_IDX == 4, (
+            f"_MEN_VOL_IDX must be 4 (V_MEN), got {_MEN_VOL_IDX}. "
             "Reading the wrong column silently switches the growth target."
         )
 
         # Build a tiny H5 with sentinel values per-column so the loader's choice
-        # is unambiguous: column 0 = 100 (decoy), column 3 = 7 (the truth).
-        h5_path = tmp_path / "et_index_check.h5"
+        # is unambiguous: col 0 = 100 (decoy), col 3 = 50 (ET decoy), col 4 = 7 (truth).
+        h5_path = tmp_path / "men_index_check.h5"
         with h5py.File(h5_path, "w") as f:
             f.attrs["version"] = "2.0"
             f.attrs["domain"] = "MenGrowth"
@@ -302,12 +303,13 @@ class TestTrajectoryLoader:
             grp.create_dataset("patient_list", data=np.array(["P-0001"], dtype="S20"))
             grp.create_dataset("patient_offsets", data=np.array([0, n_scans], dtype=np.int32))
 
-            # Column 0 (decoy) = 100, columns 1/2 = 50, column 3 (V_ET) = 7.
-            vol = np.zeros((n_scans, 4), dtype=np.float32)
+            # col 0 (decoy) = 100, col 1/2 = 50, col 3 (ET decoy) = 50, col 4 (MEN) = 7.
+            vol = np.zeros((n_scans, 5), dtype=np.float32)
             vol[:, 0] = 100.0
             vol[:, 1] = 50.0
             vol[:, 2] = 50.0
-            vol[:, 3] = 7.0
+            vol[:, 3] = 50.0
+            vol[:, 4] = 7.0
             sem = f.create_group("semantic")
             sem.create_dataset("volume", data=vol)
             sem.create_dataset("location", data=np.full((n_scans, 3), 0.5, dtype=np.float32))
@@ -317,8 +319,8 @@ class TestTrajectoryLoader:
         assert len(trajs) == 1
         obs = trajs[0].observations.flatten()
         assert np.allclose(obs, 7.0), (
-            f"Loader returned {obs.tolist()}; expected all 7.0 (V_ET column). "
-            "If you see 100.0 the loader is reading V_total — the bug is back."
+            f"Loader returned {obs.tolist()}; expected all 7.0 (V_MEN column 4). "
+            "If you see 100.0 the loader reads V_total; if 50.0 it reads ET only."
         )
 
     def test_compute_et_volumes_from_segs_counts_merged_meningioma_mass(

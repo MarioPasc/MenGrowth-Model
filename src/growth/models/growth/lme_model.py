@@ -42,6 +42,7 @@ class LMEDimensionFit:
     omega: np.ndarray  # Random effects covariance [2, 2]
     converged: bool
     covariate_betas: dict[str, float] | None = None  # Covariate fixed effects
+    log_likelihood: float = 0.0  # REML or ML log-likelihood
 
 
 class LMEGrowthModel(GrowthModel):
@@ -127,6 +128,7 @@ class LMEGrowthModel(GrowthModel):
         total_lml = 0.0
         n_converged = 0
 
+        max_cond = 0.0
         for d in range(self._obs_dim):
             dim_fit = self._fit_dimension(df, d)
             self._dim_fits.append(dim_fit)
@@ -134,21 +136,28 @@ class LMEGrowthModel(GrowthModel):
             hypers[f"beta_0_d{d}"] = dim_fit.beta_0
             hypers[f"beta_1_d{d}"] = dim_fit.beta_1
             hypers[f"sigma_sq_d{d}"] = dim_fit.sigma_sq
+            total_lml += dim_fit.log_likelihood
 
             if dim_fit.converged:
                 n_converged += 1
+
+            # Condition number of random-effects covariance
+            if dim_fit.omega.shape == (2, 2) and np.any(dim_fit.omega > 0):
+                eigvals = np.linalg.eigvalsh(dim_fit.omega + dim_fit.sigma_sq * np.eye(2))
+                cond = float(eigvals[-1] / max(eigvals[0], 1e-15))
+                max_cond = max(max_cond, cond)
 
         self._fitted = True
 
         logger.info(
             f"LME fit: {n_converged}/{self._obs_dim} dims converged, "
-            f"{len(patients)} patients, {n_total} obs"
+            f"{len(patients)} patients, {n_total} obs, LML={total_lml:.2f}"
         )
 
         return FitResult(
             log_marginal_likelihood=total_lml,
             hyperparameters=hypers,
-            condition_number=0.0,
+            condition_number=max_cond,
             n_train_patients=len(patients),
             n_train_observations=n_total,
         )
@@ -209,6 +218,7 @@ class LMEGrowthModel(GrowthModel):
                 omega=re_cov,
                 converged=result.converged,
                 covariate_betas=cov_betas,
+                log_likelihood=float(result.llf),
             )
 
         except Exception as e:
@@ -308,18 +318,14 @@ class LMEGrowthModel(GrowthModel):
             y_cond = patient.observations
 
         # Get covariate vector for this patient
-        cov_vec = get_patient_covariate_vector(
-            patient, self._active_cov_names, self._cov_means
-        )
+        cov_vec = get_patient_covariate_vector(patient, self._active_cov_names, self._cov_means)
 
         mean = np.zeros((n_pred, D))
         variance = np.zeros((n_pred, D))
 
         for d in range(D):
             dim_fit = self._dim_fits[d]
-            mu_d, var_d = self._predict_dimension(
-                dim_fit, t_cond, y_cond[:, d], t_pred, cov_vec
-            )
+            mu_d, var_d = self._predict_dimension(dim_fit, t_cond, y_cond[:, d], t_pred, cov_vec)
             mean[:, d] = mu_d
             variance[:, d] = var_d
 

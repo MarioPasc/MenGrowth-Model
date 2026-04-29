@@ -12,6 +12,7 @@
 #   SIF_PATH        — absolute path to .sif file
 #   INTERFACE       — "docker_only" or "mlcube"
 #   YEAR            — 2025 or 2023
+#   PARAMS_FILE     — "yes" if mlcube container requires --parameters_file
 #   OUTPUT_DIR      — root benchmark output directory
 #   EXTRACTION_DIR  — path to extracted NIfTIs
 #   CONDA_ENV_NAME  — conda environment name
@@ -121,43 +122,15 @@ echo "WORK DIRECTORY SETUP"
 echo "=========================================="
 
 MODEL_DIR="${OUTPUT_DIR}/models/${MODEL_ID}"
-WORK_INPUT="${MODEL_DIR}/work/input"
 WORK_OUTPUT="${MODEL_DIR}/work/output"
 PRED_DIR="${MODEL_DIR}/predictions"
 
-mkdir -p "${WORK_INPUT}" "${WORK_OUTPUT}" "${PRED_DIR}"
+mkdir -p "${WORK_OUTPUT}" "${PRED_DIR}"
 
-# Create symlinks to extracted NIfTIs (avoids copying ~17 GB)
-echo "Creating symlinks to extracted NIfTIs..."
-for patient_dir in "${NIFTI_DIR}"/BraTS-MEN-*; do
-    patient_name="$(basename "${patient_dir}")"
-    target="${WORK_INPUT}/${patient_name}"
-    if [ ! -e "${target}" ]; then
-        ln -s "${patient_dir}" "${target}"
-    fi
-done
-N_LINKED=$(find "${WORK_INPUT}" -mindepth 1 -maxdepth 1 -type l | wc -l)
-echo "[OK] Symlinked ${N_LINKED} patients to ${WORK_INPUT}"
-echo ""
-
-# ========================================================================
-# DETECT CONTAINER WORKDIR
-# ========================================================================
-echo "=========================================="
-echo "CONTAINER WORKDIR DETECTION"
-echo "=========================================="
-
-set +e
-CONTAINER_PWD=$(singularity exec --nv "${SIF_PATH}" \
-    find / -maxdepth 3 -name inference.py -printf '%h\n' -quit 2>/dev/null || true)
-set -e
-
-if [ -z "${CONTAINER_PWD}" ]; then
-    CONTAINER_PWD="/app"
-    echo "[WARN] Could not detect inference.py location, defaulting to ${CONTAINER_PWD}"
-else
-    echo "[OK]   inference.py found in: ${CONTAINER_PWD}"
-fi
+# Bind extraction/nifti directly as the container input — no symlinks.
+# Singularity cannot follow symlinks whose targets are outside bind mounts.
+echo "[OK] Input (bind-mounted):  ${NIFTI_DIR} (${N_PATIENTS} patients)"
+echo "[OK] Output (work dir):     ${WORK_OUTPUT}"
 echo ""
 
 # ========================================================================
@@ -173,7 +146,7 @@ set +e
 if [ "${INTERFACE}" = "docker_only" ]; then
     # BraTS25: simple /input → /output interface
     echo "Interface: Docker-only (BraTS25)"
-    echo "  Bind: ${WORK_INPUT} → /input (ro)"
+    echo "  Bind: ${NIFTI_DIR} → /input (ro)"
     echo "  Bind: ${WORK_OUTPUT} → /output (rw)"
     echo ""
 
@@ -182,16 +155,28 @@ if [ "${INTERFACE}" = "docker_only" ]; then
         --cleanenv \
         --no-home \
         --writable-tmpfs \
-        --pwd "${CONTAINER_PWD}" \
-        --bind "${WORK_INPUT}:/input:ro" \
+        --bind "${NIFTI_DIR}:/input:ro" \
         --bind "${WORK_OUTPUT}:/output:rw" \
         "${SIF_PATH}"
 
 elif [ "${INTERFACE}" = "mlcube" ]; then
     # BraTS23: MLCube /mlcube_io0 → /mlcube_io2 interface
     echo "Interface: MLCube (BraTS23)"
-    echo "  Bind: ${WORK_INPUT} → /mlcube_io0 (ro)"
+    echo "  Bind: ${NIFTI_DIR} → /mlcube_io0 (ro)"
     echo "  Bind: ${WORK_OUTPUT} → /mlcube_io2 (rw)"
+
+    # Some MLCube containers require --parameters_file (dummy, unused).
+    # Determined per-model from BraTS Orchestrator meningioma.yml config.
+    PARAMS_BIND=""
+    PARAMS_ARG=""
+    if [ "${PARAMS_FILE:-no}" = "yes" ]; then
+        PARAMS_DIR="${MODEL_DIR}/work/params"
+        mkdir -p "${PARAMS_DIR}"
+        echo "{}" > "${PARAMS_DIR}/params.yaml"
+        PARAMS_BIND="--bind ${PARAMS_DIR}:/mlcube_io1:ro"
+        PARAMS_ARG="--parameters_file=/mlcube_io1/params.yaml"
+        echo "  Bind: ${PARAMS_DIR} → /mlcube_io1 (ro)  [dummy params]"
+    fi
     echo ""
 
     singularity run \
@@ -199,11 +184,11 @@ elif [ "${INTERFACE}" = "mlcube" ]; then
         --cleanenv \
         --no-home \
         --writable-tmpfs \
-        --pwd "${CONTAINER_PWD}" \
-        --bind "${WORK_INPUT}:/mlcube_io0:ro" \
+        --bind "${NIFTI_DIR}:/mlcube_io0:ro" \
         --bind "${WORK_OUTPUT}:/mlcube_io2:rw" \
+        ${PARAMS_BIND} \
         "${SIF_PATH}" \
-        infer --data_path=/mlcube_io0 --output_path=/mlcube_io2
+        infer --data_path=/mlcube_io0 --output_path=/mlcube_io2 ${PARAMS_ARG}
 else
     echo "ERROR: Unknown interface type: ${INTERFACE}"
     exit 1
@@ -312,7 +297,7 @@ echo "=========================================="
 echo "CLEANUP"
 echo "=========================================="
 
-# Remove work directory (symlinks + container output copies already in predictions/)
+# Remove work/output (container output already collected to predictions/)
 rm -rf "${MODEL_DIR}/work"
 echo "[OK] Removed work directory"
 

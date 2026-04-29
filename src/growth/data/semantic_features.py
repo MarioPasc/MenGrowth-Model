@@ -15,8 +15,6 @@ Label convention (BraTS):
     4: RC (Resection Cavity) — GLI-specific, merged into NCR for semantic features
 """
 
-from typing import Dict, Optional, Tuple, Union
-
 import numpy as np
 from scipy import ndimage
 from scipy.spatial import ConvexHull
@@ -34,8 +32,8 @@ LABEL_RC = 4  # Resection Cavity (GLI-specific)
 
 def compute_volumes(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
-) -> Dict[str, float]:
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
+) -> dict[str, float]:
     """Compute tumor component volumes in mm^3.
 
     Args:
@@ -64,17 +62,20 @@ def compute_volumes(
     et_count = np.sum(mask == LABEL_ET)
     total_count = ncr_count + ed_count + et_count
 
+    men_count = ncr_count + et_count  # meningioma mass = labels 1|3
+
     return {
         "total": float(total_count * voxel_volume),
         "ncr": float(ncr_count * voxel_volume),
         "ed": float(ed_count * voxel_volume),
         "et": float(et_count * voxel_volume),
+        "men": float(men_count * voxel_volume),
     }
 
 
 def compute_log_volumes(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
 ) -> np.ndarray:
     """Compute log-transformed volumes as feature array.
 
@@ -86,7 +87,9 @@ def compute_log_volumes(
         spacing: Voxel spacing in mm
 
     Returns:
-        Array of shape [4]: [log(V_total+1), log(V_NCR+1), log(V_ED+1), log(V_ET+1)]
+        Array of shape [5]: [log(V_total+1), log(V_NCR+1), log(V_ED+1),
+        log(V_ET+1), log(V_MEN+1)] where V_MEN = V_NCR + V_ET (labels 1|3,
+        the meningioma mass).
     """
     volumes = compute_volumes(mask, spacing)
 
@@ -96,6 +99,7 @@ def compute_log_volumes(
             np.log1p(volumes["ncr"]),
             np.log1p(volumes["ed"]),
             np.log1p(volumes["et"]),
+            np.log1p(volumes["men"]),
         ],
         dtype=np.float32,
     )
@@ -103,7 +107,7 @@ def compute_log_volumes(
 
 def compute_centroid(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
     normalize: bool = True,
 ) -> np.ndarray:
     """Compute tumor centroid (center of mass).
@@ -155,7 +159,7 @@ def compute_centroid(
     return centroid
 
 
-def compute_bounding_box(mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def compute_bounding_box(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Compute axis-aligned bounding box of tumor.
 
     Args:
@@ -180,7 +184,7 @@ def compute_bounding_box(mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 def compute_surface_area(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
 ) -> float:
     """Compute approximate surface area of tumor.
 
@@ -213,7 +217,7 @@ def compute_surface_area(
 
 def compute_sphericity(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
 ) -> float:
     """Compute sphericity of tumor.
 
@@ -280,8 +284,8 @@ def compute_solidity(mask: np.ndarray) -> float:
 
 def compute_aspect_ratios(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
-) -> Dict[str, float]:
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
+) -> dict[str, float]:
     """Compute aspect ratios from bounding box.
 
     Args:
@@ -315,8 +319,8 @@ def compute_aspect_ratios(
 
 def compute_composition_features(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
-) -> Dict[str, float]:
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
+) -> dict[str, float]:
     """Compute tumor composition features.
 
     These features capture the internal makeup of the tumor as ratios
@@ -353,8 +357,8 @@ def compute_composition_features(
 
 def compute_shape_features(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
-) -> Dict[str, float]:
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
+) -> dict[str, float]:
     """Compute all shape descriptors.
 
     Args:
@@ -385,7 +389,7 @@ def compute_shape_features(
 
 def compute_shape_array(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
 ) -> np.ndarray:
     """Compute shape features as array.
 
@@ -439,9 +443,9 @@ def _merge_rc_labels(mask: np.ndarray) -> np.ndarray:
 
 def extract_semantic_features(
     mask: np.ndarray,
-    spacing: Tuple[float, float, float] = DEFAULT_SPACING,
+    spacing: tuple[float, float, float] = DEFAULT_SPACING,
     merge_rc_into_ncr: bool = False,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """Extract all semantic features from segmentation mask.
 
     This is the main entry point for feature extraction, returning
@@ -456,20 +460,20 @@ def extract_semantic_features(
 
     Returns:
         Dictionary with:
-        - 'volume': [4] log-transformed volumes
+        - 'volume': [5] log-transformed volumes [total, NCR, ED, ET, MEN]
         - 'location': [3] normalized centroid
         - 'shape': [3] shape descriptors (sphericity, surface_area_log, solidity)
-        - 'all': [10] concatenation of all features
+        - 'all': [11] concatenation of all features
 
     Example:
         >>> mask = load_segmentation("patient_001.nii.gz")
         >>> features = extract_semantic_features(mask)
         >>> features['volume'].shape
-        (4,)
+        (5,)
         >>> features['shape'].shape
         (3,)
         >>> features['all'].shape
-        (10,)
+        (11,)
     """
     if merge_rc_into_ncr:
         mask = _merge_rc_labels(mask)
@@ -488,8 +492,8 @@ def extract_semantic_features(
 
 def extract_semantic_features_from_file(
     mask_path: str,
-    spacing: Optional[Tuple[float, float, float]] = None,
-) -> Dict[str, np.ndarray]:
+    spacing: tuple[float, float, float] | None = None,
+) -> dict[str, np.ndarray]:
     """Extract semantic features from a NIfTI segmentation file.
 
     Args:

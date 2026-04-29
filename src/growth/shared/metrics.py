@@ -66,3 +66,102 @@ def compute_mape(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-8) -> f
         MAPE as a fraction (not percentage).
     """
     return float(np.mean(np.abs((y_true - y_pred) / (np.abs(y_true) + eps))))
+
+
+def compute_crps_gaussian(
+    y_true: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+) -> float:
+    """Closed-form CRPS for Gaussian predictive distribution.
+
+    Gneiting & Raftery (2007), JASA. With omega = (y - mu) / sigma:
+
+        CRPS = sigma * [omega * (2*Phi(omega) - 1) + 2*phi(omega) - 1/sqrt(pi)]
+
+    Args:
+        y_true: Ground truth values.
+        mu: Predictive means.
+        sigma: Predictive standard deviations (must be > 0).
+
+    Returns:
+        Mean CRPS over the batch. Lower is better.
+    """
+    from scipy.stats import norm
+
+    y_true = np.asarray(y_true, dtype=np.float64)
+    mu = np.asarray(mu, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    sigma = np.maximum(sigma, 1e-15)
+
+    omega = (y_true - mu) / sigma
+    crps_per = sigma * (
+        omega * (2.0 * norm.cdf(omega) - 1.0) + 2.0 * norm.pdf(omega) - 1.0 / np.sqrt(np.pi)
+    )
+    return float(np.mean(crps_per))
+
+
+def compute_coverage_at_levels(
+    y_true: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    levels: tuple[float, ...] = (0.50, 0.80, 0.90, 0.95),
+) -> dict[float, float]:
+    """Empirical coverage at each nominal level (Gaussian assumption).
+
+    Args:
+        y_true: Ground truth values.
+        mu: Predictive means.
+        sigma: Predictive standard deviations.
+        levels: Nominal coverage levels to evaluate.
+
+    Returns:
+        Dict mapping nominal level to empirical coverage fraction.
+    """
+    from scipy.stats import norm
+
+    y_true = np.asarray(y_true, dtype=np.float64)
+    mu = np.asarray(mu, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    sigma = np.maximum(sigma, 1e-15)
+
+    result: dict[float, float] = {}
+    for level in levels:
+        z = norm.ppf((1.0 + level) / 2.0)
+        lower = mu - z * sigma
+        upper = mu + z * sigma
+        within = (y_true >= lower) & (y_true <= upper)
+        result[level] = float(np.mean(within))
+    return result
+
+
+def compute_interval_score(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    alpha: float,
+) -> float:
+    """Winkler interval score for (1-alpha) prediction intervals.
+
+    IS_alpha = (u-l) + (2/alpha)*(l-y)*1[y<l] + (2/alpha)*(y-u)*1[y>u]
+
+    Gneiting & Raftery (2007), section 6.2. Lower is better.
+
+    Args:
+        y_true: Ground truth values.
+        lower: Lower bound of prediction interval.
+        upper: Upper bound of prediction interval.
+        alpha: Significance level (e.g. 0.05 for 95% interval).
+
+    Returns:
+        Mean interval score. Lower is better.
+    """
+    y_true = np.asarray(y_true, dtype=np.float64)
+    lower = np.asarray(lower, dtype=np.float64)
+    upper = np.asarray(upper, dtype=np.float64)
+
+    width = upper - lower
+    penalty_lower = (2.0 / alpha) * np.maximum(lower - y_true, 0.0)
+    penalty_upper = (2.0 / alpha) * np.maximum(y_true - upper, 0.0)
+
+    return float(np.mean(width + penalty_lower + penalty_upper))

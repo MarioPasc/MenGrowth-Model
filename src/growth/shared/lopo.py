@@ -282,7 +282,15 @@ class LOPOEvaluator:
 
     def _compute_aggregate_metrics(self, fold_results: list[LOPOFoldResult]) -> dict[str, float]:
         """Compute aggregated metrics across all folds."""
-        from growth.shared.metrics import compute_calibration, compute_mae, compute_r2, compute_rmse
+        from growth.shared.metrics import (
+            compute_calibration,
+            compute_coverage_at_levels,
+            compute_crps_gaussian,
+            compute_interval_score,
+            compute_mae,
+            compute_r2,
+            compute_rmse,
+        )
 
         metrics: dict[str, float] = {}
 
@@ -292,6 +300,7 @@ class LOPOEvaluator:
             all_lower: list[float] = []
             all_upper: list[float] = []
             all_ci_width: list[float] = []
+            all_var: list[float] = []
 
             for fr in fold_results:
                 if protocol not in fr.predictions:
@@ -302,6 +311,7 @@ class LOPOEvaluator:
                     all_lower.append(pred_dict["lower_95"])
                     all_upper.append(pred_dict["upper_95"])
                     all_ci_width.append(pred_dict["upper_95"] - pred_dict["lower_95"])
+                    all_var.append(pred_dict["pred_var"])
 
             if len(all_pred) == 0:
                 continue
@@ -310,6 +320,8 @@ class LOPOEvaluator:
             actual_arr = np.array(all_actual)
             lower_arr = np.array(all_lower)
             upper_arr = np.array(all_upper)
+            var_arr = np.array(all_var)
+            sigma_arr = np.sqrt(np.maximum(var_arr, 0.0))
 
             prefix = protocol
 
@@ -332,6 +344,21 @@ class LOPOEvaluator:
 
             # Mean CI width
             metrics[f"{prefix}/mean_ci_width_log"] = float(np.mean(all_ci_width))
+
+            # UQ metrics: CRPS, multi-level coverage, interval scores
+            if np.any(sigma_arr > 0):
+                metrics[f"{prefix}/crps"] = compute_crps_gaussian(actual_arr, pred_arr, sigma_arr)
+                coverage = compute_coverage_at_levels(actual_arr, pred_arr, sigma_arr)
+                for level, cov_val in coverage.items():
+                    metrics[f"{prefix}/coverage_{int(level * 100)}"] = cov_val
+
+                for alpha, label in [(0.05, "95"), (0.20, "80")]:
+                    z = float(np.abs(scipy_stats.norm.ppf(alpha / 2.0)))
+                    is_lower = pred_arr - z * sigma_arr
+                    is_upper = pred_arr + z * sigma_arr
+                    metrics[f"{prefix}/is_{label}"] = compute_interval_score(
+                        actual_arr, is_lower, is_upper, alpha
+                    )
 
         # Per-patient Pearson r
         if "all_from_first" in self.prediction_protocols:

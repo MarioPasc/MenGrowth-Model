@@ -31,13 +31,15 @@ SIF_DIR="/mnt/home/users/tic_163_uma/mpascual/fscratch/singularity_images"
 LOG_DIR="${OUTPUT_DIR}/logs"
 CONDA_ENV_NAME="mengrowth"
 
-# Model registry: ID|DOCKER_IMAGE|YEAR|INTERFACE
+# Model registry: ID|DOCKER_IMAGE|YEAR|INTERFACE|PARAMS_FILE
+# PARAMS_FILE: "yes" if the MLCube container requires --parameters_file (dummy).
+# Determined from BraTS Orchestrator meningioma.yml config.
 MODELS=(
-    "BraTS25_1|brainles/brats25_men_qing:latest|2025|docker_only"
-    "BraTS25_2|brainles/brats25_men_mmdp:latest|2025|docker_only"
-    "BraTS23_1|brainles/brats23_meningioma_nvauto:latest|2023|mlcube"
-    "BraTS23_2|brainles/brats23_meningioma_blackbean:latest|2023|mlcube"
-    "BraTS23_3|brainles/brats23_meningioma_cnmc_pmi2023:latest|2023|mlcube"
+    "BraTS25_1|brainles/brats25_men_qing:latest|2025|docker_only|no"
+    "BraTS25_2|brainles/brats25_men_mmdp:latest|2025|docker_only|no"
+    "BraTS23_1|brainles/brats23_meningioma_nvauto:latest|2023|mlcube|yes"
+    "BraTS23_2|brainles/brats23_meningioma_blackbean:latest|2023|mlcube|yes"
+    "BraTS23_3|brainles/brats23_meningioma_cnmc_pmi2023:latest|2023|mlcube|no"
 )
 
 # ========================================================================
@@ -141,7 +143,7 @@ fi
 for entry in "${MODELS[@]}"; do
     [ "${SEQUENTIAL}" -eq 1 ] && break
 
-    IFS='|' read -r model_id docker_image year interface <<< "${entry}"
+    IFS='|' read -r model_id docker_image year interface params_file <<< "${entry}"
 
     # Filter by selected models if specified
     if [ -n "${SELECTED_MODELS}" ]; then
@@ -233,7 +235,7 @@ fi
 if [ "${SEQUENTIAL}" -eq 1 ]; then
     SEQ_RESULTS=()
     for entry in "${MODELS[@]}"; do
-        IFS='|' read -r model_id docker_image year interface <<< "${entry}"
+        IFS='|' read -r model_id docker_image year interface params_file <<< "${entry}"
 
         if [ -n "${SELECTED_MODELS}" ]; then
             if ! echo "${SELECTED_MODELS}" | grep -qw "${model_id}"; then
@@ -288,7 +290,7 @@ if [ "${SEQUENTIAL}" -eq 1 ]; then
             --job-name=${JOB_NAME} \
             --output=${LOG_OUT} \
             --error=${LOG_ERR} \
-            --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
+            --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},PARAMS_FILE=${params_file},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
             ${WORKER_SCRIPT}"
 
         if [ "${DRY_RUN}" -eq 1 ]; then
@@ -333,7 +335,7 @@ fi
 SUBMITTED_JOBS=()
 
 for entry in "${MODELS[@]}"; do
-    IFS='|' read -r model_id docker_image year interface <<< "${entry}"
+    IFS='|' read -r model_id docker_image year interface params_file <<< "${entry}"
 
     # Filter by selected models if specified
     if [ -n "${SELECTED_MODELS}" ]; then
@@ -358,7 +360,7 @@ for entry in "${MODELS[@]}"; do
         --job-name=${JOB_NAME} \
         --output=${LOG_OUT} \
         --error=${LOG_ERR} \
-        --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
+        --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},PARAMS_FILE=${params_file},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
         ${WORKER_SCRIPT}"
 
     if [ "${DRY_RUN}" -eq 0 ]; then
