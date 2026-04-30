@@ -134,6 +134,54 @@ echo "[OK] Output (work dir):     ${WORK_OUTPUT}"
 echo ""
 
 # ========================================================================
+# DETECT CONTAINER WORKDIR
+# ========================================================================
+# Singularity does NOT honor Docker WORKDIR — we must set --pwd explicitly.
+# Strategy: parse the runscript to find the entrypoint script name, then
+# search for it inside the container.
+echo "=========================================="
+echo "CONTAINER WORKDIR DETECTION"
+echo "=========================================="
+
+set +e
+RUNSCRIPT=$(singularity inspect --runscript "${SIF_PATH}" 2>/dev/null)
+set -e
+
+# Extract the Python script name from the runscript (e.g. mlcube.py, inference.py, main.py)
+ENTRYPOINT_SCRIPT=""
+if [ -n "${RUNSCRIPT}" ]; then
+    ENTRYPOINT_SCRIPT=$(echo "${RUNSCRIPT}" | grep -oP 'python[3]?\s+\K\S+\.py' | head -1)
+fi
+
+# Fallback based on interface type
+if [ -z "${ENTRYPOINT_SCRIPT}" ]; then
+    if [ "${INTERFACE}" = "mlcube" ]; then
+        ENTRYPOINT_SCRIPT="mlcube.py"
+    else
+        ENTRYPOINT_SCRIPT="inference.py"
+    fi
+    echo "[WARN] Could not parse entrypoint from runscript, trying ${ENTRYPOINT_SCRIPT}"
+else
+    echo "[OK]   Entrypoint from runscript: ${ENTRYPOINT_SCRIPT}"
+fi
+
+# Search for the entrypoint file inside the container
+set +e
+CONTAINER_PWD=$(singularity exec "${SIF_PATH}" \
+    find / -maxdepth 4 -name "${ENTRYPOINT_SCRIPT}" \
+    -not -path "*/proc/*" -not -path "*/sys/*" -not -path "*/dev/*" \
+    -printf '%h\n' -quit 2>/dev/null || true)
+set -e
+
+if [ -n "${CONTAINER_PWD}" ]; then
+    echo "[OK]   WORKDIR: ${CONTAINER_PWD}"
+else
+    CONTAINER_PWD="/"
+    echo "[WARN] Could not find ${ENTRYPOINT_SCRIPT} — defaulting to /"
+fi
+echo ""
+
+# ========================================================================
 # RUN INFERENCE
 # ========================================================================
 echo "=========================================="
@@ -155,6 +203,7 @@ if [ "${INTERFACE}" = "docker_only" ]; then
         --cleanenv \
         --no-home \
         --writable-tmpfs \
+        --pwd "${CONTAINER_PWD}" \
         --bind "${NIFTI_DIR}:/input:ro" \
         --bind "${WORK_OUTPUT}:/output:rw" \
         "${SIF_PATH}"
@@ -184,6 +233,7 @@ elif [ "${INTERFACE}" = "mlcube" ]; then
         --cleanenv \
         --no-home \
         --writable-tmpfs \
+        --pwd "${CONTAINER_PWD}" \
         --bind "${NIFTI_DIR}:/mlcube_io0:ro" \
         --bind "${WORK_OUTPUT}:/mlcube_io2:rw" \
         ${PARAMS_BIND} \
