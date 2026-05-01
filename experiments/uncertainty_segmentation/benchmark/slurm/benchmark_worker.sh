@@ -36,14 +36,17 @@ START_TIME=$(date +%s)
 echo "=============================================="
 echo "BENCHMARK WORKER: ${MODEL_ID}"
 echo "=============================================="
-echo "  Job ID:     ${SLURM_JOB_ID:-local}"
-echo "  Node:       $(hostname)"
-echo "  Model:      ${MODEL_ID}"
-echo "  SIF:        ${SIF_PATH}"
-echo "  Interface:  ${INTERFACE}"
-echo "  Year:       ${YEAR}"
-echo "  Output:     ${OUTPUT_DIR}"
-echo "  Extraction: ${EXTRACTION_DIR}"
+echo "  Job ID:       ${SLURM_JOB_ID:-local}"
+echo "  Node:         $(hostname)"
+echo "  Model:        ${MODEL_ID}"
+echo "  SIF:          ${SIF_PATH}"
+echo "  Interface:    ${INTERFACE}"
+echo "  Year:         ${YEAR}"
+echo "  Params file:  ${PARAMS_FILE:-not set}"
+echo "  Output:       ${OUTPUT_DIR}"
+echo "  Extraction:   ${EXTRACTION_DIR}"
+echo "  REPO_ROOT:    ${REPO_ROOT:-not set}"
+echo "  BENCHMARK_DIR:${BENCHMARK_DIR:-not set}"
 echo ""
 
 # ========================================================================
@@ -101,6 +104,9 @@ if [ ! -d "${NIFTI_DIR}" ]; then
 fi
 N_PATIENTS=$(find "${NIFTI_DIR}" -mindepth 1 -maxdepth 1 -type d | wc -l)
 echo "[OK] Extracted NIfTIs: ${N_PATIENTS} patients in ${NIFTI_DIR}"
+SAMPLE_PAT=$(find "${NIFTI_DIR}" -mindepth 1 -maxdepth 1 -type d | head -1)
+echo "[DBG] Sample patient dir: ${SAMPLE_PAT}"
+ls -la "${SAMPLE_PAT}/" 2>/dev/null | head -10 || echo "[DBG] Could not list sample patient"
 
 # Verify GPU is accessible via Singularity
 set +e
@@ -143,17 +149,23 @@ echo "=========================================="
 echo "CONTAINER WORKDIR DETECTION"
 echo "=========================================="
 
+# --- Step 1: dump the raw runscript ---
+echo "[DBG] Inspecting runscript..."
 set +e
-RUNSCRIPT=$(singularity inspect --runscript "${SIF_PATH}" 2>/dev/null)
+RUNSCRIPT=$(singularity inspect --runscript "${SIF_PATH}" 2>&1)
+INSPECT_RC=$?
 set -e
+echo "[DBG] inspect exit code: ${INSPECT_RC}"
+echo "[DBG] --- RAW RUNSCRIPT START ---"
+echo "${RUNSCRIPT}"
+echo "[DBG] --- RAW RUNSCRIPT END ---"
 
-# Extract the Python script name from the runscript (e.g. mlcube.py, inference.py, main.py)
+# --- Step 2: extract the Python script name ---
 ENTRYPOINT_SCRIPT=""
-if [ -n "${RUNSCRIPT}" ]; then
+if [ "${INSPECT_RC}" -eq 0 ] && [ -n "${RUNSCRIPT}" ]; then
     ENTRYPOINT_SCRIPT=$(echo "${RUNSCRIPT}" | grep -oP 'python[3]?\s+\K\S+\.py' | head -1)
 fi
 
-# Fallback based on interface type
 if [ -z "${ENTRYPOINT_SCRIPT}" ]; then
     if [ "${INTERFACE}" = "mlcube" ]; then
         ENTRYPOINT_SCRIPT="mlcube.py"
@@ -165,19 +177,25 @@ else
     echo "[OK]   Entrypoint from runscript: ${ENTRYPOINT_SCRIPT}"
 fi
 
-# Search for the entrypoint file inside the container
+# --- Step 3: search for entrypoint file inside the container ---
+echo "[DBG] Searching for ${ENTRYPOINT_SCRIPT} inside container (find / -maxdepth 4)..."
 set +e
-CONTAINER_PWD=$(singularity exec "${SIF_PATH}" \
+FIND_OUTPUT=$(singularity exec "${SIF_PATH}" \
     find / -maxdepth 4 -name "${ENTRYPOINT_SCRIPT}" \
     -not -path "*/proc/*" -not -path "*/sys/*" -not -path "*/dev/*" \
-    -printf '%h\n' -quit 2>/dev/null || true)
+    2>&1 || true)
 set -e
+echo "[DBG] find output: ${FIND_OUTPUT}"
 
-if [ -n "${CONTAINER_PWD}" ]; then
+CONTAINER_PWD=$(echo "${FIND_OUTPUT}" | grep -v "Permission denied" | head -1 | xargs -I{} dirname {} 2>/dev/null || true)
+
+if [ -n "${CONTAINER_PWD}" ] && [ "${CONTAINER_PWD}" != "." ]; then
     echo "[OK]   WORKDIR: ${CONTAINER_PWD}"
 else
     CONTAINER_PWD="/"
     echo "[WARN] Could not find ${ENTRYPOINT_SCRIPT} — defaulting to /"
+    echo "[DBG]  Listing container root for clues..."
+    singularity exec "${SIF_PATH}" ls -la / 2>&1 | head -30 || true
 fi
 echo ""
 
@@ -196,6 +214,10 @@ if [ "${INTERFACE}" = "docker_only" ]; then
     echo "Interface: Docker-only (BraTS25)"
     echo "  Bind: ${NIFTI_DIR} → /input (ro)"
     echo "  Bind: ${WORK_OUTPUT} → /output (rw)"
+    echo "  PWD:  ${CONTAINER_PWD}"
+    SING_CMD="singularity run --nv --cleanenv --no-home --writable-tmpfs --pwd ${CONTAINER_PWD} --bind ${NIFTI_DIR}:/input:ro --bind ${WORK_OUTPUT}:/output:rw ${SIF_PATH}"
+    echo ""
+    echo "[DBG] COMMAND: ${SING_CMD}"
     echo ""
 
     singularity run \
@@ -226,6 +248,11 @@ elif [ "${INTERFACE}" = "mlcube" ]; then
         PARAMS_ARG="--parameters_file=/mlcube_io1/params.yaml"
         echo "  Bind: ${PARAMS_DIR} → /mlcube_io1 (ro)  [dummy params]"
     fi
+    echo "  PWD:  ${CONTAINER_PWD}"
+    echo "  PARAMS_FILE env: ${PARAMS_FILE:-not set}"
+    SING_CMD="singularity run --nv --cleanenv --no-home --writable-tmpfs --pwd ${CONTAINER_PWD} --bind ${NIFTI_DIR}:/mlcube_io0:ro --bind ${WORK_OUTPUT}:/mlcube_io2:rw ${PARAMS_BIND} ${SIF_PATH} infer --data_path=/mlcube_io0 --output_path=/mlcube_io2 ${PARAMS_ARG}"
+    echo ""
+    echo "[DBG] COMMAND: ${SING_CMD}"
     echo ""
 
     singularity run \
@@ -256,13 +283,27 @@ echo "Inference duration:  $(($INFER_ELAPSED / 60))m $(($INFER_ELAPSED % 60))s"
 
 if [ "${INFER_EXIT}" -ne 0 ]; then
     echo ""
-    echo "ERROR: Inference failed with exit code ${INFER_EXIT}"
+    echo "=========================================="
+    echo "FAILURE DIAGNOSTICS: ${MODEL_ID}"
+    echo "=========================================="
+    echo "Exit code: ${INFER_EXIT}"
     echo ""
-    echo "Debugging tips:"
-    echo "  1. Inspect work dir: ${MODEL_DIR}/work/"
-    echo "  2. Interactive shell: singularity shell --nv ${SIF_PATH}"
-    echo "  3. Runscript: singularity inspect --runscript ${SIF_PATH}"
-    echo "  4. For BraTS23 requires_root, try: --fakeroot"
+    echo "[DBG] Verifying --pwd resolves inside container:"
+    singularity exec "${SIF_PATH}" ls -la "${CONTAINER_PWD}/" 2>&1 | head -20 || echo "[DBG] Could not list ${CONTAINER_PWD}"
+    echo ""
+    echo "[DBG] Container environment (HOME, PWD, PATH):"
+    singularity exec --cleanenv --no-home "${SIF_PATH}" env 2>&1 | grep -E '^(HOME|PWD|PATH|WORKDIR)=' || echo "[DBG] Could not read env"
+    echo ""
+    echo "[DBG] Singularity version details:"
+    singularity --version 2>&1 || true
+    echo ""
+    echo "[DBG] All .py files at container root level:"
+    singularity exec "${SIF_PATH}" find / -maxdepth 3 -name "*.py" -not -path "*/proc/*" -not -path "*/sys/*" -not -path "*/lib/*" -not -path "*/site-packages/*" 2>/dev/null | head -30 || true
+    echo ""
+    echo "Manual debug commands:"
+    echo "  singularity shell --nv ${SIF_PATH}"
+    echo "  singularity inspect --runscript ${SIF_PATH}"
+    echo "  singularity exec ${SIF_PATH} find / -maxdepth 3 -name '*.py' -not -path '*/lib/*'"
     echo ""
     echo "Work directory preserved for debugging."
 
