@@ -16,6 +16,7 @@ from experiments.uncertainty_segmentation.plotting.inter_lora.compile import (
     validate_compiled_metrics,
 )
 from experiments.uncertainty_segmentation.plotting.inter_lora.figures import (
+    FIGURE_CAPTIONS,
     FIGURE_OUTPUT_NAMES,
     INTER_LORA_FIGURE_REGISTRY,
     INTER_LORA_TABLE_REGISTRY,
@@ -287,11 +288,13 @@ def generate_inter_lora_report(
                     logger.info("[SKIP] %s (data not available)", variant_name)
                     n_skip += 1
                     continue
+                variant_caption = FIGURE_CAPTIONS.get(variant_name, "")
                 save_figure(
                     fig,
                     fig_dir / f"{variant_name}.{fmt}",
                     title=variant_name,
                     description=f"Inter-LoRA qual1 {variant}",
+                    caption=variant_caption,
                     dpi=dpi,
                 )
                 if fmt != "png":
@@ -322,12 +325,14 @@ def generate_inter_lora_report(
             continue
 
         out_name = FIGURE_OUTPUT_NAMES.get(name, name)
+        fig_caption = FIGURE_CAPTIONS.get(out_name, "")
 
         save_figure(
             fig,
             fig_dir / f"{out_name}.{fmt}",
             title=out_name,
             description=f"Inter-LoRA {name}",
+            caption=fig_caption,
             dpi=dpi,
         )
         if fmt != "png":
