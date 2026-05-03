@@ -116,9 +116,10 @@ reporting:
 # --- Picasso SLURM settings (read by launcher.sh) ---
 slurm:
   partition: gputhin
+  constraint: cpu
   time: "0-01:00:00"
   cpus_per_task: 4
   mem: "16G"
   conda_env: mengrowth
-  repo_dir: /mnt/home/users/tic_163_uma/mpascual/research/code/MenGrowth-Model
+  repo_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
   logs_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/logs/stage1_uq
