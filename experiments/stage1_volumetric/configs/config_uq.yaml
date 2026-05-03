@@ -73,3 +73,39 @@ variance_decomposition:
     - [HGP, HGPHetero]
     - [HGP_Gompertz, HGP_Gompertz_Hetero]
   n_permutations: 10000
+
+# --- NLME analytical baselines (Engelhardt et al. 2023 approach) ---
+analytical:
+  enabled: true
+  n_restarts: 3
+  max_iter: 500
+  fallback_to_1re: true
+  models:
+    exponential: true
+    logistic: true
+    gompertz: true
+
+# --- Calibration reporting ---
+reporting:
+  dss: true
+  nlpd: true
+  pit_histogram: true
+  sharpness_scatter: true
+  # Analytical (NLME) vs Propagated (Hetero)
+  classical_vs_propagated:
+    pairs:
+      - [NLME_Exponential, LMEHetero]
+      - [NLME_Logistic, LMEHetero]
+      - [NLME_Gompertz, LMEHetero]
+      - [NLME_Exponential, HGPHetero]
+      - [NLME_Gompertz, HGPHetero]
+    n_permutations: 10000
+  # Analytical (NLME) vs Homoscedastic
+  analytical_vs_homo:
+    pairs:
+      - [NLME_Exponential, LME]
+      - [NLME_Logistic, LME]
+      - [NLME_Gompertz, LME]
+      - [NLME_Exponential, ScalarGP]
+      - [NLME_Gompertz, HGP]
+    n_permutations: 10000

@@ -165,3 +165,118 @@ def compute_interval_score(
     penalty_upper = (2.0 / alpha) * np.maximum(y_true - upper, 0.0)
 
     return float(np.mean(width + penalty_lower + penalty_upper))
+
+
+def compute_dawid_sebastiani(
+    y_true: np.ndarray,
+    mu: np.ndarray,
+    sigma_sq: np.ndarray,
+) -> float:
+    """Dawid-Sebastiani Score for Gaussian predictive distributions.
+
+    S_DS(F, y) = (y - mu)^2 / sigma^2 + log(sigma^2)
+
+    Dawid & Sebastiani (1999), JRSS-B. Strictly proper for Gaussians:
+    the optimal predictive variance equals squared bias plus true noise.
+    Lower is better.
+
+    Args:
+        y_true: Ground truth values.
+        mu: Predictive means.
+        sigma_sq: Predictive variances (must be > 0).
+
+    Returns:
+        Mean DSS over the batch. Lower is better.
+    """
+    y_true = np.asarray(y_true, dtype=np.float64)
+    mu = np.asarray(mu, dtype=np.float64)
+    sigma_sq = np.asarray(sigma_sq, dtype=np.float64)
+    sigma_sq = np.maximum(sigma_sq, 1e-15)
+
+    standardised_sq = (y_true - mu) ** 2 / sigma_sq
+    return float(np.mean(standardised_sq + np.log(sigma_sq)))
+
+
+def compute_log_score(
+    y_true: np.ndarray,
+    mu: np.ndarray,
+    sigma_sq: np.ndarray,
+) -> float:
+    """Negative log predictive density (NLPD) for Gaussian distributions.
+
+    NLPD = 0.5 * (DSS + log(2*pi))
+
+    Rank-equivalent to DSS for Gaussians. Kept as a separate function
+    because NLPD is the reviewer-facing name in probabilistic forecasting.
+    Lower is better.
+
+    Args:
+        y_true: Ground truth values.
+        mu: Predictive means.
+        sigma_sq: Predictive variances (must be > 0).
+
+    Returns:
+        Mean NLPD over the batch. Lower is better.
+    """
+    dss = compute_dawid_sebastiani(y_true, mu, sigma_sq)
+    return float(0.5 * (dss + np.log(2.0 * np.pi)))
+
+
+def compute_pit(
+    y_true: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+) -> np.ndarray:
+    """Probability Integral Transform values for Gaussian predictions.
+
+    PIT(y; mu, sigma) = Phi((y - mu) / sigma)
+
+    Under the true model, PIT values are uniformly distributed on [0, 1].
+    Deviations from uniformity diagnose miscalibration: U-shape indicates
+    overconfidence, hump indicates underconfidence, tilt indicates bias.
+
+    Args:
+        y_true: Ground truth values.
+        mu: Predictive means.
+        sigma: Predictive standard deviations (must be > 0).
+
+    Returns:
+        Array of PIT values in [0, 1], same shape as y_true.
+    """
+    from scipy.stats import norm
+
+    y_true = np.asarray(y_true, dtype=np.float64)
+    mu = np.asarray(mu, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    sigma = np.maximum(sigma, 1e-15)
+
+    return norm.cdf((y_true - mu) / sigma)
+
+
+def compute_pit_histogram(
+    pit_values: np.ndarray,
+    n_bins: int = 10,
+) -> dict[str, np.ndarray | float]:
+    """Compute PIT histogram with uniformity test.
+
+    Args:
+        pit_values: PIT values in [0, 1].
+        n_bins: Number of histogram bins.
+
+    Returns:
+        Dict with keys: 'counts' (normalised density), 'bin_edges',
+        'ks_stat', 'ks_p' (Kolmogorov-Smirnov test against U[0,1]).
+    """
+    from scipy.stats import kstest
+
+    pit_values = np.asarray(pit_values, dtype=np.float64)
+    counts, bin_edges = np.histogram(pit_values, bins=n_bins, range=(0.0, 1.0), density=True)
+
+    ks_stat, ks_p = kstest(pit_values, "uniform")
+
+    return {
+        "counts": counts,
+        "bin_edges": bin_edges,
+        "ks_stat": float(ks_stat),
+        "ks_p": float(ks_p),
+    }

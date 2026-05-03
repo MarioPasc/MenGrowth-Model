@@ -207,3 +207,68 @@ class TestUQEndToEnd:
         result = paired_permutation_test(errors_a, errors_b, n_permutations=500)
         assert np.isfinite(result.p_value)
         assert 0.0 <= result.p_value <= 1.0
+
+
+class TestHeteroVsNLMESmoke:
+    """Smoke test: hetero and NLME models produce compatible outputs."""
+
+    def _make_synthetic_patients(self) -> list:
+        """Create synthetic patients with observation variance for both model types."""
+        from growth.shared.growth_models import PatientTrajectory
+
+        rng = np.random.default_rng(42)
+        patients = []
+        for i in range(10):
+            n_t = rng.integers(3, 6)
+            times = np.arange(n_t, dtype=np.float64)
+            log_V0 = 2.0 + rng.normal(0, 0.1)
+            a = 0.3 + rng.normal(0, 0.05)
+            y = log_V0 + a * times + rng.normal(0, 0.05, size=n_t)
+            obs_var = rng.uniform(0.001, 0.01, size=n_t)
+            patients.append(
+                PatientTrajectory(
+                    patient_id=f"SMOKE-{i:03d}",
+                    times=times,
+                    observations=y.reshape(-1, 1),
+                    observation_variance=obs_var,
+                )
+            )
+        return patients
+
+    def test_nlme_exponential_runs_on_uq_data(self) -> None:
+        """ExponentialNLME fits and predicts on data with observation_variance."""
+        from growth.models.growth.nlme_analytical import ExponentialNLME
+
+        patients = self._make_synthetic_patients()
+        model = ExponentialNLME(n_restarts=1, max_iter=200)
+        result = model.fit(patients)
+
+        assert np.isfinite(result.log_marginal_likelihood)
+
+        t_pred = np.array([0.0, 1.0, 2.0, 3.0])
+        pred = model.predict(patients[0], t_pred, n_condition=2)
+
+        assert pred.mean.shape == (4, 1)
+        assert np.all(np.isfinite(pred.mean))
+        assert np.all(pred.variance > 0)
+
+    def test_hetero_and_nlme_same_shape(self) -> None:
+        """LMEHetero and ExponentialNLME produce same-shape PredictionResult."""
+        from growth.models.growth.lme_hetero import LMEHeteroGrowthModel
+        from growth.models.growth.nlme_analytical import ExponentialNLME
+
+        patients = self._make_synthetic_patients()
+        t_pred = np.array([0.0, 1.0, 2.0])
+
+        lme_h = LMEHeteroGrowthModel(n_restarts=1, max_iter=200, seed=42)
+        lme_h.fit(patients)
+        pred_h = lme_h.predict(patients[0], t_pred, n_condition=2)
+
+        nlme = ExponentialNLME(n_restarts=1, max_iter=200)
+        nlme.fit(patients)
+        pred_n = nlme.predict(patients[0], t_pred, n_condition=2)
+
+        assert pred_h.mean.shape == pred_n.mean.shape
+        assert pred_h.variance.shape == pred_n.variance.shape
+        assert np.all(np.isfinite(pred_h.variance))
+        assert np.all(np.isfinite(pred_n.variance))

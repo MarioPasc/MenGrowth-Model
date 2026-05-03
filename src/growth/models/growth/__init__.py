@@ -12,16 +12,20 @@ from .hgp_hetero import HGPHeteroModel
 from .hgp_model import HierarchicalGPModel
 from .lme_hetero import LMEHeteroGrowthModel
 from .lme_model import LMEGrowthModel
+from .nlme_analytical import ExponentialNLME, GompertzNLME, LogisticNLME
 from .scalar_gp import ScalarGP
 from .scalar_gp_hetero import ScalarGPHetero
 
 __all__ = [
+    "ExponentialNLME",
     "FitResult",
+    "GompertzNLME",
     "GrowthModel",
     "HGPHeteroModel",
     "HierarchicalGPModel",
     "LMEGrowthModel",
     "LMEHeteroGrowthModel",
+    "LogisticNLME",
     "PatientTrajectory",
     "PredictionResult",
     "ScalarGP",

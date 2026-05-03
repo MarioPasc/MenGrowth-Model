@@ -92,6 +92,35 @@ class LOPOResults:
             ],
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "LOPOResults":
+        """Deserialize from a JSON-compatible dict (inverse of to_dict)."""
+        fold_results = []
+        for fd in data.get("fold_results", []):
+            fr_data = fd.get("fit_result", {})
+            fit_result = FitResult(
+                log_marginal_likelihood=fr_data.get("log_marginal_likelihood", 0.0),
+                hyperparameters=fr_data.get("hyperparameters", {}),
+                condition_number=fr_data.get("condition_number", 0.0),
+            )
+            fold_results.append(
+                LOPOFoldResult(
+                    patient_id=fd["patient_id"],
+                    n_timepoints=fd.get("n_timepoints", 0),
+                    n_train_patients=fd.get("n_train_patients", 0),
+                    n_train_observations=fd.get("n_train_observations", 0),
+                    fit_result=fit_result,
+                    predictions=fd.get("predictions", {}),
+                    fit_time_s=fd.get("fit_time_s", 0.0),
+                )
+            )
+        return cls(
+            model_name=data.get("model_name", "unknown"),
+            fold_results=fold_results,
+            aggregate_metrics=data.get("aggregate_metrics", {}),
+            failed_folds=data.get("failed_folds", []),
+        )
+
 
 class LOPOEvaluator:
     """Leave-One-Patient-Out cross-validation evaluator.
