@@ -144,7 +144,7 @@ if [[ ${#JOB_IDS[@]} -gt 0 ]]; then
         --error=${LOGS_DIR}/growth_uq_analysis_%j.err \
         --dependency=afterany:${ALL_DEP} \
         --export=ALL,CONFIG_PATH=${CONFIG},CONDA_ENV=${CONDA_ENV},REPO_DIR=${SLURM_REPO_DIR} \
-        --wrap='source \"\$(conda info --base)/etc/profile.d/conda.sh\" && conda activate ${CONDA_ENV} && cd ${SLURM_REPO_DIR} && python -m experiments.stage1_volumetric.run_analysis --config ${CONFIG}'"
+        experiments/stage1_volumetric/slurm/analysis_worker.sh"
 
     echo ""
     echo "--- Analysis job (depends on ${N_SUBMITTED} model jobs: ${ALL_DEP}) ---"

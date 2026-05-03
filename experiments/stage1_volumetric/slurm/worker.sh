@@ -22,10 +22,11 @@ echo "Model: ${MODEL_NAME}"
 echo "Config: ${CONFIG_PATH}"
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV:-mengrowth}"
+conda activate "${CONDA_ENV:-growth}"
 
 REPO="${REPO_DIR:-/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model}"
 cd "${REPO}"
+export PYTHONPATH="${REPO}/src:${REPO}:${PYTHONPATH:-}"
 
 # --- Run ---
 python -m experiments.stage1_volumetric.run_single_model \
