@@ -1,0 +1,94 @@
+# Picasso config — NLME_Logistic + NLME_Gompertz only (missing from first run)
+# Usage: bash experiments/stage1_volumetric/slurm/submit_nlme_missing.sh
+
+experiment:
+  name: stage1_volumetric_uq_picasso_nlme_missing
+  seed: 42
+
+paths:
+  mengrowth_h5: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/MenGrowth.h5
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/results/uncertainty_propagation_volume_prediction
+
+time:
+  variable: ordinal
+  missing_date_strategy: mixed
+
+uncertainty:
+  enabled: true
+  estimator: mean_std
+  floor_variance: 1.0e-6
+
+volume:
+  transform: log1p
+
+patients:
+  exclude: [MenGrowth-0028]
+  min_timepoints: 2
+  skip_all_zero_volume: true
+
+covariates:
+  enabled: false
+  features: [age, sex]
+  missing_strategy: skip
+
+gp:
+  kernel: matern52
+  mean_function: linear
+  n_restarts: 5
+  max_iter: 1000
+  lengthscale_bounds: [0.1, 50.0]
+  signal_var_bounds: [0.001, 10.0]
+  noise_var_bounds: [1.0e-6, 5.0]
+
+lme:
+  method: reml
+  n_restarts: 5
+  max_iter: 1000
+
+# Only the two missing NLME models
+models:
+  scalar_gp: false
+  scalar_gp_hetero: false
+  lme: false
+  lme_hetero: false
+  hgp: false
+  hgp_hetero: false
+  hgp_gompertz: false
+  hgp_gompertz_hetero: false
+
+bootstrap:
+  enabled: true
+  n_samples: 2000
+  confidence_level: 0.95
+  seed: 42
+
+analytical:
+  enabled: true
+  n_restarts: 3
+  max_iter: 500
+  fallback_to_1re: true
+  models:
+    exponential: false
+    logistic: true
+    gompertz: true
+
+# Analysis uses the FULL config to find all 11 model dirs
+# This section is only for the two NLME models being submitted
+variance_decomposition:
+  enabled: false
+
+reporting:
+  dss: false
+  nlpd: false
+  pit_histogram: false
+  sharpness_scatter: false
+
+slurm:
+  partition: gputhin
+  constraint: cpu
+  time: "0-01:00:00"
+  cpus_per_task: 4
+  mem: "16G"
+  conda_env: growth
+  repo_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
+  logs_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/logs/stage1_uq
