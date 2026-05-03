@@ -78,6 +78,10 @@ class LMEHeteroGrowthModel(GrowthModel):
         self._fitted: bool = False
         self._active_cov_names: list[str] = []
         self._cov_means: dict[str, float] = {}
+        # GLS covariance of fixed-effect estimates: (sum_i X_i^T V_i^{-1} X_i)^{-1}.
+        # Required for the fixed-effect-uncertainty term of the predictive variance
+        # (uncertainty_propagation.tex, subsec:methods-end-to-end-uq).
+        self._cov_beta: np.ndarray | None = None
 
     def fit(self, patients: list[PatientTrajectory]) -> FitResult:
         """Fit via custom REML with heteroscedastic residuals.
@@ -169,13 +173,24 @@ class LMEHeteroGrowthModel(GrowthModel):
         self._beta = best_beta
         self._fitted = True
 
-        # Compute condition number of largest V_i
+        # Recompute (sum_i X_i^T V_i^{-1} X_i) at the optimum and invert it
+        # to obtain the GLS covariance of beta_hat. Used by predict().
+        # Also compute the condition number of the largest V_i in the same loop.
+        sum_XtVinvX_opt = np.zeros((p_dim, p_dim))
         max_cond = 0.0
         for Xi, Zi, yi, sv in patient_data:
             Vi = build_Vi(Zi[:, 1], self._omega, sigma_n_sq, sv)
             eigvals = np.linalg.eigvalsh(Vi)
             cond = float(eigvals[-1] / max(eigvals[0], 1e-15))
             max_cond = max(max_cond, cond)
+            XtVinvX_i, _ = gls_suffstat(Xi, Vi, yi)
+            sum_XtVinvX_opt += XtVinvX_i
+
+        try:
+            self._cov_beta = np.linalg.inv(sum_XtVinvX_opt)
+        except np.linalg.LinAlgError:
+            logger.warning("Singular GLS information matrix; cov_beta unavailable")
+            self._cov_beta = None
 
         hypers = {
             "sigma_n_sq": sigma_n_sq,
@@ -440,9 +455,24 @@ class LMEHeteroGrowthModel(GrowthModel):
         # Predictions
         mean = pop_mean_pred + Z_pred @ u_hat
 
+        # Fixed-effect uncertainty term (thesis: subsec:methods-end-to-end-uq).
+        # x* has the full FE design at t*: [1, t*, cov_1, ..., cov_K] in fit order.
+        if self._cov_beta is not None and self._cov_beta.shape[0] >= 2:
+            n_fe = self._cov_beta.shape[0]
+            cov_tail = np.zeros(n_fe - 2)
+            if cov_vec is not None and self._active_cov_names:
+                k = min(len(cov_vec), n_fe - 2)
+                cov_tail[:k] = cov_vec[:k]
+            X_pred_full = np.column_stack([np.ones(n_pred), t_pred, np.tile(cov_tail, (n_pred, 1))])
+            fe_var = np.einsum("ij,jk,ik->i", X_pred_full, self._cov_beta, X_pred_full)
+            fe_var = np.maximum(fe_var, 0.0)
+        else:
+            fe_var = np.zeros(n_pred)
+
         latent_var = np.array(
             [float(Z_pred[j] @ cov_post @ Z_pred[j]) + self._sigma_n_sq for j in range(n_pred)]
         )
+        latent_var = latent_var + fe_var
         latent_var = np.maximum(latent_var, 1e-10)
 
         observable_var = latent_var + sv_pred

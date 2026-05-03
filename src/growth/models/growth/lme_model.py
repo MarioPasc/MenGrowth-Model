@@ -32,6 +32,31 @@ from .covariate_utils import (
 logger = logging.getLogger(__name__)
 
 
+def _extract_fe_cov(result, fe_names: list[str]) -> np.ndarray | None:
+    """Extract the GLS covariance of the fixed-effect estimates.
+
+    Returns the K x K block of ``result.cov_params()`` indexed by ``fe_names``,
+    or ``None`` if extraction fails (e.g. names missing from the result).
+
+    The remaining variance-component rows/cols of ``cov_params()`` are dropped
+    because Var(beta_hat | theta_hat) is what enters the predictive variance
+    (the variance-component uncertainty contributes only at higher order;
+    Kackar & Harville 1984).
+    """
+    try:
+        cov = result.cov_params()
+        if hasattr(cov, "loc"):
+            block = cov.loc[fe_names, fe_names].to_numpy()
+        else:
+            block = np.asarray(cov)[: len(fe_names), : len(fe_names)]
+        block = np.asarray(block, dtype=np.float64)
+        if block.shape != (len(fe_names), len(fe_names)) or not np.all(np.isfinite(block)):
+            return None
+        return block
+    except Exception:
+        return None
+
+
 @dataclass
 class LMEDimensionFit:
     """Fitted parameters for one dimension of the LME model."""
@@ -43,6 +68,11 @@ class LMEDimensionFit:
     converged: bool
     covariate_betas: dict[str, float] | None = None  # Covariate fixed effects
     log_likelihood: float = 0.0  # REML or ML log-likelihood
+    # Full GLS covariance of fixed-effect estimates, ordered as
+    # [intercept, time, cov_1, ..., cov_K]. None if extraction failed (OLS fallback).
+    # Required for the fixed-effect-uncertainty term of the predictive variance
+    # (see uncertainty_propagation.tex, subsec:methods-end-to-end-uq).
+    cov_beta: np.ndarray | None = None
 
 
 class LMEGrowthModel(GrowthModel):
@@ -211,6 +241,10 @@ class LMEGrowthModel(GrowthModel):
             if re_cov.ndim == 0:
                 re_cov = np.array([[float(re_cov)]])
 
+            # Fixed-effect covariance for the predictive-variance fixed-effect term.
+            # statsmodels orders fe params as [Intercept, time, cov_1, ..., cov_K].
+            cov_beta = _extract_fe_cov(result, ["Intercept", "time", *self._active_cov_names])
+
             return LMEDimensionFit(
                 beta_0=beta_0,
                 beta_1=beta_1,
@@ -219,6 +253,7 @@ class LMEGrowthModel(GrowthModel):
                 converged=result.converged,
                 covariate_betas=cov_betas,
                 log_likelihood=float(result.llf),
+                cov_beta=cov_beta,
             )
 
         except Exception as e:
@@ -255,12 +290,15 @@ class LMEGrowthModel(GrowthModel):
             )
             omega = np.array([[re_var, 0.0], [0.0, 0.0]])
 
+            cov_beta = _extract_fe_cov(result, ["Intercept", "time"])
+
             return LMEDimensionFit(
                 beta_0=beta_0,
                 beta_1=beta_1,
                 sigma_sq=sigma_sq,
                 omega=omega,
                 converged=result.converged,
+                cov_beta=cov_beta,
             )
         except Exception as e:
             logger.warning(f"LME dim {d} intercept-only also failed ({e}), using OLS")
@@ -405,15 +443,34 @@ class LMEGrowthModel(GrowthModel):
         # Prediction: population mean + random effects contribution
         mean = pop_mean_pred + Z_pred @ b_hat
 
-        # Prediction variance:
-        # Var(y_pred) = sigma^2 + Z_pred @ (Omega - Omega @ Z^T @ V^{-1} @ Z @ Omega) @ Z_pred^T
+        # Predictive variance — three additive terms per the thesis
+        # (uncertainty_propagation.tex, subsec:methods-end-to-end-uq):
+        #   (i)   residual variance at t*: sigma^2
+        #   (ii)  random-effect posterior variance: z*^T (Omega - Omega Z^T V^{-1} Z Omega) z*
+        #   (iii) fixed-effect coefficient uncertainty: x*^T Cov(beta_hat) x*
         try:
             shrunk_cov = Omega - Omega @ Z_cond.T @ V_inv @ Z_cond @ Omega
-            pred_var = np.array(
-                [dim_fit.sigma_sq + Z_pred[i] @ shrunk_cov @ Z_pred[i] for i in range(len(t_pred))]
-            )
+            re_var = np.array([Z_pred[i] @ shrunk_cov @ Z_pred[i] for i in range(len(t_pred))])
         except Exception:
-            pred_var = np.full(len(t_pred), dim_fit.sigma_sq)
+            re_var = np.zeros(len(t_pred))
+
+        # Fixed-effect uncertainty term. x* has the full FE design at t*:
+        # [1, t*, cov_1, ..., cov_K] in the order used during fit.
+        if dim_fit.cov_beta is not None and dim_fit.cov_beta.shape[0] >= 2:
+            n_fe = dim_fit.cov_beta.shape[0]
+            cov_tail = np.zeros(n_fe - 2)
+            if cov_vec is not None and self._active_cov_names:
+                k = min(len(cov_vec), n_fe - 2)
+                cov_tail[:k] = cov_vec[:k]
+            X_pred_full = np.column_stack(
+                [np.ones(len(t_pred)), t_pred, np.tile(cov_tail, (len(t_pred), 1))]
+            )
+            fe_var = np.einsum("ij,jk,ik->i", X_pred_full, dim_fit.cov_beta, X_pred_full)
+            fe_var = np.maximum(fe_var, 0.0)
+        else:
+            fe_var = np.zeros(len(t_pred))
+
+        pred_var = dim_fit.sigma_sq + re_var + fe_var
 
         return mean, np.maximum(pred_var, 1e-10)
 
