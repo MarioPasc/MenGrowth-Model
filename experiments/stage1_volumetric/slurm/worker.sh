@@ -24,7 +24,7 @@ echo "Config: ${CONFIG_PATH}"
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV:-mengrowth}"
 
-REPO="${REPO_DIR:-/mnt/home/users/tic_163_uma/mpascual/research/code/MenGrowth-Model}"
+REPO="${REPO_DIR:-/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model}"
 cd "${REPO}"
 
 # --- Run ---
