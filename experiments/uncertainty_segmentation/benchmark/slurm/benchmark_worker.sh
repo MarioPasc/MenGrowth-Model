@@ -29,7 +29,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=0-04:00:00
 
-set -euo pipefail
+set -euo
+trap 'echo "[TRAP] Script failed at line $LINENO (exit $?)" >&2' ERR
 
 START_TIME=$(date +%s)
 
