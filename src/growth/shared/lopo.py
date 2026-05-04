@@ -272,6 +272,15 @@ class LOPOEvaluator:
         t_pred = np.array([patient.times[-1]])
         pred = model.predict(patient, t_pred, n_condition=n - 1)
 
+        # Per-target segmentation variance (sigma_v^2 at the prediction time)
+        # is recorded for downstream conditional-calibration stratification.
+        # NaN when the trajectory has no observation_variance attached.
+        sigma_v_sq_target = (
+            float(patient.observation_variance[-1])
+            if patient.observation_variance is not None
+            else float("nan")
+        )
+
         return [
             {
                 "time": float(patient.times[-1]),
@@ -281,6 +290,7 @@ class LOPOEvaluator:
                 "lower_95": float(pred.lower_95[0, 0]),
                 "upper_95": float(pred.upper_95[0, 0]),
                 "n_conditioning": n - 1,
+                "sigma_v_sq_target": sigma_v_sq_target,
             }
         ]
 
@@ -294,8 +304,15 @@ class LOPOEvaluator:
         t_pred = patient.times[1:]
         pred = model.predict(patient, t_pred, n_condition=1)
 
+        has_obs_var = patient.observation_variance is not None
+
         results: list[dict] = []
         for j in range(len(t_pred)):
+            sigma_v_sq_target = (
+                float(patient.observation_variance[j + 1])
+                if has_obs_var
+                else float("nan")
+            )
             results.append(
                 {
                     "time": float(t_pred[j]),
@@ -305,6 +322,7 @@ class LOPOEvaluator:
                     "lower_95": float(pred.lower_95[j, 0]),
                     "upper_95": float(pred.upper_95[j, 0]),
                     "n_conditioning": 1,
+                    "sigma_v_sq_target": sigma_v_sq_target,
                 }
             )
         return results

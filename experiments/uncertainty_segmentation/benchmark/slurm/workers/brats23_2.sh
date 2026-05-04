@@ -67,6 +67,7 @@ singularity run \
     --no-home \
     --writable-tmpfs \
     --pwd "${CONTAINER_PWD}" \
+    "${EXTRA_BINDS[@]}" \
     --bind "${STAGE_DIR}:${CONTAINER_PWD}:rw" \
     --bind "${WORK_INPUT}:/mlcube_io0:ro" \
     --bind "${WORK_OUTPUT}:/mlcube_io2:rw" \

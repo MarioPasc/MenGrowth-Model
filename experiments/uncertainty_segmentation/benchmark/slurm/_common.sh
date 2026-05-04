@@ -78,28 +78,33 @@ bm_check_inputs() {
 }
 
 # ----------------------------------------------------------------------------
-# bm_setup_workdir — symlink the 150 patients to ${WORK_INPUT}.
-# Sets WORK_INPUT, WORK_OUTPUT, PRED_DIR globally.
+# bm_setup_workdir — declare WORK_INPUT/WORK_OUTPUT/PRED_DIR and build the
+# bind-arg array EXTRA_BINDS so containers can resolve symlink targets.
+#
+# WORK_INPUT is set to NIFTI_DIR directly (no per-patient symlink layer).
+# Singularity does not follow symlinks whose absolute targets fall outside
+# any bind mount; ``extract_from_raw`` writes symlinks under nifti/<id>/
+# pointing to RAW_BRATS_MEN_DIR/<id>/, so we identity-bind that root too.
 # ----------------------------------------------------------------------------
 bm_setup_workdir() {
     MODEL_DIR="${OUTPUT_DIR}/models/${MODEL_ID}"
-    WORK_INPUT="${MODEL_DIR}/work/input"
+    WORK_INPUT="${NIFTI_DIR}"                       # bound directly, read-only
     WORK_OUTPUT="${MODEL_DIR}/work/output"
     PRED_DIR="${MODEL_DIR}/predictions"
-    mkdir -p "${WORK_INPUT}" "${WORK_OUTPUT}" "${PRED_DIR}"
+    mkdir -p "${WORK_OUTPUT}" "${PRED_DIR}"
 
-    local patient_dir patient_name target
-    for patient_dir in "${NIFTI_DIR}"/BraTS-MEN-*; do
-        [ -d "${patient_dir}" ] || continue
-        patient_name="$(basename "${patient_dir}")"
-        target="${WORK_INPUT}/${patient_name}"
-        if [ ! -e "${target}" ]; then
-            ln -s "${patient_dir}" "${target}"
-        fi
-    done
-    local n_linked
-    n_linked=$(find "${WORK_INPUT}" -mindepth 1 -maxdepth 1 -type l | wc -l)
-    echo "[OK] Symlinked ${n_linked} patients to ${WORK_INPUT}"
+    EXTRA_BINDS=()
+    if [ -n "${RAW_BRATS_MEN_DIR:-}" ] && [ -d "${RAW_BRATS_MEN_DIR}" ]; then
+        # Identity-bind the raw root so symlinks under nifti/ resolve inside
+        # the container at the same absolute path. Read-only; harmless.
+        EXTRA_BINDS+=(--bind "${RAW_BRATS_MEN_DIR}:${RAW_BRATS_MEN_DIR}:ro")
+        echo "[OK] WORK_INPUT  = ${WORK_INPUT}  (bound directly)"
+        echo "[OK] EXTRA_BINDS = ${RAW_BRATS_MEN_DIR}:${RAW_BRATS_MEN_DIR}:ro"
+    else
+        echo "[OK] WORK_INPUT  = ${WORK_INPUT}  (bound directly)"
+        echo "[WARN] RAW_BRATS_MEN_DIR not set — symlinks under nifti/ may"
+        echo "       not resolve. Re-extract with --copy or set RAW_BRATS_MEN_DIR."
+    fi
 }
 
 # ----------------------------------------------------------------------------

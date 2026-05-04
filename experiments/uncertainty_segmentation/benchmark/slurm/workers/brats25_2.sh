@@ -50,6 +50,7 @@ singularity run \
     --no-home \
     --writable-tmpfs \
     --pwd "${CONTAINER_PWD}" \
+    "${EXTRA_BINDS[@]}" \
     --bind "${WORK_INPUT}:/input:ro" \
     --bind "${WORK_OUTPUT}:/output:rw" \
     "${SIF_PATH}"

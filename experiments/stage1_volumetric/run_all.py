@@ -43,6 +43,9 @@ from experiments.stage1_volumetric.stats.comparisons import (
     run_paired_comparisons,
     write_comparison_table,
 )
+from experiments.stage1_volumetric.stats.conditional_calibration import (
+    run_conditional_calibration,
+)
 from experiments.utils.experiment_output import save_experiment_metadata
 from growth.shared.bootstrap import BootstrapResult
 from growth.shared.lopo import LOPOResults

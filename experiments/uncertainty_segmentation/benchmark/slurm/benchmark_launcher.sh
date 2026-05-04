@@ -335,7 +335,7 @@ if [ "${SEQUENTIAL}" -eq 1 ]; then
             --job-name=${JOB_NAME} \
             --output=${LOG_OUT} \
             --error=${LOG_ERR} \
-            --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
+            --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR},RAW_BRATS_MEN_DIR=${RAW_BRATS_MEN_DIR} \
             ${WORKER_PATH}"
 
         if [ "${DRY_RUN}" -eq 1 ]; then
@@ -406,7 +406,7 @@ for entry in "${MODELS[@]}"; do
         --job-name=${JOB_NAME} \
         --output=${LOG_OUT} \
         --error=${LOG_ERR} \
-        --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
+        --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR},RAW_BRATS_MEN_DIR=${RAW_BRATS_MEN_DIR} \
         ${WORKER_PATH}"
 
     if [ "${DRY_RUN}" -eq 0 ]; then

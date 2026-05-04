@@ -58,6 +58,7 @@ def load_trajectories(cfg: dict) -> list[PatientTrajectory]:
         skip_all_zero_volume=cfg["patients"].get("skip_all_zero_volume", True),
         missing_date_strategy=time_cfg.get("missing_date_strategy", "mixed"),
         floor_variance=uq_cfg.get("floor_variance", 1e-6),
+        max_logvol_std=cfg["patients"].get("max_logvol_std", None),
     )
 
     logger.info(f"Loaded {len(trajectories)} trajectories (ensemble logvol_mean + variance)")

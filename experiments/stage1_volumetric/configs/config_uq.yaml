@@ -20,7 +20,14 @@ time:
 uncertainty:
   enabled: true
   estimator: mean_std  # mean_std | median_mad | mask_mean
-  floor_variance: 1.0e-6
+  # floor_variance: lower bound on per-scan log-volume variance. Set to a
+  # physiological floor representing minimum measurement noise expected from
+  # any volumetric MRI segmentation (~5% relative volume CV → sigma_v~0.05 →
+  # sigma_v^2~2.5e-3). Prevents the "vanishing sigma_v at the prediction
+  # target" pathology that makes hetero models systematically sharper than
+  # homoscedastic ones at typical scans (see docs/UQ_CALIBRATION_STORY.md
+  # §6.3). Previously 1.0e-6 (purely numerical, no physical meaning).
+  floor_variance: 1.0e-3
 
 volume:
   transform: log1p
@@ -29,6 +36,14 @@ patients:
   exclude: [MenGrowth-0028]
   min_timepoints: 2
   skip_all_zero_volume: true
+  # max_logvol_std: drop any scan whose LoRA-ensemble logvol_std exceeds
+  # this threshold. These scans are segmentation failures (zero-volume /
+  # near-vanishing tumours where members disagree about whether to predict
+  # any mask), not measurement noise. Their inflated sigma_v_k inflates the
+  # mean sigma_v that REML absorbs into sigma_n, masking the per-scan
+  # propagation effect on the well-segmented majority. See
+  # docs/UQ_CALIBRATION_STORY.md §6.2. Comment out to disable filter.
+  max_logvol_std: 1.0
 
 covariates:
   enabled: false

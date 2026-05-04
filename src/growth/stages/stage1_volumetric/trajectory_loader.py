@@ -365,6 +365,7 @@ def load_uncertainty_trajectories_from_h5(
     skip_all_zero_volume: bool = True,
     missing_date_strategy: str = "mixed",
     floor_variance: float = 1e-6,
+    max_logvol_std: float | None = None,
 ) -> list[PatientTrajectory]:
     """Load trajectories with per-observation log-volume variance.
 
@@ -388,6 +389,14 @@ def load_uncertainty_trajectories_from_h5(
             patients, ``"mixed"`` uses ordinal for those patients,
             ``"fail"`` raises ValueError.
         floor_variance: Minimum allowed variance (avoids singular V_i).
+        max_logvol_std: If set, drop any scan whose LoRA-ensemble
+            ``logvol_std`` exceeds this threshold. These scans are
+            segmentation failures (zero / near-vanishing tumours where the
+            ensemble disagrees about whether to predict any mask), not
+            measurement noise. Filtering them prevents the inflated mean
+            sigma_v from being absorbed into REML's sigma_n. After
+            filtering, patients that fall below ``min_timepoints`` are also
+            dropped. Set to ``None`` (default) to disable.
 
     Returns:
         List of PatientTrajectory sorted by patient_id, with
@@ -509,6 +518,8 @@ def load_uncertainty_trajectories_from_h5(
 
     # Build per-patient trajectories
     n_patients = len(patient_list)
+    qc_dropped_scans: list[tuple[str, int, float]] = []  # (pid, tp_idx, sigma_v)
+    qc_dropped_patients: list[str] = []
 
     for i in range(n_patients):
         pid = patient_list[i]
@@ -528,6 +539,23 @@ def load_uncertainty_trajectories_from_h5(
         tp_indices = timepoint_idx[scan_indices]
         sort_order = np.argsort(tp_indices)
         scan_indices = [scan_indices[j] for j in sort_order]
+
+        # QC filter: drop scans whose raw logvol_std exceeds the threshold.
+        # Applied to the raw s_values (pre-floor) so the floor cannot mask a
+        # genuinely catastrophic ensemble disagreement.
+        if max_logvol_std is not None:
+            kept = []
+            for sidx in scan_indices:
+                s_raw = float(s_values[sidx])
+                if s_raw > max_logvol_std:
+                    qc_dropped_scans.append((pid, int(timepoint_idx[sidx]), s_raw))
+                else:
+                    kept.append(sidx)
+            scan_indices = kept
+
+        if len(scan_indices) < min_timepoints:
+            qc_dropped_patients.append(pid)
+            continue
 
         # Time variable
         if time_variable == "days_from_baseline" and time_delta_days is not None:
@@ -568,10 +596,23 @@ def load_uncertainty_trajectories_from_h5(
 
     trajectories.sort(key=lambda t: t.patient_id)
 
+    if max_logvol_std is not None:
+        logger.info(
+            f"QC filter (max_logvol_std={max_logvol_std}): dropped "
+            f"{len(qc_dropped_scans)} scan(s) and {len(qc_dropped_patients)} "
+            f"patient(s) (fell below min_timepoints={min_timepoints} after "
+            f"filter)"
+        )
+        for pid, tp_idx, s_raw in qc_dropped_scans:
+            logger.info(f"  dropped scan: {pid} tp={tp_idx} logvol_std={s_raw:.4f}")
+        for pid in qc_dropped_patients:
+            logger.info(f"  dropped patient (post-filter): {pid}")
+
     logger.info(
         f"Loaded {len(trajectories)} uncertainty trajectories from {h5_path.name} "
         f"(time={time_variable}, estimator={estimator}, "
-        f"excluded={len(exclude_patients_set)}, floor_var={floor_variance})"
+        f"excluded={len(exclude_patients_set)}, floor_var={floor_variance}, "
+        f"max_logvol_std={max_logvol_std})"
     )
     return trajectories
 
