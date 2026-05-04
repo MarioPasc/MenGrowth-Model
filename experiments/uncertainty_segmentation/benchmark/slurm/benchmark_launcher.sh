@@ -31,13 +31,20 @@ SIF_DIR="/mnt/home/users/tic_163_uma/mpascual/fscratch/singularity_images"
 LOG_DIR="${OUTPUT_DIR}/logs"
 CONDA_ENV_NAME="mengrowth"
 
-# Model registry: ID|DOCKER_IMAGE|YEAR|INTERFACE
+# Default raw BraTS-MEN dataset path (override with --raw-dir).
+# Required: external containers expect canonical (240,240,155) — H5 has 192³.
+RAW_BRATS_MEN_DIR="/mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/BraTS_Men_Train"
+
+# Per-model worker scripts (one per container, peculiarities documented inline).
+WORKERS_DIR="${SCRIPT_DIR}/workers"
+
+# Model registry: ID|DOCKER_IMAGE|YEAR|INTERFACE|WORKER_FILE
 MODELS=(
-    "BraTS25_1|brainles/brats25_men_qing:latest|2025|docker_only"
-    "BraTS25_2|brainles/brats25_men_mmdp:latest|2025|docker_only"
-    "BraTS23_1|brainles/brats23_meningioma_nvauto:latest|2023|mlcube"
-    "BraTS23_2|brainles/brats23_meningioma_blackbean:latest|2023|mlcube"
-    "BraTS23_3|brainles/brats23_meningioma_cnmc_pmi2023:latest|2023|mlcube"
+    "BraTS25_1|brainles/brats25_men_qing:latest|2025|docker_only|brats25_1.sh"
+    "BraTS25_2|brainles/brats25_men_mmdp:latest|2025|docker_only|brats25_2.sh"
+    "BraTS23_1|brainles/brats23_meningioma_nvauto:latest|2023|mlcube|brats23_1.sh"
+    "BraTS23_2|brainles/brats23_meningioma_blackbean:latest|2023|mlcube|brats23_2.sh"
+    "BraTS23_3|brainles/brats23_meningioma_cnmc_pmi2023:latest|2023|mlcube|brats23_3.sh"
 )
 
 # ========================================================================
@@ -49,6 +56,7 @@ SKIP_PULL=0
 SKIP_EXTRACT=0
 SEQUENTIAL=0
 KEEP_SIF=0
+H5_ONLY=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -79,9 +87,20 @@ while [[ $# -gt 0 ]]; do
             KEEP_SIF=1
             shift
             ;;
+        --raw-dir)
+            shift
+            RAW_BRATS_MEN_DIR="$1"
+            shift
+            ;;
+        --h5-only)
+            # Legacy: extract 192³ crops from H5. External containers will reject these.
+            H5_ONLY=1
+            shift
+            ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--dry-run] [--skip-pull] [--skip-extract] [--sequential] [--keep-sif] [--models MODEL1 MODEL2 ...]"
+            echo "Usage: $0 [--dry-run] [--skip-pull] [--skip-extract] [--sequential] [--keep-sif]"
+            echo "          [--raw-dir <path>] [--h5-only] [--models MODEL1 MODEL2 ...]"
             exit 1
             ;;
     esac
@@ -96,9 +115,16 @@ echo "  Output:     ${OUTPUT_DIR}"
 echo "  SIF dir:    ${SIF_DIR}"
 echo "  Log dir:    ${LOG_DIR}"
 echo "  Conda env:  ${CONDA_ENV_NAME}"
+echo "  Workers:    ${WORKERS_DIR}"
+echo "  Raw dir:    ${RAW_BRATS_MEN_DIR}  (h5_only=${H5_ONLY})"
 echo "  Dry run:    ${DRY_RUN}"
 echo "  Sequential: ${SEQUENTIAL}  (keep_sif=${KEEP_SIF})"
 echo ""
+
+if [ ! -d "${WORKERS_DIR}" ]; then
+    echo "ERROR: workers/ directory not found: ${WORKERS_DIR}" >&2
+    exit 1
+fi
 
 # Create directories
 mkdir -p "${SIF_DIR}" "${LOG_DIR}" "${OUTPUT_DIR}"
@@ -141,7 +167,7 @@ fi
 for entry in "${MODELS[@]}"; do
     [ "${SEQUENTIAL}" -eq 1 ] && break
 
-    IFS='|' read -r model_id docker_image year interface <<< "${entry}"
+    IFS='|' read -r model_id docker_image year interface worker_file <<< "${entry}"
 
     # Filter by selected models if specified
     if [ -n "${SELECTED_MODELS}" ]; then
@@ -195,9 +221,23 @@ else
             conda activate "${CONDA_ENV_NAME}" 2>/dev/null || source activate "${CONDA_ENV_NAME}"
         fi
 
-        python3 "${BENCHMARK_DIR}/extract_h5_to_nifti.py" \
-            --h5 "${H5_FILE}" \
+        EXTRACT_ARGS=(
+            --h5 "${H5_FILE}"
             --output "${EXTRACTION_DIR}"
+        )
+        if [ "${H5_ONLY}" -eq 1 ]; then
+            EXTRACT_ARGS+=(--h5-only)
+            echo "  [WARN] --h5-only: external containers will reject 192³ inputs."
+        else
+            if [ ! -d "${RAW_BRATS_MEN_DIR}" ]; then
+                echo "ERROR: --raw-dir does not exist: ${RAW_BRATS_MEN_DIR}" >&2
+                echo "       Pass --raw-dir <path/to/BraTS_Men_Train> or --h5-only." >&2
+                exit 1
+            fi
+            EXTRACT_ARGS+=(--raw-dir "${RAW_BRATS_MEN_DIR}")
+        fi
+
+        python3 "${BENCHMARK_DIR}/extract_h5_to_nifti.py" "${EXTRACT_ARGS[@]}"
     else
         echo "         (dry run — skipped)"
     fi
@@ -211,11 +251,17 @@ echo "=========================================="
 echo "STEP 3: Submitting SLURM jobs"
 echo "=========================================="
 
-WORKER_SCRIPT="${SCRIPT_DIR}/benchmark_worker.sh"
-if [ ! -f "${WORKER_SCRIPT}" ]; then
-    echo "ERROR: Worker script not found: ${WORKER_SCRIPT}"
-    exit 1
-fi
+# Each model has its own worker under workers/ — see file headers for the
+# container-specific quirks each one handles.
+resolve_worker() {
+    local wf="$1"
+    local path="${WORKERS_DIR}/${wf}"
+    if [ ! -f "${path}" ]; then
+        echo "ERROR: Worker script not found: ${path}" >&2
+        exit 1
+    fi
+    printf '%s' "${path}"
+}
 
 # ------------------------------------------------------------------------
 # SEQUENTIAL MODE: pull → sbatch --wait → (optionally) delete SIF → next.
@@ -226,7 +272,7 @@ fi
 if [ "${SEQUENTIAL}" -eq 1 ]; then
     SEQ_RESULTS=()
     for entry in "${MODELS[@]}"; do
-        IFS='|' read -r model_id docker_image year interface <<< "${entry}"
+        IFS='|' read -r model_id docker_image year interface worker_file <<< "${entry}"
 
         if [ -n "${SELECTED_MODELS}" ]; then
             if ! echo "${SELECTED_MODELS}" | grep -qw "${model_id}"; then
@@ -277,12 +323,13 @@ if [ "${SEQUENTIAL}" -eq 1 ]; then
         LOG_OUT="${LOG_DIR}/${model_id}_%j.out"
         LOG_ERR="${LOG_DIR}/${model_id}_%j.err"
 
+        WORKER_PATH="$(resolve_worker "${worker_file}")"
         SBATCH_CMD="sbatch --wait \
             --job-name=${JOB_NAME} \
             --output=${LOG_OUT} \
             --error=${LOG_ERR} \
             --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
-            ${WORKER_SCRIPT}"
+            ${WORKER_PATH}"
 
         if [ "${DRY_RUN}" -eq 1 ]; then
             echo "  [DRY]  ${SBATCH_CMD}"
@@ -326,7 +373,7 @@ fi
 SUBMITTED_JOBS=()
 
 for entry in "${MODELS[@]}"; do
-    IFS='|' read -r model_id docker_image year interface <<< "${entry}"
+    IFS='|' read -r model_id docker_image year interface worker_file <<< "${entry}"
 
     # Filter by selected models if specified
     if [ -n "${SELECTED_MODELS}" ]; then
@@ -347,12 +394,13 @@ for entry in "${MODELS[@]}"; do
     LOG_OUT="${LOG_DIR}/${model_id}_%j.out"
     LOG_ERR="${LOG_DIR}/${model_id}_%j.err"
 
+    WORKER_PATH="$(resolve_worker "${worker_file}")"
     SBATCH_CMD="sbatch --parsable \
         --job-name=${JOB_NAME} \
         --output=${LOG_OUT} \
         --error=${LOG_ERR} \
         --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
-        ${WORKER_SCRIPT}"
+        ${WORKER_PATH}"
 
     if [ "${DRY_RUN}" -eq 0 ]; then
         JOB_ID=$(eval "${SBATCH_CMD}")

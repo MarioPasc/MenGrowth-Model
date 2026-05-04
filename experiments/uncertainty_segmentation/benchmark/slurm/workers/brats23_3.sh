@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# =============================================================================
+# WORKER: BraTS23_3 (brainles/brats23_meningioma_cnmc_pmi2023)
+#
+# Quirks:
+#   - MLCube interface, no parameters_file.
+#   - At startup, men_runner.py → install_model_from_zip extracts a zip into
+#     './' (= /mlcube_project) creating Dataset004_BraTS2023_MEN/. That fails
+#     with PermissionError because /mlcube_project is read-only squashfs and
+#     --writable-tmpfs in Singularity 3.7.2 does not always honour writes to
+#     root-owned subtrees.
+#     → Stage /mlcube_project to a writable host dir and bind it back.
+# =============================================================================
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --constraint=dgx
+#SBATCH --gres=gpu:1
+#SBATCH --time=0-04:00:00
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/../_common.sh"
+
+bm_header
+bm_setup_env
+bm_check_inputs
+bm_setup_workdir
+
+CONTAINER_PWD="/mlcube_project"
+STAGE_DIR="${MODEL_DIR}/work/mlcube_project_writable"
+bm_stage_writable "${CONTAINER_PWD}" "${STAGE_DIR}"
+
+echo "=========================================="
+echo "RUNNING INFERENCE: ${MODEL_ID} (cnmc_pmi2023, MLCube)"
+echo "  Bind: ${STAGE_DIR}   → ${CONTAINER_PWD} (rw, staged — needs zip extract)"
+echo "  Bind: ${WORK_INPUT}  → /mlcube_io0 (ro)"
+echo "  Bind: ${WORK_OUTPUT} → /mlcube_io2 (rw)"
+echo "=========================================="
+
+INFER_START=$(date +%s)
+set +e
+singularity run \
+    --nv \
+    --cleanenv \
+    --no-home \
+    --writable-tmpfs \
+    --pwd "${CONTAINER_PWD}" \
+    --bind "${STAGE_DIR}:${CONTAINER_PWD}:rw" \
+    --bind "${WORK_INPUT}:/mlcube_io0:ro" \
+    --bind "${WORK_OUTPUT}:/mlcube_io2:rw" \
+    "${SIF_PATH}" \
+    infer --data_path=/mlcube_io0 --output_path=/mlcube_io2
+INFER_EXIT=$?
+set -e
+INFER_END=$(date +%s)
+INFER_ELAPSED=$((INFER_END - INFER_START))
+
+echo ""
+echo "Inference exit: ${INFER_EXIT}  duration: $((INFER_ELAPSED/60))m $((INFER_ELAPSED%60))s"
+
+if [ "${INFER_EXIT}" -ne 0 ]; then
+    bm_failure_diag "${INFER_EXIT}"
+    bm_save_metadata "FAILED" "${INFER_EXIT}" "${INFER_ELAPSED}" "$(( $(date +%s) - START_TIME ))"
+    exit "${INFER_EXIT}"
+fi
+
+bm_collect_predictions
+TOTAL_ELAPSED=$(( $(date +%s) - START_TIME ))
+bm_save_metadata "SUCCESS" 0 "${INFER_ELAPSED}" "${TOTAL_ELAPSED}"
+
+rm -rf "${MODEL_DIR}/work"
+echo ""
+echo "COMPLETE: ${MODEL_ID}  preds=${N_PREDS}  total=$((TOTAL_ELAPSED/60))m"
+echo "Next: python3 ${BENCHMARK_DIR}/evaluate_benchmark.py --output-dir ${OUTPUT_DIR} --models ${MODEL_ID}"
