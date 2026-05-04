@@ -117,7 +117,7 @@ reporting:
 slurm:
   partition: gputhin
   constraint: cpu
-  time: "0-01:00:00"
+  time: "0-12:00:00"
   cpus_per_task: 4
   mem: "16G"
   conda_env: growth
