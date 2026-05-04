@@ -31,7 +31,6 @@ SIF_DIR="/mnt/home/users/tic_163_uma/mpascual/fscratch/singularity_images"
 LOG_DIR="${OUTPUT_DIR}/logs"
 CONDA_ENV_NAME="mengrowth"
 
-<<<<<<< HEAD
 # Default raw BraTS-MEN dataset path (override with --raw-dir).
 # Required: external containers expect canonical (240,240,155) — H5 has 192³.
 RAW_BRATS_MEN_DIR="/mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/BraTS_Men_Train"
@@ -46,17 +45,6 @@ MODELS=(
     "BraTS23_1|brainles/brats23_meningioma_nvauto:latest|2023|mlcube|brats23_1.sh"
     "BraTS23_2|brainles/brats23_meningioma_blackbean:latest|2023|mlcube|brats23_2.sh"
     "BraTS23_3|brainles/brats23_meningioma_cnmc_pmi2023:latest|2023|mlcube|brats23_3.sh"
-=======
-# Model registry: ID|DOCKER_IMAGE|YEAR|INTERFACE|PARAMS_FILE
-# PARAMS_FILE: "yes" if the MLCube container requires --parameters_file (dummy).
-# Determined from BraTS Orchestrator meningioma.yml config.
-MODELS=(
-    "BraTS25_1|brainles/brats25_men_qing:latest|2025|docker_only|no"
-    "BraTS25_2|brainles/brats25_men_mmdp:latest|2025|docker_only|no"
-    "BraTS23_1|brainles/brats23_meningioma_nvauto:latest|2023|mlcube|yes"
-    "BraTS23_2|brainles/brats23_meningioma_blackbean:latest|2023|mlcube|yes"
-    "BraTS23_3|brainles/brats23_meningioma_cnmc_pmi2023:latest|2023|mlcube|no"
->>>>>>> 4d2de34ac7514a508662c8444b64fe553a91999d
 )
 
 # ========================================================================
@@ -179,11 +167,7 @@ fi
 for entry in "${MODELS[@]}"; do
     [ "${SEQUENTIAL}" -eq 1 ] && break
 
-<<<<<<< HEAD
     IFS='|' read -r model_id docker_image year interface worker_file <<< "${entry}"
-=======
-    IFS='|' read -r model_id docker_image year interface params_file <<< "${entry}"
->>>>>>> 4d2de34ac7514a508662c8444b64fe553a91999d
 
     # Filter by selected models if specified
     if [ -n "${SELECTED_MODELS}" ]; then
@@ -295,11 +279,7 @@ resolve_worker() {
 if [ "${SEQUENTIAL}" -eq 1 ]; then
     SEQ_RESULTS=()
     for entry in "${MODELS[@]}"; do
-<<<<<<< HEAD
         IFS='|' read -r model_id docker_image year interface worker_file <<< "${entry}"
-=======
-        IFS='|' read -r model_id docker_image year interface params_file <<< "${entry}"
->>>>>>> 4d2de34ac7514a508662c8444b64fe553a91999d
 
         if [ -n "${SELECTED_MODELS}" ]; then
             if ! echo "${SELECTED_MODELS}" | grep -qw "${model_id}"; then
@@ -355,13 +335,8 @@ if [ "${SEQUENTIAL}" -eq 1 ]; then
             --job-name=${JOB_NAME} \
             --output=${LOG_OUT} \
             --error=${LOG_ERR} \
-<<<<<<< HEAD
             --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
             ${WORKER_PATH}"
-=======
-            --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},PARAMS_FILE=${params_file},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
-            ${WORKER_SCRIPT}"
->>>>>>> 4d2de34ac7514a508662c8444b64fe553a91999d
 
         if [ "${DRY_RUN}" -eq 1 ]; then
             echo "  [DRY]  ${SBATCH_CMD}"
@@ -405,11 +380,7 @@ fi
 SUBMITTED_JOBS=()
 
 for entry in "${MODELS[@]}"; do
-<<<<<<< HEAD
     IFS='|' read -r model_id docker_image year interface worker_file <<< "${entry}"
-=======
-    IFS='|' read -r model_id docker_image year interface params_file <<< "${entry}"
->>>>>>> 4d2de34ac7514a508662c8444b64fe553a91999d
 
     # Filter by selected models if specified
     if [ -n "${SELECTED_MODELS}" ]; then
@@ -435,13 +406,8 @@ for entry in "${MODELS[@]}"; do
         --job-name=${JOB_NAME} \
         --output=${LOG_OUT} \
         --error=${LOG_ERR} \
-<<<<<<< HEAD
         --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
         ${WORKER_PATH}"
-=======
-        --export=ALL,MODEL_ID=${model_id},SIF_PATH=${sif_path},INTERFACE=${interface},YEAR=${year},PARAMS_FILE=${params_file},OUTPUT_DIR=${OUTPUT_DIR},EXTRACTION_DIR=${EXTRACTION_DIR},CONDA_ENV_NAME=${CONDA_ENV_NAME},REPO_ROOT=${REPO_ROOT},BENCHMARK_DIR=${BENCHMARK_DIR} \
-        ${WORKER_SCRIPT}"
->>>>>>> 4d2de34ac7514a508662c8444b64fe553a91999d
 
     if [ "${DRY_RUN}" -eq 0 ]; then
         JOB_ID=$(eval "${SBATCH_CMD}")
