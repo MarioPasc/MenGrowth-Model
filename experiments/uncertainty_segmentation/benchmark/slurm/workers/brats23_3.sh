@@ -19,9 +19,17 @@
 #SBATCH --time=0-04:00:00
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/../_common.sh"
+# Resolve common helpers via BENCHMARK_DIR (exported by launcher).
+# Cannot rely on ${BASH_SOURCE[0]} — SLURM copies this script into
+# /var/spool/slurmd/jobXXX/slurm_script so any relative path breaks.
+: "${BENCHMARK_DIR:?BENCHMARK_DIR must be exported by benchmark_launcher.sh}"
+COMMON_SH="${BENCHMARK_DIR}/slurm/_common.sh"
+if [ ! -f "${COMMON_SH}" ]; then
+    echo "ERROR: cannot find ${COMMON_SH}" >&2
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${COMMON_SH}"
 
 bm_header
 bm_setup_env
