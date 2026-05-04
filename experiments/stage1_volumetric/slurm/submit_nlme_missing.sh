@@ -16,7 +16,7 @@ ANALYSIS_WORKER="${SCRIPT_DIR}/analysis_worker.sh"
 # SLURM settings
 PARTITION="gputhin"
 CONSTRAINT="cpu"
-TIME="0-01:00:00"
+TIME="1-00:00:00"  # NLME Gompertz: ~5 min/fold × ~58 folds × 3 restarts → up to ~14 h
 CPUS=4
 MEM="16G"
 CONDA_ENV="growth"
