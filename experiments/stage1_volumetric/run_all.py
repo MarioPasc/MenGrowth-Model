@@ -247,6 +247,13 @@ def _run_posthoc_analysis(
             title="Analytical (NLME) vs Homoscedastic Comparison",
         )
 
+    # --- Conditional calibration (sigma_v^2-tertile stratification) ---
+    logger.info("=== Step 3c: Conditional Calibration by sigma_v^2 Tertile ===")
+    try:
+        run_conditional_calibration(lopo_results, output_dir)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Conditional calibration failed: {e}")
+
     # --- Figures ---
     if reporting_cfg.get("pit_histogram", False) and calib_metrics:
         generate_pit_histograms(calib_metrics, output_dir)
