@@ -15,7 +15,10 @@ from growth.models.growth.hgp_model import HierarchicalGPModel
 from growth.models.growth.lme_model import LMEGrowthModel
 from growth.models.growth.scalar_gp import ScalarGP
 from growth.stages.stage1_volumetric.gompertz import GompertzMeanFunction, fit_gompertz
-from growth.stages.stage1_volumetric.trajectory_loader import load_trajectories_from_h5
+from growth.stages.stage1_volumetric.trajectory_loader import (
+    load_trajectories_from_h5,
+    load_uncertainty_trajectories_from_h5,
+)
 
 __all__ = [
     "GompertzMeanFunction",
@@ -24,4 +27,5 @@ __all__ = [
     "ScalarGP",
     "fit_gompertz",
     "load_trajectories_from_h5",
+    "load_uncertainty_trajectories_from_h5",
 ]

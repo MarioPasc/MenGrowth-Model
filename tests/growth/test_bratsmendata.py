@@ -157,7 +157,7 @@ def _create_test_longitudinal_h5(
 
         # Semantic features
         sem_grp = f.create_group("semantic")
-        sem_grp.create_dataset("volume", data=rng.rand(n_scans, 4).astype(np.float32))
+        sem_grp.create_dataset("volume", data=rng.rand(n_scans, 5).astype(np.float32))
         sem_grp.create_dataset("location", data=rng.rand(n_scans, 3).astype(np.float32))
         sem_grp.create_dataset("shape", data=rng.rand(n_scans, 3).astype(np.float32))
 

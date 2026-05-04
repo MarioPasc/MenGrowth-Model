@@ -38,8 +38,11 @@ class PatientTrajectory:
     times: np.ndarray
     observations: np.ndarray
     covariates: dict[str, float] | None = None
+    observation_variance: np.ndarray | None = None
 
     def __post_init__(self) -> None:
+        import warnings
+
         self.times = np.asarray(self.times, dtype=np.float64)
         self.observations = np.asarray(self.observations, dtype=np.float64)
         if self.observations.ndim == 1:
@@ -52,6 +55,25 @@ class PatientTrajectory:
             f"times ({len(self.times)}) and observations ({len(self.observations)}) "
             f"length mismatch for patient {self.patient_id}"
         )
+        if self.observation_variance is not None:
+            self.observation_variance = np.asarray(self.observation_variance, dtype=np.float64)
+            assert self.observation_variance.shape == self.observations.shape[:1], (
+                f"observation_variance shape {self.observation_variance.shape} must "
+                f"match observations leading dim {self.observations.shape[:1]} "
+                f"for patient {self.patient_id}"
+            )
+            assert np.all(np.isfinite(self.observation_variance)), (
+                f"observation_variance contains non-finite values for {self.patient_id}"
+            )
+            assert np.all(self.observation_variance >= 0), (
+                f"observation_variance contains negative values for {self.patient_id}"
+            )
+            if np.any(self.observation_variance == 0):
+                warnings.warn(
+                    f"observation_variance has exact zeros for {self.patient_id}; "
+                    f"this may singularise V_i — consider applying a floor",
+                    stacklevel=2,
+                )
 
     @property
     def n_timepoints(self) -> int:
@@ -81,6 +103,7 @@ class FitResult:
     condition_number: float = 0.0
     n_train_patients: int = 0
     n_train_observations: int = 0
+    metadata: dict | None = None
 
 
 @dataclass
@@ -100,6 +123,7 @@ class PredictionResult:
     variance: np.ndarray
     lower_95: np.ndarray
     upper_95: np.ndarray
+    metadata: dict | None = None
 
     def __post_init__(self) -> None:
         for name in ("mean", "variance", "lower_95", "upper_95"):

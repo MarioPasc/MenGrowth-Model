@@ -5,20 +5,20 @@ import numpy as np
 import pytest
 
 from growth.data.semantic_features import (
-    LABEL_NCR,
     LABEL_ED,
     LABEL_ET,
-    compute_volumes,
-    compute_log_volumes,
-    compute_centroid,
-    compute_bounding_box,
-    compute_surface_area,
-    compute_sphericity,
-    compute_solidity,
+    LABEL_NCR,
     compute_aspect_ratios,
+    compute_bounding_box,
+    compute_centroid,
     compute_composition_features,
-    compute_shape_features,
+    compute_log_volumes,
     compute_shape_array,
+    compute_shape_features,
+    compute_solidity,
+    compute_sphericity,
+    compute_surface_area,
+    compute_volumes,
     extract_semantic_features,
 )
 
@@ -37,6 +37,7 @@ class TestComputeVolumes:
         assert volumes["ncr"] == 0.0
         assert volumes["ed"] == 0.0
         assert volumes["et"] == 0.0
+        assert volumes["men"] == 0.0
 
     def test_single_label_ncr(self):
         """Test volume with only NCR label."""
@@ -50,6 +51,7 @@ class TestComputeVolumes:
         assert volumes["total"] == 1000.0
         assert volumes["ed"] == 0.0
         assert volumes["et"] == 0.0
+        assert volumes["men"] == 1000.0
 
     def test_multiple_labels(self):
         """Test volume with multiple labels."""
@@ -64,6 +66,7 @@ class TestComputeVolumes:
         assert volumes["ed"] == 1000.0
         assert volumes["et"] == 125.0
         assert volumes["total"] == 2125.0
+        assert volumes["men"] == 1125.0
 
     def test_non_unit_spacing(self):
         """Test volume with non-unit spacing."""
@@ -75,17 +78,18 @@ class TestComputeVolumes:
 
         assert volumes["ncr"] == 125 * 8.0
         assert volumes["total"] == 125 * 8.0
+        assert volumes["men"] == 125 * 8.0
 
 
 class TestComputeLogVolumes:
     """Tests for log-transformed volume computation."""
 
     def test_output_shape(self):
-        """Output should be [4] array."""
+        """Output should be [5] array."""
         mask = np.zeros((96, 96, 96), dtype=np.int32)
         log_vols = compute_log_volumes(mask)
 
-        assert log_vols.shape == (4,)
+        assert log_vols.shape == (5,)
         assert log_vols.dtype == np.float32
 
     def test_empty_mask_log1p(self):
@@ -93,7 +97,7 @@ class TestComputeLogVolumes:
         mask = np.zeros((96, 96, 96), dtype=np.int32)
         log_vols = compute_log_volumes(mask)
 
-        np.testing.assert_array_almost_equal(log_vols, [0.0, 0.0, 0.0, 0.0])
+        np.testing.assert_array_almost_equal(log_vols, [0.0, 0.0, 0.0, 0.0, 0.0])
 
     def test_log_transform_correctness(self):
         """Verify log transform is applied correctly."""
@@ -106,6 +110,7 @@ class TestComputeLogVolumes:
         expected_log = np.log1p(1000.0)
         assert abs(log_vols[0] - expected_log) < 0.001  # total
         assert abs(log_vols[1] - expected_log) < 0.001  # ncr
+        assert abs(log_vols[4] - expected_log) < 0.001  # men = ncr + et = ncr here
 
 
 class TestComputeCentroid:
@@ -424,10 +429,10 @@ class TestExtractSemanticFeatures:
 
         features = extract_semantic_features(mask)
 
-        assert features["volume"].shape == (4,)
+        assert features["volume"].shape == (5,)
         assert features["location"].shape == (3,)
         assert features["shape"].shape == (3,)
-        assert features["all"].shape == (10,)
+        assert features["all"].shape == (11,)
 
     def test_all_is_concatenation(self):
         """'all' should be concatenation of volume, location, shape."""
@@ -436,9 +441,7 @@ class TestExtractSemanticFeatures:
 
         features = extract_semantic_features(mask)
 
-        expected_all = np.concatenate(
-            [features["volume"], features["location"], features["shape"]]
-        )
+        expected_all = np.concatenate([features["volume"], features["location"], features["shape"]])
         np.testing.assert_array_almost_equal(features["all"], expected_all)
 
     def test_empty_mask(self):
@@ -448,7 +451,7 @@ class TestExtractSemanticFeatures:
         features = extract_semantic_features(mask)
 
         # Volumes should be zero (log1p(0) = 0)
-        np.testing.assert_array_almost_equal(features["volume"], [0, 0, 0, 0])
+        np.testing.assert_array_almost_equal(features["volume"], [0, 0, 0, 0, 0])
 
         # Location should be center
         np.testing.assert_array_almost_equal(features["location"], [0.5, 0.5, 0.5])

@@ -35,12 +35,14 @@ logger = logging.getLogger(__name__)
 
 # Index into semantic/volume for the meningioma growth target.
 #
-# semantic/volume columns are [log(V_total+1), log(V_NCR+1), log(V_ED+1), log(V_ET+1)]
-# (see src/growth/data/semantic_features.py). For meningioma we track the
-# enhancing tumor (label 3 in BraTS-MEN = the solid meningioma mass), NOT the
-# whole tumor — peritumoral edema (SNFH) is non-neoplastic and would inject
-# noise into the growth signal.
-_ET_VOL_IDX = 3  # column 3 = log(V_ET + 1) = enhancing-mass volume
+# semantic/volume columns are:
+#   [log(V_total+1), log(V_NCR+1), log(V_ED+1), log(V_ET+1), log(V_MEN+1)]
+# (see src/growth/data/semantic_features.py).
+#
+# V_MEN = V_NCR + V_ET (labels 1|3) = meningioma mass excluding peritumoral
+# edema (SNFH, label 2). This matches the ensemble volume target (BSF ch0,
+# TC channel) and the canonical definition in the project memory.
+_MEN_VOL_IDX = 4  # column 4 = log(V_MEN + 1) = meningioma mass volume
 
 
 def load_trajectories_from_h5(
@@ -52,13 +54,13 @@ def load_trajectories_from_h5(
     semantic_covariates: list[str] | None = None,
     skip_all_zero_volume: bool = True,
 ) -> list[PatientTrajectory]:
-    """Load per-patient enhancing-tumor (ET) volume trajectories from MenGrowth H5.
+    """Load per-patient meningioma-mass volume trajectories from MenGrowth H5.
 
-    Reads ``semantic/volume[:, 3]`` (pre-computed log1p of V_ET) and the
-    longitudinal index to build ``PatientTrajectory`` objects. The ET
-    volume corresponds to label 3 in BraTS-MEN ({1=NETC, 2=SNFH, 3=ET}),
-    i.e. the solid enhancing meningioma mass — the clinically tracked
-    endpoint for meningioma growth.
+    Reads ``semantic/volume[:, 4]`` (pre-computed log1p of V_MEN, labels 1|3)
+    and the longitudinal index to build ``PatientTrajectory`` objects. The
+    meningioma mass volume = NCR (label 1) + ET (label 3) in BraTS-MEN,
+    excluding peritumoral edema (SNFH, label 2). This matches the canonical
+    volume target (BSF ch0 = TC channel) and the ensemble prediction target.
 
     Args:
         h5_path: Path to MenGrowth H5 file (v2.0 schema).
@@ -198,8 +200,8 @@ def load_trajectories_from_h5(
         else:
             times = timepoint_idx[scan_indices].astype(np.float64)
 
-        # ET (enhancing-tumor) log-volume — column 3 of semantic/volume.
-        obs = semantic_vol[scan_indices, _ET_VOL_IDX].astype(np.float64)
+        # Meningioma mass log-volume — column 4 of semantic/volume (labels 1|3).
+        obs = semantic_vol[scan_indices, _MEN_VOL_IDX].astype(np.float64)
 
         # Skip patients with all-zero volumes
         if skip_all_zero_volume and np.all(obs == 0.0):
@@ -296,6 +298,282 @@ def _build_semantic_covariates(
                 covariates[name] = val
 
     return covariates if covariates else None
+
+
+def _compute_deltas_from_dates(
+    study_dates: np.ndarray,
+    patient_offsets: np.ndarray,
+) -> tuple[np.ndarray, list[bool]]:
+    """Compute days-from-baseline from YYYY-MM-DD study dates.
+
+    Args:
+        study_dates: Per-scan date strings [N_scans].
+        patient_offsets: CSR offsets [N_patients + 1].
+
+    Returns:
+        (delta_days [N_scans] float64, has_dates [N_patients] bool).
+        Patients with missing/malformed dates get NaN entries and
+        has_dates[i] = False.
+    """
+    from datetime import datetime
+
+    n_scans = len(study_dates)
+    n_patients = len(patient_offsets) - 1
+    delta_days = np.full(n_scans, np.nan, dtype=np.float64)
+    has_dates: list[bool] = []
+
+    for i in range(n_patients):
+        start = patient_offsets[i]
+        end = patient_offsets[i + 1]
+        patient_ok = True
+        dates: list[datetime | None] = []
+
+        for idx in range(start, end):
+            raw = study_dates[idx]
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            raw = str(raw).strip()
+            if not raw or raw.lower() in ("", "nan", "none", "unknown"):
+                patient_ok = False
+                dates.append(None)
+                continue
+            try:
+                dates.append(datetime.strptime(raw, "%Y-%m-%d"))
+            except ValueError:
+                patient_ok = False
+                dates.append(None)
+
+        has_dates.append(patient_ok)
+
+        if patient_ok and dates:
+            baseline = dates[0]
+            for j, idx in enumerate(range(start, end)):
+                delta_days[idx] = (dates[j] - baseline).days
+
+    return delta_days, has_dates
+
+
+def load_uncertainty_trajectories_from_h5(
+    h5_path: str | Path,
+    *,
+    time_variable: str = "ordinal",
+    estimator: str = "mean_std",
+    exclude_patients: list[str] | None = None,
+    min_timepoints: int = 2,
+    covariate_features: list[str] | None = None,
+    semantic_covariates: list[str] | None = None,
+    skip_all_zero_volume: bool = True,
+    missing_date_strategy: str = "mixed",
+    floor_variance: float = 1e-6,
+) -> list[PatientTrajectory]:
+    """Load trajectories with per-observation log-volume variance.
+
+    Reads ``uncertainty/logvol_*`` and (optionally) ``metadata/study_date``,
+    returns trajectories with ``observation_variance`` populated.
+
+    Args:
+        h5_path: Path to MenGrowth H5 file (v2.0 schema).
+        time_variable: ``"ordinal"`` or ``"days_from_baseline"``.
+        estimator: Which (y, sigma^2) pair to use:
+            ``"mean_std"`` -> logvol_mean, logvol_std^2;
+            ``"median_mad"`` -> logvol_median, logvol_mad_scaled^2;
+            ``"mask_mean"`` -> logvol_ensemble, logvol_std^2.
+        exclude_patients: Patient IDs to exclude.
+        min_timepoints: Minimum observations required per patient.
+        covariate_features: Covariate names from metadata group.
+        semantic_covariates: Semantic feature names to attach as covariates.
+        skip_all_zero_volume: Skip patients with all-zero volumes.
+        missing_date_strategy: How to handle missing dates when
+            time_variable="days_from_baseline": ``"skip"`` excludes
+            patients, ``"mixed"`` uses ordinal for those patients,
+            ``"fail"`` raises ValueError.
+        floor_variance: Minimum allowed variance (avoids singular V_i).
+
+    Returns:
+        List of PatientTrajectory sorted by patient_id, with
+        observation_variance populated.
+    """
+    h5_path = Path(h5_path)
+    if not h5_path.exists():
+        raise FileNotFoundError(f"H5 file not found: {h5_path}")
+
+    exclude_patients_set = set(exclude_patients or [])
+    covariate_features = covariate_features or []
+    semantic_covariates = semantic_covariates or []
+
+    _SEMANTIC_COV_MAP = {
+        "sphericity": ("shape", 0),
+        "enhancement_ratio": ("shape", 1),
+        "infiltration_index": ("shape", 2),
+    }
+
+    _ESTIMATOR_MAP = {
+        "mean_std": ("logvol_mean", "logvol_std"),
+        "median_mad": ("logvol_median", "logvol_mad_scaled"),
+        "mask_mean": ("logvol_ensemble", "logvol_std"),
+    }
+
+    if estimator not in _ESTIMATOR_MAP:
+        raise ValueError(
+            f"Unknown estimator '{estimator}'. Must be one of {list(_ESTIMATOR_MAP.keys())}"
+        )
+
+    trajectories: list[PatientTrajectory] = []
+
+    with h5py.File(h5_path, "r") as f:
+        version = f.attrs.get("version", "unknown")
+        if isinstance(version, bytes):
+            version = version.decode()
+        if version != "2.0":
+            logger.warning(f"Expected H5 schema v2.0, got {version}")
+
+        if "uncertainty" not in f:
+            raise ValueError(
+                f"H5 file {h5_path} has no 'uncertainty' group. "
+                f"Run the LoRA-ensemble merge pipeline first."
+            )
+
+        # Load uncertainty data
+        y_key, s_key = _ESTIMATOR_MAP[estimator]
+        uq = f["uncertainty"]
+        y_values = uq[y_key][:].astype(np.float64)
+        s_values = uq[s_key][:].astype(np.float64)
+        var_values = np.maximum(s_values**2, floor_variance)
+
+        timepoint_idx = f["timepoint_idx"][:].astype(int)
+        patient_ids_raw = f["patient_ids"][:]
+
+        patient_list = [
+            p.decode() if isinstance(p, bytes) else str(p)
+            for p in f["longitudinal"]["patient_list"][:]
+        ]
+        patient_offsets = f["longitudinal"]["patient_offsets"][:].astype(int)
+
+        # Time handling
+        time_delta_days: np.ndarray | None = None
+        has_dates: list[bool] | None = None
+
+        if time_variable == "days_from_baseline":
+            if "time_delta_days" in f:
+                time_delta_days = f["time_delta_days"][:].astype(np.float64)
+            elif "metadata" in f and "time_delta_days" in f["metadata"]:
+                time_delta_days = f["metadata"]["time_delta_days"][:].astype(np.float64)
+            elif "metadata" in f and "study_date" in f["metadata"]:
+                study_dates = f["metadata"]["study_date"][:]
+                time_delta_days, has_dates = _compute_deltas_from_dates(
+                    study_dates, patient_offsets
+                )
+                n_with = sum(has_dates)
+                n_without = len(has_dates) - n_with
+                if n_without > 0:
+                    logger.info(
+                        f"study_date: {n_with} patients with dates, "
+                        f"{n_without} without (strategy={missing_date_strategy})"
+                    )
+                    if missing_date_strategy == "fail":
+                        missing_pids = [patient_list[i] for i, ok in enumerate(has_dates) if not ok]
+                        raise ValueError(
+                            f"missing_date_strategy='fail' but {n_without} patients "
+                            f"lack dates: {missing_pids}"
+                        )
+            else:
+                logger.warning(
+                    "time_variable='days_from_baseline' but no date data found. "
+                    "Falling back to ordinal."
+                )
+                time_variable = "ordinal"
+
+        # Load metadata covariates
+        metadata_arrays: dict[str, np.ndarray] = {}
+        if covariate_features and "metadata" in f:
+            for feat in covariate_features:
+                if feat in f["metadata"]:
+                    raw = f["metadata"][feat][:]
+                    if raw.dtype.kind in ("U", "S", "O"):
+                        metadata_arrays[feat] = np.array(
+                            [s.decode() if isinstance(s, bytes) else str(s) for s in raw]
+                        )
+                    else:
+                        metadata_arrays[feat] = raw.astype(np.float64)
+
+        # Load semantic covariates
+        semantic_arrays: dict[str, np.ndarray] = {}
+        if semantic_covariates and "semantic" in f:
+            for sem_name in semantic_covariates:
+                if sem_name in _SEMANTIC_COV_MAP:
+                    group_name, col_idx = _SEMANTIC_COV_MAP[sem_name]
+                    if group_name in f["semantic"]:
+                        sem_data = f["semantic"][group_name][:]
+                        if col_idx < sem_data.shape[1]:
+                            semantic_arrays[sem_name] = sem_data[:, col_idx].astype(np.float64)
+
+    # Build per-patient trajectories
+    n_patients = len(patient_list)
+
+    for i in range(n_patients):
+        pid = patient_list[i]
+        if pid in exclude_patients_set:
+            continue
+
+        start = patient_offsets[i]
+        end = patient_offsets[i + 1]
+        n_scans = end - start
+
+        if n_scans < min_timepoints:
+            continue
+
+        scan_indices = list(range(start, end))
+
+        # Sort by timepoint index
+        tp_indices = timepoint_idx[scan_indices]
+        sort_order = np.argsort(tp_indices)
+        scan_indices = [scan_indices[j] for j in sort_order]
+
+        # Time variable
+        if time_variable == "days_from_baseline" and time_delta_days is not None:
+            if has_dates is not None and not has_dates[i]:
+                if missing_date_strategy == "skip":
+                    continue
+                # "mixed": fall back to ordinal for this patient
+                times = timepoint_idx[scan_indices].astype(np.float64)
+            else:
+                times = time_delta_days[scan_indices]
+        else:
+            times = timepoint_idx[scan_indices].astype(np.float64)
+
+        obs = y_values[scan_indices]
+        obs_var = var_values[scan_indices]
+
+        if skip_all_zero_volume and np.all(obs == 0.0):
+            continue
+
+        # Build covariates
+        covariates = _build_covariates(scan_indices[0], covariate_features, metadata_arrays)
+        sem_covs = _build_semantic_covariates(scan_indices[0], semantic_covariates, semantic_arrays)
+        if sem_covs:
+            if covariates is None:
+                covariates = sem_covs
+            else:
+                covariates.update(sem_covs)
+
+        trajectories.append(
+            PatientTrajectory(
+                patient_id=pid,
+                times=times,
+                observations=obs,
+                covariates=covariates,
+                observation_variance=obs_var,
+            )
+        )
+
+    trajectories.sort(key=lambda t: t.patient_id)
+
+    logger.info(
+        f"Loaded {len(trajectories)} uncertainty trajectories from {h5_path.name} "
+        f"(time={time_variable}, estimator={estimator}, "
+        f"excluded={len(exclude_patients_set)}, floor_var={floor_variance})"
+    )
+    return trajectories
 
 
 def compute_et_volumes_from_segs(

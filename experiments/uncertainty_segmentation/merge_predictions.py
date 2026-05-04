@@ -6,6 +6,7 @@ Pipeline:
     1. Invert ensemble segmentations from preprocessed space (192³) to original
        image space using MONAI inverse transforms, save as seg.nii.gz
     2. Re-run scripts/convert_mengrowth_to_h5.py for full H5 conversion
+    2b. Append metadata/study_date to H5 from metadata_clean.json + id_mapping.json
     3. Append uncertainty/ group to H5 from ensemble volume CSV
 
 The spatial inversion is necessary because ensemble predictions are produced in
@@ -17,20 +18,14 @@ on the original t2f image.
 
 Usage::
 
-    python experiments/uncertainty_segmentation/merge_predictions.py \\
-        --rank 8 \\
-        --results-base /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/frozen_decoder/kqv_proj_fc1_fc2/stages_1234 \\
-        --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v5_final/MenGrowth-2025 \\
-        --h5-path /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v5_final/h5_format/MenGrowth.h5 \\
-        --metadata-csv /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v5_final/metadata_enriched.csv \\
-        --n-members 20 \\
-        --seed 42
+    python experiments/uncertainty_segmentation/merge_predictions.py --rank 32 --results-base /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/frozen_decoder/kqv_proj_fc1_fc2/stages_1234 --data-root /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v5_final/MenGrowth-2025 --h5-path /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v5_final/h5_format/MenGrowth.h5 --metadata-csv /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v5_final/metadata_enriched.csv --n-members 20 --seed 42
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import logging
 import re
 import sys
@@ -334,6 +329,106 @@ def run_h5_conversion(
 
 
 # =========================================================================
+# Step 2b: Append Study Timestamps
+# =========================================================================
+
+
+def load_study_timestamps(
+    metadata_json: Path,
+    id_mapping_json: Path,
+) -> dict[str, str]:
+    """Load per-scan study dates from metadata_clean.json + id_mapping.json.
+
+    Study index "0" maps to ``first_study.rm.date`` (MRI date).
+    Index N>0 maps to ``c{N}.date``. Study indices count all imaging
+    studies for a patient (MRI + CT), so some indices may exceed the
+    number of controls recorded in metadata_clean.json — those scans
+    get no timestamp.
+
+    Args:
+        metadata_json: Path to metadata_clean.json with per-patient clinical data.
+        id_mapping_json: Path to id_mapping.json mapping original IDs to MenGrowth
+            scan IDs with study index mapping.
+
+    Returns:
+        Mapping of MenGrowth scan_id → ISO 8601 date string (YYYY-MM-DD).
+    """
+    with open(metadata_json) as fh:
+        metadata = json.load(fh)
+    with open(id_mapping_json) as fh:
+        id_mapping = json.load(fh)
+
+    timestamps: dict[str, str] = {}
+
+    for orig_id, mapping in id_mapping.items():
+        if not mapping.get("new_id"):
+            continue
+
+        patient_meta = metadata.get(orig_id)
+        if patient_meta is None:
+            logger.debug(f"Patient {orig_id} in id_mapping but not in metadata_clean")
+            continue
+
+        for study_idx_str, scan_id in mapping.get("studies", {}).items():
+            study_idx = int(study_idx_str)
+
+            if study_idx == 0:
+                first = patient_meta.get("first_study", {})
+                date_str = first.get("rm", {}).get("date")
+            else:
+                control = patient_meta.get(f"c{study_idx}", {})
+                date_str = control.get("date") if isinstance(control, dict) else None
+
+            if date_str:
+                timestamps[scan_id] = date_str.split(" ")[0]
+            else:
+                logger.debug(f"No RM date for {scan_id} (study idx {study_idx}, patient {orig_id})")
+
+    logger.info(f"Loaded {len(timestamps)} study timestamps from metadata")
+    return timestamps
+
+
+def append_timestamps(
+    h5_path: Path,
+    metadata_json: Path,
+    id_mapping_json: Path,
+) -> None:
+    """Append ``metadata/study_date`` dataset to existing H5 file.
+
+    Reads ``scan_ids`` from the H5 to establish ordering, then matches
+    timestamps from the JSON metadata files. Scans without a date get an
+    empty string. Idempotent: replaces existing ``metadata/study_date``.
+
+    Args:
+        h5_path: Path to the H5 file (must already exist with scan_ids).
+        metadata_json: Path to metadata_clean.json.
+        id_mapping_json: Path to id_mapping.json.
+    """
+    timestamps = load_study_timestamps(metadata_json, id_mapping_json)
+
+    with h5py.File(h5_path, "a") as f:
+        scan_ids = [s.decode() if isinstance(s, bytes) else s for s in f["scan_ids"][:]]
+
+        date_arr: list[str] = []
+        n_found = 0
+        for sid in scan_ids:
+            date = timestamps.get(sid, "")
+            date_arr.append(date)
+            if date:
+                n_found += 1
+
+        if "metadata/study_date" in f:
+            del f["metadata/study_date"]
+
+        dt = h5py.special_dtype(vlen=str)
+        if "metadata" not in f:
+            f.create_group("metadata")
+        f["metadata"].create_dataset("study_date", data=date_arr, dtype=dt)
+
+    logger.info(f"Appended metadata/study_date: {n_found}/{len(scan_ids)} scans with dates")
+
+
+# =========================================================================
 # Step 3: Append Uncertainty Group
 # =========================================================================
 
@@ -440,6 +535,8 @@ def merge_predictions(
     data_root: Path,
     h5_path: Path,
     metadata_csv: Path | None = None,
+    metadata_json: Path | None = None,
+    id_mapping_json: Path | None = None,
     n_members: int = 20,
     seed: int = 42,
     dry_run: bool = False,
@@ -447,7 +544,7 @@ def merge_predictions(
     skip_convert: bool = False,
     skip_uncertainty: bool = False,
 ) -> None:
-    """Full merge pipeline: invert+copy → H5 convert → append uncertainty.
+    """Full merge pipeline: invert+copy → H5 convert → timestamps → uncertainty.
 
     Args:
         rank: LoRA rank to use.
@@ -455,6 +552,8 @@ def merge_predictions(
         data_root: MenGrowth-2025/ dataset root.
         h5_path: Output H5 file path.
         metadata_csv: Optional metadata_enriched.csv path.
+        metadata_json: Optional metadata_clean.json with per-study dates.
+        id_mapping_json: Optional id_mapping.json for study → scan_id mapping.
         n_members: Number of ensemble members.
         seed: Base seed used for the ensemble.
         dry_run: If True, log actions but do not write.
@@ -494,6 +593,15 @@ def merge_predictions(
     else:
         reason = "dry-run" if dry_run else "--skip-convert"
         logger.info(f"--- Step 2: SKIPPED ({reason}) ---")
+
+    # Step 2b: Append study timestamps
+    if metadata_json and id_mapping_json and not dry_run:
+        logger.info("--- Step 2b: Append study timestamps ---")
+        append_timestamps(h5_path, metadata_json, id_mapping_json)
+    elif metadata_json and id_mapping_json and dry_run:
+        logger.info("--- Step 2b: SKIPPED (dry-run) ---")
+    else:
+        logger.info("--- Step 2b: SKIPPED (no --metadata-json / --id-mapping) ---")
 
     # Step 3: Append uncertainty
     if not skip_uncertainty and not dry_run:
@@ -536,6 +644,18 @@ def main() -> None:
         help="Output H5 file path",
     )
     parser.add_argument("--metadata-csv", type=str, default=None)
+    parser.add_argument(
+        "--metadata-json",
+        type=str,
+        default=None,
+        help="Path to metadata_clean.json with per-study RM dates",
+    )
+    parser.add_argument(
+        "--id-mapping",
+        type=str,
+        default=None,
+        help="Path to id_mapping.json (original ID → MenGrowth scan ID mapping)",
+    )
     parser.add_argument("--n-members", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dry-run", action="store_true")
@@ -551,6 +671,8 @@ def main() -> None:
         data_root=Path(args.data_root),
         h5_path=Path(args.h5_path),
         metadata_csv=Path(args.metadata_csv) if args.metadata_csv else None,
+        metadata_json=Path(args.metadata_json) if args.metadata_json else None,
+        id_mapping_json=Path(args.id_mapping) if args.id_mapping else None,
         n_members=args.n_members,
         seed=args.seed,
         dry_run=args.dry_run,

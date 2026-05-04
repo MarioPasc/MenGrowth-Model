@@ -16,6 +16,7 @@ from experiments.uncertainty_segmentation.plotting.inter_lora.compile import (
     validate_compiled_metrics,
 )
 from experiments.uncertainty_segmentation.plotting.inter_lora.figures import (
+    FIGURE_CAPTIONS,
     FIGURE_OUTPUT_NAMES,
     INTER_LORA_FIGURE_REGISTRY,
     INTER_LORA_TABLE_REGISTRY,
@@ -89,6 +90,31 @@ def _build_report_summary(data: InterLoraData, out_root: Path) -> None:
                 f"- **Lowest bias-dominated fraction**: "
                 f"{bias_best['pct_bias_dominated']:.1%} at r={int(bias_best['rank'])}",
             )
+
+    # Convergence summary from quant3 cached data
+    conv_path = out_root / "data" / "quant3_convergence_data.json"
+    if conv_path.exists():
+        import json as _json
+
+        with open(conv_path) as _f:
+            conv_data = _json.load(_f)
+        lines.append("\n## Convergence Summary")
+        for label in ["tc", "wt", "et"]:
+            best_rank = None
+            best_k20 = -1.0
+            for rank_str, labels in conv_data.items():
+                ek = labels.get(label, {}).get("ensemble_k", {})
+                y_vals = ek.get("y", [])
+                if y_vals:
+                    final_dice = y_vals[-1]
+                    if final_dice > best_k20:
+                        best_k20 = final_dice
+                        best_rank = rank_str
+            if best_rank is not None:
+                lines.append(
+                    f"- **{label.upper()}**: best full-ensemble Dice = "
+                    f"{best_k20:.3f} at r={best_rank}",
+                )
 
     summary_path = out_root / "report_summary.md"
     summary_path.write_text("\n".join(lines) + "\n")
@@ -223,6 +249,7 @@ def generate_inter_lora_report(
     skip_map = {
         "quant1": "quant1_dice_vs_rank",
         "quant2": "quant2_calib_epistemic",
+        "quant3": "quant3_convergence_vs_rank",
         "qual1": "qual1_slice_grid",
         "qual2": "qual2_clustered_heatmap",
     }
@@ -261,11 +288,13 @@ def generate_inter_lora_report(
                     logger.info("[SKIP] %s (data not available)", variant_name)
                     n_skip += 1
                     continue
+                variant_caption = FIGURE_CAPTIONS.get(variant_name, "")
                 save_figure(
                     fig,
                     fig_dir / f"{variant_name}.{fmt}",
                     title=variant_name,
                     description=f"Inter-LoRA qual1 {variant}",
+                    caption=variant_caption,
                     dpi=dpi,
                 )
                 if fmt != "png":
@@ -296,12 +325,14 @@ def generate_inter_lora_report(
             continue
 
         out_name = FIGURE_OUTPUT_NAMES.get(name, name)
+        fig_caption = FIGURE_CAPTIONS.get(out_name, "")
 
         save_figure(
             fig,
             fig_dir / f"{out_name}.{fmt}",
             title=out_name,
             description=f"Inter-LoRA {name}",
+            caption=fig_caption,
             dpi=dpi,
         )
         if fmt != "png":

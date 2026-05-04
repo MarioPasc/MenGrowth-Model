@@ -69,12 +69,17 @@ def load_trajectories(
                 k: float(first_tp[k]) for k in cov_keys if isinstance(first_tp[k], (int, float))
             }
 
+        obs_var: np.ndarray | None = None
+        if "observation_variance" in entry:
+            obs_var = np.array(entry["observation_variance"], dtype=np.float64)
+
         trajectories.append(
             PatientTrajectory(
                 patient_id=patient_id,
                 times=times,
                 observations=observations,
                 covariates=covariates or None,
+                observation_variance=obs_var,
             )
         )
 
@@ -113,6 +118,8 @@ def save_trajectories(
         }
         if traj.covariates:
             entry["covariates"] = traj.covariates
+        if traj.observation_variance is not None:
+            entry["observation_variance"] = traj.observation_variance.tolist()
 
         data.append(entry)
 

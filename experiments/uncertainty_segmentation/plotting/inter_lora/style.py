@@ -117,10 +117,11 @@ def save_figure(
     *,
     title: str = "",
     description: str = "",
+    caption: str = "",
     dpi: int | None = None,
     transparent: bool = False,
 ) -> None:
-    """Save figure with git SHA + ISO timestamp in metadata."""
+    """Save figure with git SHA + ISO timestamp in metadata, plus a .txt caption sidecar."""
     sha = _git_sha()
     ts = datetime.now(tz=UTC).isoformat(timespec="seconds")
 
@@ -145,3 +146,17 @@ def save_figure(
         transparent=transparent,
         metadata=metadata,
     )
+
+    if caption:
+        caption_path = path.with_suffix(".txt")
+        stem = path.stem
+        caption_path.write_text(
+            f"% Auto-generated caption for {stem}\n"
+            f"% Generated: {ts} | Git SHA: {sha}\n"
+            f"\\begin{{figure}}[htbp]\n"
+            f"  \\centering\n"
+            f"  \\includegraphics[width=\\linewidth]{{{stem}.pdf}}\n"
+            f"  {caption}\n"
+            f"  \\label{{fig:{stem}}}\n"
+            f"\\end{{figure}}\n",
+        )

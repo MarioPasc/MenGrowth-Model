@@ -535,7 +535,7 @@ def convert(
 
         # Semantic features group
         sem_grp = f.create_group("semantic")
-        vol_ds = sem_grp.create_dataset("volume", shape=(n_scans, 4), dtype="float32")
+        vol_ds = sem_grp.create_dataset("volume", shape=(n_scans, 5), dtype="float32")
         loc_ds = sem_grp.create_dataset("location", shape=(n_scans, 3), dtype="float32")
         shape_ds = sem_grp.create_dataset("shape", shape=(n_scans, 3), dtype="float32")
 
