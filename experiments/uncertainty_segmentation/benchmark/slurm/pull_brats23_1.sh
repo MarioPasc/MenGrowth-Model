@@ -7,15 +7,22 @@
 #SBATCH --mem=64G
 #SBATCH --partition=cascadelake
 
-# Pull BraTS23_1 (brainles/brats23_meningioma_nvauto) on a compute node.
-# Login-node pulls of this image OOM-kill mksquashfs ("signal: killed" while
-# creating squashfs). Compute nodes have ~64-128 GB RAM and no cgroup memcap.
+# STEP 2 of a two-stage build for BraTS23_1 (brainles/brats23_meningioma_nvauto).
 #
-# Submit from the login node:
-#   sbatch experiments/uncertainty_segmentation/benchmark/slurm/pull_brats23_1.sbatch
+# Why two stages:
+#   Login node has internet but a small RAM cgroup → `singularity pull` OOM-
+#   kills mksquashfs ("signal: killed").
+#   Compute nodes have RAM but no internet → cannot reach registry-1.docker.io.
 #
-# After it completes, re-run the benchmark launcher with --skip-pull (or just
-# rerun normally — the launcher will detect the existing .sif).
+# Workflow:
+#   STEP 1 (login node, see pull_brats23_1_sandbox.sh):
+#     singularity build --sandbox <SANDBOX> docker://...
+#     # Fetches OCI layers to a directory tree. Does NOT run mksquashfs,
+#     # so it survives the login-node memory cap.
+#
+#   STEP 2 (this sbatch, compute node):
+#     singularity build <SIF> <SANDBOX>
+#     # Pure local mksquashfs pass — no internet, plenty of RAM.
 
 set -euo pipefail
 
@@ -23,8 +30,7 @@ SIF_DIR="${SIF_DIR:-/mnt/home/users/tic_163_uma/mpascual/fscratch/singularity_im
 DOCKER_IMAGE="brainles/brats23_meningioma_nvauto:latest"
 SIF_NAME="$(echo "${DOCKER_IMAGE}" | tr '/:' '_').sif"
 SIF_PATH="${SIF_DIR}/${SIF_NAME}"
-
-mkdir -p "${SIF_DIR}"
+SANDBOX_PATH="${SIF_DIR}/_brats23_1.sandbox"
 
 module load singularity 2>/dev/null || true
 
@@ -32,21 +38,22 @@ export SINGULARITY_CACHEDIR="${SIF_DIR}/.singularity_cache"
 export SINGULARITY_TMPDIR="${SIF_DIR}/.singularity_tmp"
 mkdir -p "${SINGULARITY_CACHEDIR}" "${SINGULARITY_TMPDIR}"
 
-# Wipe any partial build trees from the failed login-node attempt so we don't
-# resume on top of a half-unpacked rootfs.
-find "${SINGULARITY_TMPDIR}" -maxdepth 1 -mindepth 1 -name 'build-*' -exec rm -rf {} + 2>/dev/null || true
+echo "[build] node=$(hostname)"
+echo "[build] sandbox=${SANDBOX_PATH}"
+echo "[build] sif=${SIF_PATH}"
+echo "[build] free mem: $(free -g | awk '/^Mem:/ {print $7" GiB available"}')"
 
-echo "[pull] node=$(hostname)  image=${DOCKER_IMAGE}"
-echo "[pull] target=${SIF_PATH}"
-echo "[pull] CACHEDIR=${SINGULARITY_CACHEDIR}"
-echo "[pull] TMPDIR=${SINGULARITY_TMPDIR}"
-echo "[pull] free mem: $(free -g | awk '/^Mem:/ {print $7" GiB available"}')"
+if [ ! -d "${SANDBOX_PATH}" ]; then
+    echo "[build] ERROR: sandbox missing — run pull_brats23_1_sandbox.sh on the login node first" >&2
+    exit 1
+fi
 
 if [ -f "${SIF_PATH}" ]; then
-    echo "[pull] SIF already exists ($(du -h "${SIF_PATH}" | cut -f1)) — nothing to do"
+    echo "[build] SIF already exists ($(du -h "${SIF_PATH}" | cut -f1)) — nothing to do"
     exit 0
 fi
 
-singularity pull "${SIF_PATH}" "docker://${DOCKER_IMAGE}"
+singularity build "${SIF_PATH}" "${SANDBOX_PATH}"
 
-echo "[pull] done → $(du -h "${SIF_PATH}" | cut -f1)"
+echo "[build] done → $(du -h "${SIF_PATH}" | cut -f1)"
+echo "[build] sandbox can now be removed: rm -rf ${SANDBOX_PATH}"
