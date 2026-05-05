@@ -54,6 +54,7 @@ VARIANCE DECOMPOSITION:
 | 1 | Stage 1 orchestrator | COMPLETE | experiments/stage1_volumetric/run_stage1.py |
 | 1 | Stage 1 tests | COMPLETE | tests/growth/test_stage1_pipeline.py (33 tests) |
 | 1 | **Stage 1 LOPO-CV** | **EVALUATED** | LME R²=0.387 (BSF-adapted best), R²=0.028 (manual). Numbers used WT volume; needs re-run with ET-only target after BraTS-MEN label fix (2026-04-18). |
+| 1 | **Stage 1 UQ propagation** | **EVALUATED** | **Hetero NOT marginally better; conditionally better on high-σ²_v tertile (cov95 0.79→0.90, IS@95 17.7→9.8 for LME→LMEHetero). Hetero re-allocates sharpness to where the data justifies it; homo is stuck at the average and miscalibrated in opposite directions on clean vs noisy scans.** See `docs/UQ_HETERO_CALIBRATION_ANSWER.md`. |
 | 1 | Segmentation comparison | **EVALUATED** | 4 sources × 3 models, decoder-adapted wins |
 | 2 | Quantile transform | COMPLETE | stage2_severity/quantile_transform.py |
 | 2 | Severity model (MLE) | COMPLETE | stage2_severity/severity_model.py |
