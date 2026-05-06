@@ -12,12 +12,32 @@ Companion docs: `UQ_CALIBRATION_STORY.md`, `UQ_THESIS_GAP_ANALYSIS.md`.
 
 ## Core claim (the result, in one paragraph)
 
-> **Hetero does not make sharper predictions everywhere — it moves
-> sharpness to where the data justifies it. On clean scans it
-> sharpens; on noisy scans it widens. The homo model is stuck at the
-> *average* segmentation noise, so it is systematically miscalibrated
-> in *opposite directions* on the two regimes — and the high-noise
-> miscalibration (overconfidence) is the one that breaks coverage.**
+> **Hetero re-allocates predictive sharpness across patients
+> proportionally to σ²_v_target. Two pre-conditions must hold for
+> this re-allocation to translate into better calibration: (a) the
+> predictive variance must be properly assembled (FE + RE + noise),
+> not just the residual noise; and (b) σ²_v must be *informative*
+> about which patients are genuinely hard to predict. When both hold,
+> the conditional gain is real — the homo model's intervals on hard
+> patients are systematically too narrow, and hetero rescues that
+> coverage at the cost of small over-coverage on easy patients. When
+> only (a) holds (constant σ²_v), the structural baseline alone gives
+> most of the headline cov_95 gain. When only (b) holds (random
+> dispersion), interval widening misses the patients that actually
+> need it. The empirical σ²_v from the LoRA ensemble satisfies both,
+> which is why the empirical run shows the cleanest IS@95 advantage.**
+
+**Original (looser) statement, kept for context:** *Hetero does not
+make sharper predictions everywhere — it moves sharpness to where
+the data justifies it. On clean scans it sharpens; on noisy scans
+it widens. The homo model is stuck at the average and is therefore
+systematically miscalibrated in opposite directions on clean vs
+noisy scans.* The synthetic stress test
+(`UQ_SYNTHETIC_VARIANCE_STRESSTEST_RESULTS.md`) showed this is
+qualitatively right but quantitatively split between a structural
+predictive-variance gap (~91 % of ΔIS@95) and a genuine
+σ²_v-driven propagation gain (~9 % of ΔIS@95, but the only piece
+that actually requires σ²_v).
 
 ### How to prove it (the empirical chain)
 
