@@ -1,25 +1,48 @@
-"""CLI entry point for the BraTS-MEN benchmark analysis pipeline."""
+"""CLI entry point for the BraTS-MEN benchmark analysis pipeline.
+
+Runs both as a module (``python -m experiments.uncertainty_segmentation.\
+benchmark.run_analysis``) and as a direct script
+(``python experiments/uncertainty_segmentation/benchmark/analysis/cli.py``).
+The conditional ``sys.path`` insertion below makes the latter work without
+having to set ``PYTHONPATH``.
+"""
 
 from __future__ import annotations
 
-import argparse
-import logging
 import sys
 from pathlib import Path
 
-from .aggregate import aggregate_pairwise, model_order_from_df, select_best_median_worst
-from .compute import compute_all
-from .io import (
+# When invoked as a script (``__package__`` is empty/None), add the project
+# root to sys.path so the absolute imports below resolve.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+
+import argparse
+import logging
+
+from experiments.uncertainty_segmentation.benchmark.analysis.aggregate import (
+    aggregate_pairwise,
+    model_order_from_df,
+    select_best_median_worst,
+)
+from experiments.uncertainty_segmentation.benchmark.analysis.compute import compute_all
+from experiments.uncertainty_segmentation.benchmark.analysis.io import (
     DEFAULT_ANALYSIS_ROOT,
     DEFAULT_GT_ROOT,
     DEFAULT_MODELS_ROOT,
     DEFAULT_OUR_RUN,
     discover_models,
 )
-from .metrics import LABELS
-from .plot_qualitative import write_qualitative
-from .plot_quantitative import write_quantitative
-from .plot_size_sensitivity import write_size_sensitivity
+from experiments.uncertainty_segmentation.benchmark.analysis.metrics import LABELS
+from experiments.uncertainty_segmentation.benchmark.analysis.plot_qualitative import (
+    write_qualitative,
+)
+from experiments.uncertainty_segmentation.benchmark.analysis.plot_quantitative import (
+    write_quantitative,
+)
+from experiments.uncertainty_segmentation.benchmark.analysis.plot_size_sensitivity import (
+    write_size_sensitivity,
+)
 
 logger = logging.getLogger("benchmark.analysis")
 
@@ -76,7 +99,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.stage in ("aggregate", "plot", "all"):
         if df is None:
-            from .compute import _load_existing_metrics
+            from experiments.uncertainty_segmentation.benchmark.analysis.compute import (
+                _load_existing_metrics,
+            )
             df = _load_existing_metrics(args.analysis_root)
             if df.empty:
                 logger.error("No cached metrics; run 'compute' first.")

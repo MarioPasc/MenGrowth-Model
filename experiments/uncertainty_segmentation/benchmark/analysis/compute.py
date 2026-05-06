@@ -218,8 +218,17 @@ def compute_all(
         time.time() - t0,
     )
 
-    # Update manifest
+    # Update manifest only for models that actually contributed rows. Empty
+    # results (e.g. all-FileNotFoundError due to a misdetected schema) must
+    # leave the manifest untouched so the next run retries them.
+    produced = set(new_df["model"].unique()) if not new_df.empty else set()
     for entry in todo:
+        if entry.model_id not in produced:
+            logger.warning(
+                "compute: %s produced 0 rows; not updating manifest (will retry next run)",
+                entry.model_id,
+            )
+            continue
         manifest[entry.model_id] = {
             "dir_mtime": entry.dir_mtime(),
             "n_cases": len(entry.case_ids()),

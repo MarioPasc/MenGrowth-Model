@@ -93,6 +93,8 @@ class ModelEntry:
             return self.pred_dir / case_id / "segmentation.nii.gz"
         if self.schema == "pred_prefix":
             return self.pred_dir / f"pred{case_id}.nii.gz"
+        if self.schema == "canonical":
+            return self.pred_dir / f"{case_id}.nii.gz"
         if self.schema == "bare":
             short = case_id.replace("BraTS-MEN-", "")
             return self.pred_dir / f"{short}.nii.gz"
@@ -139,10 +141,11 @@ def detect_schema(pred_dir: Path) -> str:
     sample = files[0].name
     if sample.startswith("predBraTS-MEN-"):
         return "pred_prefix"
+    if sample.startswith("BraTS-MEN-"):
+        # Canonical filename, no "pred" prefix (e.g. BraTS-MEN-00008-000.nii.gz).
+        return "canonical"
     if SHORT_RE.fullmatch(sample.replace(".nii.gz", "")):
         return "bare"
-    if sample.startswith("BraTS-MEN-"):
-        return "pred_prefix"  # treat plain canonical name as pred_prefix without the pred chunk
     raise ValueError(f"Unrecognized naming schema for {sample!r} in {pred_dir}")
 
 
