@@ -1,0 +1,76 @@
+# Local config matching picasso.yaml hyperparameters but pointing at the
+# Sandisk SSD output path. Use this for visualisation generation and any
+# local pre-flight; the actual sweep runs on Picasso with picasso.yaml.
+
+experiment:
+  name: main_experiment_lognormal_pi_sweep
+  seed: 42
+
+paths:
+  mengrowth_h5: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_propagation_volume_prediction/main_experiment
+
+time:
+  variable: ordinal
+  missing_date_strategy: mixed
+
+uncertainty:
+  estimator: mean_std
+  floor_variance: 1.0e-3
+
+volume:
+  transform: log1p
+
+patients:
+  exclude: [MenGrowth-0028]
+  min_timepoints: 2
+  skip_all_zero_volume: true
+  max_logvol_std: 1.0
+
+sweep:
+  primary:
+    family: empirical_shift
+    tau_grid: null
+    n_tau: 9
+    saturation:
+      sigma_v_sq_floor: 1.0e-3
+      sigma_v_sq_ceil: 50.0
+      safety_margin: 2.0
+  ablation:
+    enabled: false
+    family: beta_alpha
+    alpha_grid: [-1.0, 0.0, 1.0]
+    sigma_v_sq_max: 1.5
+    steepness: 9.0
+    n_seeds_override: 10
+
+evaluation:
+  protocol: last_from_rest
+  n_seeds: 20
+  n_restarts: 3
+  models:
+    fit_lme: true
+    fit_lme_hetero_zero: true
+    fit_lme_hetero_injected: true
+
+statistics:
+  bootstrap:
+    n_samples: 10000
+    confidence_level: 0.95
+    seed: 42
+  wilcoxon: true
+  cohens_d: true
+  spearman_trend: true
+  bh_fdr_q: 0.05
+  pit_ks_test: true
+
+reporting:
+  figures:
+    cov_vs_tau: true
+    is_vs_tau: true
+    sharpness_panel: true
+    pit_grid: true
+    qq_per_tertile: true
+  transition_pairs:
+    - [LME, LMEHetero_Injected]
+    - [LMEHetero_Zero, LMEHetero_Injected]

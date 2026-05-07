@@ -1,0 +1,140 @@
+#!/bin/bash
+# -------------------------------------------------------------------
+# Submit the main σ²_v propagation experiment as a SLURM array job
+# plus a dependent analysis job.
+#
+# Usage:
+#   bash launcher.sh [CONFIG_PATH] [--dry-run]
+# -------------------------------------------------------------------
+
+set -euo pipefail
+
+DRY_RUN=false
+CONFIG=""
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        *) CONFIG="$arg" ;;
+    esac
+done
+
+CONFIG="${CONFIG:-experiments/stage1_volumetric/main_experiment/configs/picasso.yaml}"
+if [[ ! -f "$CONFIG" ]]; then
+    echo "ERROR: config not found: $CONFIG" >&2
+    exit 1
+fi
+
+# Pick a Python interpreter for inline YAML reads.
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+    PYTHON="${CONDA_PREFIX}/bin/python"
+elif command -v python &>/dev/null; then
+    PYTHON="python"
+else
+    PYTHON="python3"
+fi
+
+read_yaml() {
+    "$PYTHON" -c "
+import yaml, sys
+with open('${CONFIG}') as f:
+    cfg = yaml.safe_load(f)
+keys = '$1'.split('.')
+v = cfg
+for k in keys:
+    v = v.get(k, '$2') if isinstance(v, dict) else '$2'
+print(v)
+"
+}
+
+PARTITION=$(read_yaml slurm.partition gputhin)
+TIME_LIMIT=$(read_yaml slurm.time "0-12:00:00")
+CPUS=$(read_yaml slurm.cpus_per_task 4)
+MEM=$(read_yaml slurm.mem "16G")
+CONDA_ENV=$(read_yaml slurm.conda_env mengrowth)
+CONSTRAINT=$(read_yaml slurm.constraint cpu)
+SLURM_REPO_DIR=$(read_yaml slurm.repo_dir "/mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model")
+LOGS_DIR=$(read_yaml slurm.logs_dir "${SLURM_REPO_DIR}/logs/main_experiment")
+THROTTLE=$(read_yaml slurm.array_throttle 40)
+
+# Pre-build the manifest so we know how many array tasks to launch.
+echo "[1/3] Building task manifest..."
+"$PYTHON" -m experiments.stage1_volumetric.main_experiment.run \
+    --config "${CONFIG}" \
+    --write-manifest
+
+OUTPUT_DIR=$(read_yaml paths.output_dir "")
+MANIFEST="${OUTPUT_DIR}/manifest.json"
+if [[ ! -f "$MANIFEST" ]]; then
+    echo "ERROR: manifest not found at $MANIFEST" >&2
+    exit 1
+fi
+
+N_TASKS=$("$PYTHON" -c "import json; print(len(json.load(open('${MANIFEST}'))))")
+LAST_INDEX=$((N_TASKS - 1))
+
+echo "==========================================="
+echo "Main Experiment — SLURM Launcher"
+echo "==========================================="
+echo "Config:      ${CONFIG}"
+echo "Partition:   ${PARTITION}"
+echo "Constraint:  ${CONSTRAINT}"
+echo "Time:        ${TIME_LIMIT}"
+echo "CPUs:        ${CPUS}"
+echo "Memory:      ${MEM}"
+echo "Conda env:   ${CONDA_ENV}"
+echo "Repo dir:    ${SLURM_REPO_DIR}"
+echo "Logs dir:    ${LOGS_DIR}"
+echo "N tasks:     ${N_TASKS} (array 0-${LAST_INDEX}%${THROTTLE})"
+echo
+
+if ! ${DRY_RUN}; then
+    mkdir -p "${LOGS_DIR}"
+fi
+
+ARRAY_CMD="sbatch \
+    --job-name=mainexp_array \
+    --partition=${PARTITION} \
+    --constraint=${CONSTRAINT} \
+    --time=${TIME_LIMIT} \
+    --cpus-per-task=${CPUS} \
+    --mem=${MEM} \
+    --array=0-${LAST_INDEX}%${THROTTLE} \
+    --output=${LOGS_DIR}/mainexp_%A_%a.out \
+    --error=${LOGS_DIR}/mainexp_%A_%a.err \
+    --export=ALL,CONFIG_PATH=${CONFIG},CONDA_ENV=${CONDA_ENV},REPO_DIR=${SLURM_REPO_DIR} \
+    experiments/stage1_volumetric/main_experiment/slurm/worker.sh"
+
+echo "[2/3] Array job:"
+if ${DRY_RUN}; then
+    echo "[DRY-RUN] ${ARRAY_CMD}"
+    ARRAY_JOB_ID="DRYRUN"
+else
+    OUT=$(eval "${ARRAY_CMD}" 2>&1)
+    echo "  ${OUT}"
+    ARRAY_JOB_ID=$(echo "$OUT" | grep -oP '[0-9]+' | head -1)
+    echo "  -> array job ${ARRAY_JOB_ID}"
+fi
+
+ANALYSIS_CMD="sbatch \
+    --job-name=mainexp_analysis \
+    --partition=${PARTITION} \
+    --constraint=${CONSTRAINT} \
+    --time=0-02:00:00 \
+    --cpus-per-task=${CPUS} \
+    --mem=${MEM} \
+    --dependency=afterany:${ARRAY_JOB_ID} \
+    --output=${LOGS_DIR}/mainexp_analysis_%j.out \
+    --error=${LOGS_DIR}/mainexp_analysis_%j.err \
+    --export=ALL,CONFIG_PATH=${CONFIG},CONDA_ENV=${CONDA_ENV},REPO_DIR=${SLURM_REPO_DIR} \
+    experiments/stage1_volumetric/main_experiment/slurm/analysis_worker.sh"
+
+echo "[3/3] Analysis job (depends on array):"
+if ${DRY_RUN}; then
+    echo "[DRY-RUN] ${ANALYSIS_CMD}"
+else
+    OUT=$(eval "${ANALYSIS_CMD}" 2>&1)
+    echo "  ${OUT}"
+fi
+
+echo
+echo "Done."

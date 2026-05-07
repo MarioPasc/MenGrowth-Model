@@ -1,0 +1,93 @@
+# Main experiment: σ²_v propagation under a 2-component LogNormal mixture sweep.
+# Question: does propagating per-scan segmentation uncertainty into LMEHetero
+# shift calibration (IS@95, cov@95) toward where it should be, relative to a
+# homoscedastic LME, monotonically along a controlled distribution-shape sweep?
+
+experiment:
+  name: main_experiment_lognormal_pi_sweep
+  seed: 42
+
+paths:
+  mengrowth_h5: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/MenGrowth.h5
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_propagation_volume_prediction/main_experiment
+
+time:
+  variable: ordinal              # change to days_from_baseline once dates available
+  missing_date_strategy: mixed
+
+uncertainty:
+  estimator: mean_std
+  floor_variance: 1.0e-3
+
+volume:
+  transform: log1p
+
+patients:
+  exclude: [MenGrowth-0028]
+  min_timepoints: 2
+  skip_all_zero_volume: true
+  max_logvol_std: 1.0
+
+sweep:
+  primary:
+    family: empirical_shift
+    # Either provide tau_grid explicitly (sorted, must include 0) or let
+    # saturation block derive endpoints anchored to the noise floor and
+    # the signal-variance ceiling.
+    tau_grid: null
+    n_tau: 9
+    saturation:
+      sigma_v_sq_floor: 1.0e-3   # matches uncertainty.floor_variance
+      sigma_v_sq_ceil: 50.0       # ≈ 10× LME random-slope variance scale
+      safety_margin: 2.0
+  ablation:
+    enabled: false
+    family: beta_alpha
+    alpha_grid: [-1.0, 0.0, 1.0]
+    sigma_v_sq_max: 1.5
+    steepness: 9.0
+    n_seeds_override: 10
+
+evaluation:
+  protocol: last_from_rest
+  n_seeds: 20
+  n_restarts: 3
+  models:
+    fit_lme: true
+    fit_lme_hetero_zero: true
+    fit_lme_hetero_injected: true
+
+statistics:
+  bootstrap:
+    n_samples: 10000
+    confidence_level: 0.95
+    seed: 42
+  wilcoxon: true
+  cohens_d: true
+  spearman_trend: true
+  bh_fdr_q: 0.05
+  pit_ks_test: true
+
+reporting:
+  figures:
+    cov_vs_tau: true
+    is_vs_tau: true
+    sharpness_panel: true
+    pit_grid: true
+    qq_per_tertile: true
+  transition_pairs:
+    - [LME, LMEHetero_Injected]
+    - [LMEHetero_Zero, LMEHetero_Injected]
+
+slurm:
+  partition: gputhin
+  constraint: cpu
+  # Per-task wall budget: each LME LOPO is ~5 min; 1 h is generous.
+  # The launcher's analysis job overrides this to 2 h.
+  time: "0-01:00:00"
+  cpus_per_task: 4
+  mem: "16G"
+  conda_env: mengrowth
+  repo_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
+  logs_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model/logs/main_experiment
+  array_throttle: 40
