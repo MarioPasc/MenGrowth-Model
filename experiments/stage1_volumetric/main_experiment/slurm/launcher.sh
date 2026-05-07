@@ -24,14 +24,31 @@ if [[ ! -f "$CONFIG" ]]; then
     exit 1
 fi
 
-# Pick a Python interpreter for inline YAML reads.
-if [[ -n "${CONDA_PREFIX:-}" ]]; then
-    PYTHON="${CONDA_PREFIX}/bin/python"
-elif command -v python &>/dev/null; then
-    PYTHON="python"
-else
-    PYTHON="python3"
-fi
+# Activate the experiment's conda env so the inline YAML reads have PyYAML
+# regardless of the user's login shell.
+_BOOTSTRAP_ENV() {
+    # Read conda_env from the YAML using a dirt-cheap grep first, then
+    # activate it so subsequent inline reads work properly.
+    local env_name
+    env_name=$(grep -E "^[[:space:]]*conda_env:" "${CONFIG}" | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+    env_name="${env_name:-mengrowth}"
+
+    if [[ -n "$(command -v conda 2>/dev/null)" ]]; then
+        # shellcheck disable=SC1091
+        source "$(conda info --base)/etc/profile.d/conda.sh"
+        conda activate "${env_name}" || {
+            echo "ERROR: failed to activate conda env '${env_name}'" >&2
+            exit 1
+        }
+        echo "Activated conda env: ${env_name}"
+    else
+        echo "WARNING: conda not on PATH; falling back to system python" >&2
+    fi
+}
+_BOOTSTRAP_ENV
+
+PYTHON="${CONDA_PREFIX:+${CONDA_PREFIX}/bin/python}"
+PYTHON="${PYTHON:-python3}"
 
 read_yaml() {
     "$PYTHON" -c "
