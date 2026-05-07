@@ -74,3 +74,14 @@ reporting:
   transition_pairs:
     - [LME, LMEHetero_Injected]
     - [LMEHetero_Zero, LMEHetero_Injected]
+
+slurm:
+  partition: cpu
+  constraint: cpu
+  time: "0-01:00:00"
+  cpus_per_task: 4
+  mem: "16G"
+  conda_env: growth
+  repo_dir: /home/mpascual/research/code/MenGrowth-Model
+  logs_dir: /home/mpascual/research/code/MenGrowth-Model/logs/main_experiment
+  array_throttle: 4

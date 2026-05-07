@@ -24,44 +24,38 @@ if [[ ! -f "$CONFIG" ]]; then
     exit 1
 fi
 
-# Pick a Python interpreter with PyYAML. If the current env already has it,
-# stay there; otherwise activate the experiment's conda env (read from YAML
-# via grep, with `mengrowth` as fallback) and try again.
-_FIND_PYTHON_WITH_YAML() {
-    local candidates=()
-    [[ -n "${CONDA_PREFIX:-}" ]] && candidates+=("${CONDA_PREFIX}/bin/python")
-    candidates+=("python" "python3")
-
-    for py in "${candidates[@]}"; do
-        if command -v "$py" >/dev/null 2>&1 && "$py" -c "import yaml" 2>/dev/null; then
-            echo "$py"
-            return 0
-        fi
-    done
-    return 1
-}
-
-PYTHON=$(_FIND_PYTHON_WITH_YAML || true)
-
-if [[ -z "${PYTHON}" ]]; then
+# Activate the experiment's conda env (read from YAML via grep) so the
+# inline read_yaml calls and the manifest build below see all project
+# deps (PyYAML, GPy, h5py, ...). Without this, the launcher's Python
+# would inherit whichever env the user happens to be in.
+_BOOTSTRAP_ENV() {
+    local env_name
     env_name=$(grep -E "^[[:space:]]*conda_env:" "${CONFIG}" 2>/dev/null \
         | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
     env_name="${env_name:-mengrowth}"
-    if [[ -n "$(command -v conda 2>/dev/null)" ]]; then
-        # shellcheck disable=SC1091
-        source "$(conda info --base)/etc/profile.d/conda.sh"
-        if conda activate "${env_name}" 2>/dev/null; then
-            echo "Activated conda env: ${env_name}"
-            PYTHON=$(_FIND_PYTHON_WITH_YAML || true)
-        fi
-    fi
-fi
 
-if [[ -z "${PYTHON}" ]]; then
-    echo "ERROR: no Python with PyYAML available." >&2
-    echo "  Tried: \$CONDA_PREFIX/bin/python, python, python3" >&2
-    echo "  Activate a conda env that has pyyaml (e.g. 'mengrowth' or 'growth')" >&2
-    echo "  before running this launcher, or install PyYAML in your default env." >&2
+    if [[ -z "$(command -v conda 2>/dev/null)" ]]; then
+        echo "WARNING: conda not on PATH; using current Python ($(command -v python))" >&2
+        return
+    fi
+    # shellcheck disable=SC1091
+    source "$(conda info --base)/etc/profile.d/conda.sh"
+    if conda activate "${env_name}" 2>/dev/null; then
+        echo "Activated conda env: ${env_name}"
+    else
+        echo "WARNING: failed to activate '${env_name}'; staying in current env" >&2
+    fi
+}
+_BOOTSTRAP_ENV
+
+PYTHON="${CONDA_PREFIX:+${CONDA_PREFIX}/bin/python}"
+PYTHON="${PYTHON:-$(command -v python || command -v python3)}"
+
+if ! "$PYTHON" -c "import yaml" 2>/dev/null; then
+    echo "ERROR: ${PYTHON} cannot import yaml." >&2
+    echo "  Set 'slurm.conda_env' in the config to an env that has PyYAML" >&2
+    echo "  (the project env, e.g. 'mengrowth' or 'growth'), and ensure conda" >&2
+    echo "  is on PATH so this launcher can activate it." >&2
     exit 1
 fi
 
@@ -89,6 +83,12 @@ LOGS_DIR=$(read_yaml slurm.logs_dir "${SLURM_REPO_DIR}/logs/main_experiment")
 THROTTLE=$(read_yaml slurm.array_throttle 40)
 
 # Pre-build the manifest so we know how many array tasks to launch.
+# The python -m invocation needs the repo on PYTHONPATH; the worker scripts
+# do the same when SLURM tasks run.
+SLURM_REPO_DIR_PRE=$(read_yaml slurm.repo_dir "")
+PRE_REPO_DIR="${SLURM_REPO_DIR_PRE:-$(pwd)}"
+export PYTHONPATH="${PRE_REPO_DIR}/src:${PRE_REPO_DIR}:${PYTHONPATH:-}"
+
 echo "[1/3] Building task manifest..."
 "$PYTHON" -m experiments.stage1_volumetric.main_experiment.run \
     --config "${CONFIG}" \
