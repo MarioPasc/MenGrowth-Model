@@ -14,6 +14,7 @@ from growth.shared.lopo import LOPOResults
 from growth.shared.metrics import (
     compute_coverage_at_levels,
     compute_crps_gaussian,
+    compute_interval_score,
     compute_r2,
 )
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 def extract_lopo_predictions(
     results: LOPOResults,
     protocol: str = "last_from_rest",
-) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Extract aligned per-patient predictions from LOPO results.
 
     Args:
@@ -31,9 +32,9 @@ def extract_lopo_predictions(
         protocol: Prediction protocol to extract.
 
     Returns:
-        (patient_ids, y_true, y_pred, pred_var) arrays.
+        (patient_ids, y_true, y_pred, pred_var, lower_95, upper_95) arrays.
     """
-    pids, y_true, y_pred, pred_var = [], [], [], []
+    pids, y_true, y_pred, pred_var, lower_95, upper_95 = [], [], [], [], [], []
     for fr in results.fold_results:
         if protocol not in fr.predictions:
             continue
@@ -42,7 +43,16 @@ def extract_lopo_predictions(
             y_true.append(pd["actual"])
             y_pred.append(pd["pred_mean"])
             pred_var.append(pd["pred_var"])
-    return pids, np.array(y_true), np.array(y_pred), np.array(pred_var)
+            lower_95.append(pd["lower_95"])
+            upper_95.append(pd["upper_95"])
+    return (
+        pids,
+        np.array(y_true),
+        np.array(y_pred),
+        np.array(pred_var),
+        np.array(lower_95),
+        np.array(upper_95),
+    )
 
 
 def run_paired_comparisons(
@@ -77,8 +87,8 @@ def run_paired_comparisons(
             logger.warning(f"Skipping pair {pair}: missing results")
             continue
 
-        pids_a, yt_a, yp_a, var_a = extract_lopo_predictions(lopo_results[name_a])
-        pids_b, yt_b, yp_b, var_b = extract_lopo_predictions(lopo_results[name_b])
+        pids_a, yt_a, yp_a, var_a, lo_a, hi_a = extract_lopo_predictions(lopo_results[name_a])
+        pids_b, yt_b, yp_b, var_b, lo_b, hi_b = extract_lopo_predictions(lopo_results[name_b])
 
         if len(yt_a) == 0 or len(yt_b) == 0:
             continue
@@ -93,8 +103,20 @@ def run_paired_comparisons(
         sel_a = np.array([idx_a[p] for p in common_pids])
         sel_b = np.array([idx_b[p] for p in common_pids])
 
-        yt_a, yp_a, v_a = yt_a[sel_a], yp_a[sel_a], var_a[sel_a]
-        yt_b, yp_b, v_b = yt_b[sel_b], yp_b[sel_b], var_b[sel_b]
+        yt_a, yp_a, v_a, lo_a, hi_a = (
+            yt_a[sel_a],
+            yp_a[sel_a],
+            var_a[sel_a],
+            lo_a[sel_a],
+            hi_a[sel_a],
+        )
+        yt_b, yp_b, v_b, lo_b, hi_b = (
+            yt_b[sel_b],
+            yp_b[sel_b],
+            var_b[sel_b],
+            lo_b[sel_b],
+            hi_b[sel_b],
+        )
 
         r2_a = compute_r2(yt_a, yp_a)
         r2_b = compute_r2(yt_b, yp_b)
@@ -107,11 +129,34 @@ def run_paired_comparisons(
         cov_a = compute_coverage_at_levels(yt_a, yp_a, sigma_a, (0.95,))
         cov_b = compute_coverage_at_levels(yt_b, yp_b, sigma_b, (0.95,))
 
+        is_a = compute_interval_score(yt_a, lo_a, hi_a, alpha=0.05)
+        is_b = compute_interval_score(yt_b, lo_b, hi_b, alpha=0.05)
+
+        # Per-patient interval scores for the IS-based permutation test.
+        # ``compute_interval_score`` returns the cohort mean; we replicate
+        # the per-patient computation here.
+        per_is_a = (
+            (hi_a - lo_a)
+            + (2.0 / 0.05) * np.maximum(lo_a - yt_a, 0.0)
+            + (2.0 / 0.05) * np.maximum(yt_a - hi_a, 0.0)
+        )
+        per_is_b = (
+            (hi_b - lo_b)
+            + (2.0 / 0.05) * np.maximum(lo_b - yt_b, 0.0)
+            + (2.0 / 0.05) * np.maximum(yt_b - hi_b, 0.0)
+        )
+
         errors_a = np.abs(yt_a - yp_a)
         errors_b = np.abs(yt_b - yp_b)
         perm_result = paired_permutation_test(
             errors_a,
             errors_b,
+            n_permutations=n_permutations,
+            seed=seed,
+        )
+        perm_is = paired_permutation_test(
+            per_is_a,
+            per_is_b,
             n_permutations=n_permutations,
             seed=seed,
         )
@@ -127,14 +172,19 @@ def run_paired_comparisons(
             "coverage_95_homo": cov_a[0.95],
             "coverage_95_hetero": cov_b[0.95],
             "delta_coverage_95": cov_b[0.95] - cov_a[0.95],
+            "is95_homo": is_a,
+            "is95_hetero": is_b,
+            "delta_is95": is_b - is_a,
             "p_value_errors": perm_result.p_value,
+            "p_value_is95": perm_is.p_value,
         }
         comparisons.append(comp)
 
         logger.info(
             f"Pair {name_a} -> {name_b}: "
             f"dR2={comp['delta_r2']:+.4f}, dCRPS={comp['delta_crps']:+.4f}, "
-            f"dCov95={comp['delta_coverage_95']:+.3f}, p={perm_result.p_value:.4f}"
+            f"dCov95={comp['delta_coverage_95']:+.3f}, dIS95={comp['delta_is95']:+.3f}, "
+            f"p|err|={perm_result.p_value:.4f}, pIS={perm_is.p_value:.4f}"
         )
 
     return comparisons
@@ -160,15 +210,17 @@ def write_comparison_table(
     lines = [
         f"# {title}",
         "",
-        "| Pair | dR2 | dCRPS | dCov_95 | p-value |",
-        "|------|-----|-------|---------|---------|",
+        "| Pair | dR2 | dCRPS | dCov_95 | dIS@95 | p\\|err\\| | p_IS |",
+        "|------|-----|-------|---------|--------|---------|------|",
     ]
     for c in comparisons:
         pair_str = f"{c['pair'][0]} -> {c['pair'][1]}"
         lines.append(
             f"| {pair_str} | {c['delta_r2']:+.4f} | "
             f"{c['delta_crps']:+.4f} | {c['delta_coverage_95']:+.3f} | "
-            f"{c['p_value_errors']:.4f} |"
+            f"{c.get('delta_is95', float('nan')):+.3f} | "
+            f"{c['p_value_errors']:.4f} | "
+            f"{c.get('p_value_is95', float('nan')):.4f} |"
         )
 
     lines.extend(
@@ -176,9 +228,15 @@ def write_comparison_table(
             "",
             "## Interpretation",
             "",
-            "- dR2 ~ 0: uncertainty propagation preserves point accuracy",
-            "- dCRPS < 0: second model is better calibrated (lower is better)",
-            "- dCov_95 > 0: second model intervals achieve better coverage",
+            "- dR2 ~ 0: uncertainty propagation preserves point accuracy.",
+            "- dCRPS < 0: second model is better calibrated on the proper score.",
+            "- dCov_95 > 0: second model intervals achieve higher empirical coverage.",
+            "- dIS@95 < 0: second model has better Winkler interval score "
+            "(width + miscoverage penalty). This is the headline calibration "
+            "metric for the conditional thesis claim.",
+            "- `p|err|` tests Δ|error| (point prediction). `p_IS` tests "
+            "ΔIS@95 (calibration). Both are paired permutations on per-patient "
+            "values.",
             "",
         ]
     )

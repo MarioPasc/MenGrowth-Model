@@ -46,6 +46,9 @@ from experiments.stage1_volumetric.stats.comparisons import (
 from experiments.stage1_volumetric.stats.conditional_calibration import (
     run_conditional_calibration,
 )
+from experiments.stage1_volumetric.stats.tertile_bootstrap import (
+    run_tertile_bootstrap_for_pairs,
+)
 from experiments.utils.experiment_output import save_experiment_metadata
 from growth.shared.bootstrap import BootstrapResult
 from growth.shared.lopo import LOPOResults
@@ -253,6 +256,22 @@ def _run_posthoc_analysis(
         run_conditional_calibration(lopo_results, output_dir)
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"Conditional calibration failed: {e}")
+
+    # --- Per-tertile paired-bootstrap p-values (R², IS@95, cov@95) ---
+    logger.info("=== Step 3d: Per-Tertile Paired-Bootstrap Tests ===")
+    if vd_cfg.get("enabled", True) and vd_cfg.get("pairs"):
+        try:
+            run_tertile_bootstrap_for_pairs(
+                lopo_results,
+                vd_cfg.get("pairs", []),
+                output_dir,
+                protocol="last_from_rest",
+                n_bootstrap=cfg.get("bootstrap", {}).get("n_samples", 10000),
+                confidence_level=cfg.get("bootstrap", {}).get("confidence_level", 0.95),
+                seed=cfg["experiment"]["seed"],
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"Tertile bootstrap failed: {e}")
 
     # --- Figures ---
     if reporting_cfg.get("pit_histogram", False) and calib_metrics:

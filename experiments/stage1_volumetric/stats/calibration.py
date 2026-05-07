@@ -29,7 +29,7 @@ def compute_calibration_metrics(
         Dict with 'dss', 'nlpd', 'pit_ks_stat', 'pit_ks_p', and
         'pit_values'. Empty dict if no predictions available.
     """
-    _, y_true, y_pred, pred_var = extract_lopo_predictions(results, protocol)
+    _, y_true, y_pred, pred_var, _, _ = extract_lopo_predictions(results, protocol)
     if len(y_true) == 0:
         return {}
 

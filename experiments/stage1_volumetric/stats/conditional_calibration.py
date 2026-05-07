@@ -27,6 +27,7 @@ from growth.shared.metrics import (
     compute_coverage_at_levels,
     compute_crps_gaussian,
     compute_interval_score,
+    compute_r2,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,12 @@ def _bin_metrics(
         "coverage_95": float(coverage.get(0.95, np.nan)),
         "crps": float(crps),
         "interval_score_95": float(is95),
+        # R² per tertile is meaningful only with N>=2; skipped otherwise.
+        # Note: ss_tot is computed *within* the tertile, so values across
+        # tertiles are not directly comparable but are a valid diagnostic of
+        # local point-prediction quality (uncertainty thesis claim is about
+        # variance redistribution, not accuracy).
+        "r2_log": float(compute_r2(y_true, y_pred)) if len(y_true) >= 2 else float("nan"),
     }
 
 
@@ -267,17 +274,20 @@ def write_conditional_table(
         )
 
     header = (
-        "| Model | Tertile | n | sv2 mean | CI width | cov@95 | cov@90 | "
-        "cov@80 | CRPS | IS@95 |"
+        "| Model | Tertile | n | sv2 mean | R²_log | CI width | cov@95 | "
+        "cov@90 | cov@80 | CRPS | IS@95 |"
     )
-    sep = "|" + "|".join(["---"] * 10) + "|"
+    sep = "|" + "|".join(["---"] * 11) + "|"
     lines.append(header)
     lines.append(sep)
+
+    def _fmt_r2(v: float) -> str:
+        return "n/a" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:+.4f}"
 
     for model_name, entry in per_model.items():
         if entry is None:
             lines.append(
-                f"| {model_name} | (no sigma_v_sq_target available) | | | | | | | | |"
+                f"| {model_name} | (no sigma_v_sq_target available) | | | | | | | | | |"
             )
             continue
         for tname in _TERTILE_LABELS:
@@ -286,7 +296,8 @@ def write_conditional_table(
                 continue
             lines.append(
                 f"| {model_name} | {tname} | {t['n']} | "
-                f"{t['sigma_v_sq_mean']:.4g} | {t['ci_width_mean']:.3f} | "
+                f"{t['sigma_v_sq_mean']:.4g} | {_fmt_r2(t.get('r2_log', float('nan')))} | "
+                f"{t['ci_width_mean']:.3f} | "
                 f"{t['coverage_95']:.3f} | {t['coverage_90']:.3f} | "
                 f"{t['coverage_80']:.3f} | {t['crps']:.4f} | "
                 f"{t['interval_score_95']:.3f} |"
@@ -294,6 +305,7 @@ def write_conditional_table(
         ov = entry["overall"]
         lines.append(
             f"| {model_name} | OVERALL | {ov['n']} | {ov['sigma_v_sq_mean']:.4g} | "
+            f"{_fmt_r2(ov.get('r2_log', float('nan')))} | "
             f"{ov['ci_width_mean']:.3f} | {ov['coverage_95']:.3f} | "
             f"{ov['coverage_90']:.3f} | {ov['coverage_80']:.3f} | "
             f"{ov['crps']:.4f} | {ov['interval_score_95']:.3f} |"
