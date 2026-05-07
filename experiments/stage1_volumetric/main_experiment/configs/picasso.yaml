@@ -87,7 +87,7 @@ slurm:
   time: "0-01:00:00"
   cpus_per_task: 4
   mem: "16G"
-  conda_env: mengrowth
+  conda_env: growth
   repo_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
   logs_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model/logs/main_experiment
   array_throttle: 40

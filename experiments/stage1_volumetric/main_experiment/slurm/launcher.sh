@@ -24,31 +24,46 @@ if [[ ! -f "$CONFIG" ]]; then
     exit 1
 fi
 
-# Activate the experiment's conda env so the inline YAML reads have PyYAML
-# regardless of the user's login shell.
-_BOOTSTRAP_ENV() {
-    # Read conda_env from the YAML using a dirt-cheap grep first, then
-    # activate it so subsequent inline reads work properly.
-    local env_name
-    env_name=$(grep -E "^[[:space:]]*conda_env:" "${CONFIG}" | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
-    env_name="${env_name:-mengrowth}"
+# Pick a Python interpreter with PyYAML. If the current env already has it,
+# stay there; otherwise activate the experiment's conda env (read from YAML
+# via grep, with `mengrowth` as fallback) and try again.
+_FIND_PYTHON_WITH_YAML() {
+    local candidates=()
+    [[ -n "${CONDA_PREFIX:-}" ]] && candidates+=("${CONDA_PREFIX}/bin/python")
+    candidates+=("python" "python3")
 
+    for py in "${candidates[@]}"; do
+        if command -v "$py" >/dev/null 2>&1 && "$py" -c "import yaml" 2>/dev/null; then
+            echo "$py"
+            return 0
+        fi
+    done
+    return 1
+}
+
+PYTHON=$(_FIND_PYTHON_WITH_YAML || true)
+
+if [[ -z "${PYTHON}" ]]; then
+    env_name=$(grep -E "^[[:space:]]*conda_env:" "${CONFIG}" 2>/dev/null \
+        | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+    env_name="${env_name:-mengrowth}"
     if [[ -n "$(command -v conda 2>/dev/null)" ]]; then
         # shellcheck disable=SC1091
         source "$(conda info --base)/etc/profile.d/conda.sh"
-        conda activate "${env_name}" || {
-            echo "ERROR: failed to activate conda env '${env_name}'" >&2
-            exit 1
-        }
-        echo "Activated conda env: ${env_name}"
-    else
-        echo "WARNING: conda not on PATH; falling back to system python" >&2
+        if conda activate "${env_name}" 2>/dev/null; then
+            echo "Activated conda env: ${env_name}"
+            PYTHON=$(_FIND_PYTHON_WITH_YAML || true)
+        fi
     fi
-}
-_BOOTSTRAP_ENV
+fi
 
-PYTHON="${CONDA_PREFIX:+${CONDA_PREFIX}/bin/python}"
-PYTHON="${PYTHON:-python3}"
+if [[ -z "${PYTHON}" ]]; then
+    echo "ERROR: no Python with PyYAML available." >&2
+    echo "  Tried: \$CONDA_PREFIX/bin/python, python, python3" >&2
+    echo "  Activate a conda env that has pyyaml (e.g. 'mengrowth' or 'growth')" >&2
+    echo "  before running this launcher, or install PyYAML in your default env." >&2
+    exit 1
+fi
 
 read_yaml() {
     "$PYTHON" -c "
