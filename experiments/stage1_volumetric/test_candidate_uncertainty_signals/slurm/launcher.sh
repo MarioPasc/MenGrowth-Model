@@ -112,7 +112,7 @@ if ! ${DRY_RUN}; then
     mkdir -p "${LOGS_DIR}"
 fi
 
-ARRAY_CMD="sbatch \
+ARRAY_CMD="sbatch --parsable \
     --job-name=uq_diag_stage2_array \
     --partition=${PARTITION} \
     --constraint=${CONSTRAINT} \
@@ -137,7 +137,7 @@ else
     echo "  -> array job ${ARRAY_JOB_ID}"
 fi
 
-ANALYSIS_CMD="sbatch \
+ANALYSIS_CMD="sbatch --parsable \
     --job-name=uq_diag_stage2_analysis \
     --partition=${PARTITION} \
     --constraint=${CONSTRAINT} \

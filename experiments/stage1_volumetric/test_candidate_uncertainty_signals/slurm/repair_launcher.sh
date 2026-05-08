@@ -94,7 +94,7 @@ if ! ${DRY_RUN}; then
     mkdir -p "${LOGS_DIR}" "${TASK_CSV_DIR}" "$(dirname "${RECOMPUTED_CSV}")"
 fi
 
-ARRAY_CMD="sbatch \
+ARRAY_CMD="sbatch --parsable \
     --job-name=uq_diag_repair_array \
     --partition=${PARTITION} \
     --constraint=${CONSTRAINT} \
@@ -118,7 +118,7 @@ else
     echo "  -> repair array job ${REPAIR_ARRAY_ID}"
 fi
 
-PATCH_CMD="sbatch \
+PATCH_CMD="sbatch --parsable \
     --job-name=uq_diag_patch \
     --partition=${PARTITION} \
     --constraint=${CONSTRAINT} \

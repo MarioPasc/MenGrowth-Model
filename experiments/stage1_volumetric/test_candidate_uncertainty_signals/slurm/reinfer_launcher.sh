@@ -56,6 +56,8 @@ fi
 
 ARRAY_CMD="sbatch --parsable \
     --array=0-${LAST_SHARD} \
+    --constraint=dgx \
+    --gres=gpu:1 \
     --output=${LOGS_DIR}/uq_reinfer_%A_%a.out \
     --error=${LOGS_DIR}/uq_reinfer_%A_%a.err \
     --export=ALL,LORA_CONFIG=${LORA_CONFIG},LORA_RUN_DIR=${LORA_RUN_DIR},MENGROWTH_H5=${MENGROWTH_H5},OUTPUT_DIR=${OUTPUT_DIR},N_SHARDS=${N_SHARDS},CONDA_ENV=${CONDA_ENV},REPO_DIR=${REPO_DIR} \
@@ -72,6 +74,7 @@ fi
 
 MERGE_CMD="sbatch --parsable \
     --dependency=afterok:${ARRAY_JOB_ID} \
+    --constraint=cpu \
     --output=${LOGS_DIR}/uq_reinfer_merge_%j.out \
     --error=${LOGS_DIR}/uq_reinfer_merge_%j.err \
     --export=ALL,OUTPUT_DIR=${OUTPUT_DIR},MENGROWTH_H5=${MENGROWTH_H5},CONDA_ENV=${CONDA_ENV},REPO_DIR=${REPO_DIR} \
