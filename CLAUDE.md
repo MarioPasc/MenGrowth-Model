@@ -55,6 +55,7 @@ VARIANCE DECOMPOSITION:
 | 1 | Stage 1 tests | COMPLETE | tests/growth/test_stage1_pipeline.py (33 tests) |
 | 1 | **Stage 1 LOPO-CV** | **EVALUATED** | LME R²=0.387 (BSF-adapted best), R²=0.028 (manual). Numbers used WT volume; needs re-run with ET-only target after BraTS-MEN label fix (2026-04-18). |
 | 1 | **Stage 1 UQ propagation** | **EVALUATED** | **Hetero NOT marginally better; conditionally better on high-σ²_v tertile (cov95 0.79→0.90, IS@95 17.7→9.8 for LME→LMEHetero). Hetero re-allocates sharpness to where the data justifies it; homo is stuck at the average and miscalibrated in opposite directions on clean vs noisy scans.** See `docs/UQ_HETERO_CALIBRATION_ANSWER.md`. |
+| 1 | **Main experiment τ-sweep** | **EVALUATED (2026-05-07, B=10000 bootstrap)** | **9 τ × 20 seeds, paired BCa bootstrap + BH-FDR. At τ=0 (empirical) ΔIS@95 vs LME homo = −0.04, CI [−0.30, +0.23], 0/20 BH-rejected. At τ=+2.86 (point min) ΔIS = −0.36, CI [−2.36, +1.57], 1/20 rejected — apparent optimum NOT significant. Only τ≥+10.33 is significantly worse (20/20 BH-rejected, ΔIS≥+11). High-σ²_v tertile win does NOT replicate. Hetero LME is "safe but unhelpful" on N=54: injecting LoRA σ²_v neither degrades nor improves calibration over homo.** Config `main_experiment/configs/picasso.yaml`. |
 | 1 | Segmentation comparison | **EVALUATED** | 4 sources × 3 models, decoder-adapted wins |
 | 2 | Quantile transform | COMPLETE | stage2_severity/quantile_transform.py |
 | 2 | Severity model (MLE) | COMPLETE | stage2_severity/severity_model.py |

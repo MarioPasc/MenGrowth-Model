@@ -1,0 +1,76 @@
+# Smoke-test config for the candidate-uncertainty-signal diagnostic.
+#
+# Purpose: 1-2 LOPO folds of one (candidate, scaling) pair on the local
+# RTX 4060 workstation, plus 2-scan H5 repair smoke for Stage 0. End-to-end
+# runtime target ≤ 10 min wall clock.
+
+experiment:
+  name: test_candidate_uncertainty_signals_smoke
+  seed: 42
+
+paths:
+  mengrowth_h5: /media/mpascual/PortableSSD/Meningiomas/MenGrowth/v5_final/h5_format/MenGrowth.h5
+  output_dir: /tmp/test_candidate_uncertainty_signals_smoke
+  candidate_signals_csv: /tmp/test_candidate_uncertainty_signals_smoke/candidate_signals.csv
+  homo_baseline_lopo: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_propagation_volume_prediction/main_experiment/LME_baseline/lopo_results.json
+
+# Cohort filter — INHERITS from main_experiment/configs/picasso.yaml
+# Encoded literally so the diagnostic is reproducible standalone.
+time:
+  variable: ordinal
+  missing_date_strategy: mixed
+
+uncertainty:
+  estimator: mean_std
+  floor_variance: 1.0e-3
+
+volume:
+  transform: log1p
+
+patients:
+  exclude: [MenGrowth-0028]
+  min_timepoints: 2
+  skip_all_zero_volume: true
+  max_logvol_std: 1.0
+
+# Diagnostic-specific configuration
+diagnostic:
+  # Subset for the smoke test (2 candidates, 1 scaling = 2 tasks total)
+  candidates:
+    - logvol_var
+    - mean_var_voxel
+  scalings:
+    - mean_matched
+  controls:
+    - zero
+  permuted_seed: 17
+
+stage0:
+  # Per-scan prediction folders contain ensemble_probs.nii.gz +
+  # member_{0..19}_probs.nii.gz (~1.7 GB per scan). Reading those is enough
+  # to recompute predictive entropy + BALD/MI on CPU; no GPU re-inference.
+  predictions_root: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/frozen_decoder/kqv_proj_fc1_fc2/stages_1234/r32_M20_s42/predictions
+  smoke_scan_indices: [0, 1]
+  recomputed_csv: /tmp/test_candidate_uncertainty_signals_smoke/recomputed_uncertainty.csv
+  channel_index: 0                             # MEN = BraTS-TC = channel 0
+
+evaluation:
+  protocol: last_from_rest
+  n_seeds: 1
+  n_restarts: 3
+
+statistics:
+  bootstrap:
+    n_samples: 100              # smoke: small B
+    confidence_level: 0.95
+    seed: 42
+  bh_fdr_q: 0.05
+
+reporting:
+  figures:
+    stage1_correlation: true
+    stage2_is_decomposition: true
+
+slurm:
+  conda_env: growth
+  repo_dir: /home/mpascual/research/code/MenGrowth-Model

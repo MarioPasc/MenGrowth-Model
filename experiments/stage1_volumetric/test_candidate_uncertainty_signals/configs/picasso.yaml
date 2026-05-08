@@ -1,0 +1,96 @@
+# Picasso (full sweep) config for the candidate-uncertainty-signal diagnostic.
+#
+# Mirrors main_experiment/configs/picasso.yaml (cohort filter, paths style)
+# plus the candidate / scaling / control matrix.
+
+experiment:
+  name: test_candidate_uncertainty_signals
+  seed: 42
+
+paths:
+  mengrowth_h5: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/MenGrowth.h5
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_propagation_volume_prediction/test_segmentation_uncertainty_signals
+  candidate_signals_csv: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_propagation_volume_prediction/test_segmentation_uncertainty_signals/candidate_signals.csv
+  homo_baseline_lopo: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_propagation_volume_prediction/main_experiment/LME_baseline/lopo_results.json
+
+# Cohort filter — identical to main_experiment/configs/picasso.yaml
+time:
+  variable: ordinal
+  missing_date_strategy: mixed
+
+uncertainty:
+  estimator: mean_std
+  floor_variance: 1.0e-3
+
+volume:
+  transform: log1p
+
+patients:
+  exclude: [MenGrowth-0028]
+  min_timepoints: 2
+  skip_all_zero_volume: true
+  max_logvol_std: 1.0
+
+diagnostic:
+  candidates:
+    - logvol_var                               # baseline (== main_experiment σ²_v)
+    - logvol_mad_var
+    - vol_cv2
+    - mean_entropy
+    - mean_mi
+    - mean_var_voxel
+    - men_entropy
+    - men_mi
+    - men_boundary_entropy
+    - men_boundary_mi
+    - composite_logvol_x_boundary_entropy
+  scalings:
+    - raw
+    - mean_matched
+  controls:
+    - zero
+    - constant_mean
+    - permuted
+  permuted_seed: 17
+
+stage0:
+  # The local Sandisk2TB store already holds the per-member soft prob maps
+  # (~300 GB total). Stage 0 reads them and re-aggregates corrected entropy /
+  # MI scalars on CPU. No Picasso GPU job needed for repair.
+  predictions_root: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_segmentation/frozen_decoder/kqv_proj_fc1_fc2/stages_1234/r32_M20_s42/predictions
+  smoke_scan_indices: [0, 1]
+  recomputed_csv: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_propagation_volume_prediction/test_segmentation_uncertainty_signals/recomputed_uncertainty.csv
+  channel_index: 0                             # MEN = BraTS-TC = channel 0
+
+evaluation:
+  protocol: last_from_rest
+  n_seeds: 1
+  n_restarts: 3
+
+statistics:
+  bootstrap:
+    n_samples: 10000
+    confidence_level: 0.95
+    seed: 42
+  bh_fdr_q: 0.05
+
+reporting:
+  figures:
+    stage1_correlation: true
+    stage2_is_decomposition: true
+
+slurm:
+  partition: gputhin
+  constraint: cpu                              # Stage 2 is CPU-only (LME fits)
+  time: "0-01:00:00"
+  cpus_per_task: 4
+  mem: "16G"
+  conda_env: growth
+  repo_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
+  logs_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model/logs/test_candidate_uncertainty
+  array_throttle: 8
+  # Stage 0 (repair) is CPU-only — read NIfTI prob maps + aggregate
+  repair_partition: gputhin
+  repair_constraint: cpu
+  repair_time: "0-01:00:00"
+  repair_array_throttle: 32
