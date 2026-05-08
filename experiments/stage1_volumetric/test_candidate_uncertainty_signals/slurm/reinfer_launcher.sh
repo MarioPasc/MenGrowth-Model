@@ -54,7 +54,8 @@ if ! ${DRY_RUN}; then
     mkdir -p "${LOGS_DIR}" "${OUTPUT_DIR}/shards"
 fi
 
-ARRAY_CMD="sbatch --parsable \
+ARRAY_CMD="sbatch \
+    --job-name=uq_diag_reinfer_array \
     --array=0-${LAST_SHARD} \
     --constraint=dgx \
     --gres=gpu:1 \
@@ -68,13 +69,23 @@ if ${DRY_RUN}; then
     echo "[DRY-RUN] ${ARRAY_CMD}"
     ARRAY_JOB_ID="DRYRUN"
 else
-    ARRAY_JOB_ID=$(eval "${ARRAY_CMD}")
+    OUT=$(eval "${ARRAY_CMD}" 2>&1)
+    echo "  ${OUT}"
+    ARRAY_JOB_ID=$(echo "$OUT" | grep -oP '[0-9]+' | head -1)
+    if [[ -z "${ARRAY_JOB_ID}" ]]; then
+        echo "ERROR: could not parse array job ID from sbatch output" >&2
+        exit 1
+    fi
     echo "  -> array job ${ARRAY_JOB_ID}"
 fi
 
-MERGE_CMD="sbatch --parsable \
-    --dependency=afterok:${ARRAY_JOB_ID} \
+MERGE_CMD="sbatch \
+    --job-name=uq_diag_reinfer_merge \
     --constraint=cpu \
+    --time=0-00:30:00 \
+    --cpus-per-task=2 \
+    --mem=8G \
+    --dependency=afterany:${ARRAY_JOB_ID} \
     --output=${LOGS_DIR}/uq_reinfer_merge_%j.out \
     --error=${LOGS_DIR}/uq_reinfer_merge_%j.err \
     --export=ALL,OUTPUT_DIR=${OUTPUT_DIR},MENGROWTH_H5=${MENGROWTH_H5},CONDA_ENV=${CONDA_ENV},REPO_DIR=${REPO_DIR} \
@@ -83,9 +94,11 @@ MERGE_CMD="sbatch --parsable \
 echo "[2/2] Merge + H5 patch (depends on array):"
 if ${DRY_RUN}; then
     echo "[DRY-RUN] ${MERGE_CMD}"
+    MERGE_JOB_ID="DRYRUN"
 else
-    MERGE_JOB_ID=$(eval "${MERGE_CMD}")
-    echo "  -> merge job ${MERGE_JOB_ID}"
+    OUT=$(eval "${MERGE_CMD}" 2>&1)
+    echo "  ${OUT}"
+    MERGE_JOB_ID=$(echo "$OUT" | grep -oP '[0-9]+' | head -1)
 fi
 
 echo

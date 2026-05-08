@@ -94,7 +94,7 @@ if ! ${DRY_RUN}; then
     mkdir -p "${LOGS_DIR}" "${TASK_CSV_DIR}" "$(dirname "${RECOMPUTED_CSV}")"
 fi
 
-ARRAY_CMD="sbatch --parsable \
+ARRAY_CMD="sbatch \
     --job-name=uq_diag_repair_array \
     --partition=${PARTITION} \
     --constraint=${CONSTRAINT} \
@@ -118,14 +118,14 @@ else
     echo "  -> repair array job ${REPAIR_ARRAY_ID}"
 fi
 
-PATCH_CMD="sbatch --parsable \
+PATCH_CMD="sbatch \
     --job-name=uq_diag_patch \
     --partition=${PARTITION} \
     --constraint=${CONSTRAINT} \
     --time=0-00:30:00 \
     --cpus-per-task=2 \
     --mem=8G \
-    --dependency=afterok:${REPAIR_ARRAY_ID} \
+    --dependency=afterany:${REPAIR_ARRAY_ID} \
     --output=${LOGS_DIR}/uq_patch_%j.out \
     --error=${LOGS_DIR}/uq_patch_%j.err \
     --export=ALL,CONFIG_PATH=${CONFIG},CONDA_ENV=${CONDA_ENV},REPO_DIR=${SLURM_REPO_DIR},TASK_CSV_DIR=${TASK_CSV_DIR},RECOMPUTED_CSV=${RECOMPUTED_CSV},MENGROWTH_H5=${MENGROWTH_H5} \
