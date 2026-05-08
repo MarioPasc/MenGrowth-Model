@@ -71,7 +71,7 @@ if ${DRY_RUN}; then
 else
     OUT=$(eval "${ARRAY_CMD}" 2>&1)
     echo "  ${OUT}"
-    ARRAY_JOB_ID=$(echo "$OUT" | grep -oP '[0-9]+' | head -1)
+    ARRAY_JOB_ID=$(echo "$OUT" | grep -oP 'Submitted batch job \K[0-9]+' | head -1)
     if [[ -z "${ARRAY_JOB_ID}" ]]; then
         echo "ERROR: could not parse array job ID from sbatch output" >&2
         exit 1
@@ -98,7 +98,7 @@ if ${DRY_RUN}; then
 else
     OUT=$(eval "${MERGE_CMD}" 2>&1)
     echo "  ${OUT}"
-    MERGE_JOB_ID=$(echo "$OUT" | grep -oP '[0-9]+' | head -1)
+    MERGE_JOB_ID=$(echo "$OUT" | grep -oP 'Submitted batch job \K[0-9]+' | head -1)
 fi
 
 echo

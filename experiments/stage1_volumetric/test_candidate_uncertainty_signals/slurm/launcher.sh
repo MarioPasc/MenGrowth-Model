@@ -133,7 +133,7 @@ if ${DRY_RUN}; then
 else
     OUT=$(eval "${ARRAY_CMD}" 2>&1)
     echo "  ${OUT}"
-    ARRAY_JOB_ID=$(echo "$OUT" | grep -oP '[0-9]+' | head -1)
+    ARRAY_JOB_ID=$(echo "$OUT" | grep -oP 'Submitted batch job \K[0-9]+' | head -1)
     echo "  -> array job ${ARRAY_JOB_ID}"
 fi
 

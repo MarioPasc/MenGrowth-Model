@@ -114,7 +114,7 @@ if ${DRY_RUN}; then
 else
     OUT=$(eval "${ARRAY_CMD}" 2>&1)
     echo "  ${OUT}"
-    REPAIR_ARRAY_ID=$(echo "$OUT" | grep -oP '[0-9]+' | head -1)
+    REPAIR_ARRAY_ID=$(echo "$OUT" | grep -oP 'Submitted batch job \K[0-9]+' | head -1)
     echo "  -> repair array job ${REPAIR_ARRAY_ID}"
 fi
 
@@ -138,7 +138,7 @@ if ${DRY_RUN}; then
 else
     OUT=$(eval "${PATCH_CMD}" 2>&1)
     echo "  ${OUT}"
-    PATCH_JOB_ID=$(echo "$OUT" | grep -oP '[0-9]+' | head -1)
+    PATCH_JOB_ID=$(echo "$OUT" | grep -oP 'Submitted batch job \K[0-9]+' | head -1)
     echo "  -> patch job ${PATCH_JOB_ID}"
 fi
 
