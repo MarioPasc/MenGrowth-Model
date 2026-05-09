@@ -77,7 +77,7 @@ THROTTLE=$(read_yaml slurm.array_throttle 8)
 PRE_REPO_DIR="${SLURM_REPO_DIR:-$(pwd)}"
 export PYTHONPATH="${PRE_REPO_DIR}/src:${PRE_REPO_DIR}:${PYTHONPATH:-}"
 
-echo "[1/3] Building Stage 2 task manifest..."
+echo "[1/4] Building Stage 2 task manifest..."
 "$PYTHON" -m experiments.stage1_volumetric.test_candidate_uncertainty_signals.run \
     --config "${CONFIG}" \
     --write-manifest
@@ -88,6 +88,16 @@ if [[ ! -f "$MANIFEST" ]]; then
     echo "ERROR: manifest not found at $MANIFEST" >&2
     exit 1
 fi
+
+CANDIDATE_CSV=$(read_yaml paths.candidate_signals_csv "")
+echo "[2/4] Building candidate_signals.csv from (post-patch) H5..."
+"$PYTHON" -m experiments.stage1_volumetric.test_candidate_uncertainty_signals.extract_candidates \
+    --config "${CONFIG}"
+if [[ ! -f "${CANDIDATE_CSV}" ]]; then
+    echo "ERROR: candidate_signals.csv not produced at ${CANDIDATE_CSV}" >&2
+    exit 1
+fi
+echo "  -> ${CANDIDATE_CSV} ($(wc -l <"${CANDIDATE_CSV}") lines)"
 N_TASKS=$("$PYTHON" -c "import json; print(len(json.load(open('${MANIFEST}'))))")
 LAST_INDEX=$((N_TASKS - 1))
 
@@ -126,7 +136,7 @@ ARRAY_CMD="sbatch \
     --export=ALL,CONFIG_PATH=${CONFIG},CONDA_ENV=${CONDA_ENV},REPO_DIR=${SLURM_REPO_DIR} \
     experiments/stage1_volumetric/test_candidate_uncertainty_signals/slurm/worker.sh"
 
-echo "[2/3] Stage 2 array job:"
+echo "[3/4] Stage 2 array job:"
 if ${DRY_RUN}; then
     echo "[DRY-RUN] ${ARRAY_CMD}"
     ARRAY_JOB_ID="DRYRUN"
@@ -150,7 +160,7 @@ ANALYSIS_CMD="sbatch \
     --export=ALL,CONFIG_PATH=${CONFIG},CONDA_ENV=${CONDA_ENV},REPO_DIR=${SLURM_REPO_DIR} \
     experiments/stage1_volumetric/test_candidate_uncertainty_signals/slurm/analysis_worker.sh"
 
-echo "[3/3] Analysis job (depends on array):"
+echo "[4/4] Analysis job (depends on array):"
 if ${DRY_RUN}; then
     echo "[DRY-RUN] ${ANALYSIS_CMD}"
 else
