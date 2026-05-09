@@ -42,11 +42,24 @@ def main(argv: list[str] | None = None) -> int:
     out_root = Path(cfg["paths"]["output_dir"]) / "stage1_diagnostic"
     out_root.mkdir(parents=True, exist_ok=True)
 
-    homo_path = Path(cfg["paths"]["homo_baseline_lopo"])
+    homo_path_cfg = Path(cfg["paths"]["homo_baseline_lopo"])
+    homo_sanity_path = (
+        Path(cfg["paths"]["output_dir"])
+        / "runs"
+        / "candidate_homo_sanity_scaling_raw"
+        / "lopo_results.json"
+    )
+    homo_path = homo_path_cfg if homo_path_cfg.exists() else homo_sanity_path
     cand_path = Path(cfg["paths"]["candidate_signals_csv"])
     if not homo_path.exists():
-        logger.error("Homo baseline LOPO not found: %s", homo_path)
+        logger.error(
+            "No homo baseline LOPO found. Configured: %s. Fallback (homo_sanity cell): %s",
+            homo_path_cfg,
+            homo_sanity_path,
+        )
         return 2
+    if homo_path != homo_path_cfg:
+        logger.info("Using homo_sanity fallback: %s", homo_path)
     if not cand_path.exists():
         logger.error(
             "Candidate signals CSV not found: %s — run extract_candidates first", cand_path
