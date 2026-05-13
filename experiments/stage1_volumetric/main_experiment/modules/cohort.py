@@ -51,6 +51,9 @@ class Cohort:
         patient_ids: Patient IDs matching ``trajectories``.
         n_timepoints_per_patient: Per-patient scan count.
         n_scans_total: Sum of ``n_timepoints_per_patient``.
+        signal_name: Identifier of the σ²_v source actually loaded. Either
+            the H5 variance_key (e.g. ``"men_mean_entropy"``) when
+            ``uncertainty.signal`` is set, or ``"logvol_std²"`` otherwise.
     """
 
     trajectories: list[PatientTrajectory]
@@ -60,6 +63,7 @@ class Cohort:
     patient_ids: list[str]
     n_timepoints_per_patient: list[int]
     n_scans_total: int
+    signal_name: str = "logvol_std²"
 
 
 def load_cohort(cfg: dict) -> Cohort:
@@ -94,10 +98,15 @@ def load_cohort(cfg: dict) -> Cohort:
     # Pass 2: raw values for EM fitting (floor lowered).
     uq_cfg = cfg.get("uncertainty", {})
     time_cfg = cfg["time"]
+    variance_key = uq_cfg.get("signal")
+    mean_key = uq_cfg.get("mean_signal")
+    signal_name = variance_key if variance_key is not None else "logvol_std²"
     raw_trajs = load_uncertainty_trajectories_from_h5(
         h5_path=cfg["paths"]["mengrowth_h5"],
         time_variable=time_cfg["variable"],
         estimator=uq_cfg.get("estimator", "mean_std"),
+        variance_key=variance_key,
+        mean_key=mean_key,
         exclude_patients=cfg["patients"].get("exclude", []),
         min_timepoints=cfg["patients"].get("min_timepoints", 2),
         skip_all_zero_volume=cfg["patients"].get("skip_all_zero_volume", True),
@@ -125,6 +134,8 @@ def load_cohort(cfg: dict) -> Cohort:
         h5_path=cfg["paths"]["mengrowth_h5"],
         time_variable=time_cfg["variable"],
         estimator=uq_cfg.get("estimator", "mean_std"),
+        variance_key=variance_key,
+        mean_key=mean_key,
         exclude_patients=cfg["patients"].get("exclude", []),
         min_timepoints=cfg["patients"].get("min_timepoints", 2),
         skip_all_zero_volume=cfg["patients"].get("skip_all_zero_volume", True),
@@ -138,13 +149,17 @@ def load_cohort(cfg: dict) -> Cohort:
     mixture_flat = np.concatenate(mixture_chunks)
 
     logger.info(
-        "Cohort: %d patients, %d total scans (max_logvol_std=%.2f); raw σ²_v range "
-        "[%.2e, %.2e]; pre-QC σ²_v range [%.2e, %.2e] (n=%d)",
+        "Cohort: %d patients, %d scans (signal=%s, max_logvol_std=%.2f); "
+        "σ²_v floored range [%.3e, %.3e] mean=%.3e median=%.3e; "
+        "pre-QC range [%.3e, %.3e] (n=%d)",
         len(trajectories),
         n_scans_total,
+        signal_name,
         cfg["patients"].get("max_logvol_std", float("nan")),
-        float(raw_flat.min()),
-        float(raw_flat.max()),
+        float(flat.min()),
+        float(flat.max()),
+        float(flat.mean()),
+        float(np.median(flat)),
         float(mixture_flat.min()),
         float(mixture_flat.max()),
         int(mixture_flat.size),
@@ -158,6 +173,7 @@ def load_cohort(cfg: dict) -> Cohort:
         patient_ids=pids,
         n_timepoints_per_patient=n_per_patient,
         n_scans_total=n_scans_total,
+        signal_name=signal_name,
     )
 
 
@@ -165,11 +181,21 @@ def write_cohort_meta(cohort: Cohort, path: Path | str) -> None:
     """Persist patient ids, scan counts, and empirical σ²_v as JSON."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    flat = cohort.empirical_sigma_v_sq_flat
     payload = {
+        "signal_name": cohort.signal_name,
         "patient_ids": cohort.patient_ids,
         "n_timepoints_per_patient": cohort.n_timepoints_per_patient,
         "n_scans_total": cohort.n_scans_total,
-        "empirical_sigma_v_sq_flat": cohort.empirical_sigma_v_sq_flat.tolist(),
+        "empirical_sigma_v_sq_stats": {
+            "mean": float(flat.mean()),
+            "median": float(np.median(flat)),
+            "min": float(flat.min()),
+            "max": float(flat.max()),
+            "q33": float(np.quantile(flat, 1.0 / 3.0)),
+            "q66": float(np.quantile(flat, 2.0 / 3.0)),
+        },
+        "empirical_sigma_v_sq_flat": flat.tolist(),
     }
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)

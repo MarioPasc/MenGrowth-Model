@@ -1,26 +1,25 @@
-# Main experiment: σ²_v propagation under a 2-component LogNormal mixture sweep.
-# Question: does propagating per-scan segmentation uncertainty into LMEHetero
-# shift calibration (IS@95, cov@95) toward where it should be, relative to a
-# homoscedastic LME, monotonically along a controlled distribution-shape sweep?
+# Confirmatory τ-sweep using men_mean_entropy as σ²_v.
+# Mirror of picasso.yaml: same n_seeds=20, n_restarts=3, n_tau=9, B=10000.
+# Differences vs picasso.yaml:
+#   uncertainty.signal      :  null              → men_mean_entropy
+#   sweep.saturation.ceil   :  50.0              → 5.0  (rescaled for entropy)
+#   paths.output_dir        :  main_experiment   → main_experiment_entropy
 
 experiment:
-  name: main_experiment_lognormal_pi_sweep
+  name: main_experiment_entropy
   seed: 42
 
 paths:
   mengrowth_h5: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/MenGrowth.h5
-  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_propagation_volume_prediction/main_experiment
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_propagation_volume_prediction/main_experiment_entropy
 
 time:
-  variable: ordinal              # change to days_from_baseline once dates available
+  variable: ordinal
   missing_date_strategy: mixed
 
 uncertainty:
   estimator: mean_std
-  # signal: name of /uncertainty/<key> to load directly as σ²_v (overrides
-  # estimator). null → legacy logvol_std² path. Examples: "men_mean_entropy",
-  # "logvol_var" (after enrich_h5_uncertainty), "logvol_mad_var".
-  signal: null
+  signal: men_mean_entropy
   floor_variance: 1.0e-3
 
 volume:
@@ -35,14 +34,15 @@ patients:
 sweep:
   primary:
     family: empirical_shift
-    # Either provide tau_grid explicitly (sorted, must include 0) or let
-    # saturation block derive endpoints anchored to the noise floor and
-    # the signal-variance ceiling.
     tau_grid: null
     n_tau: 9
     saturation:
-      sigma_v_sq_floor: 1.0e-3   # matches uncertainty.floor_variance
-      sigma_v_sq_ceil: 50.0       # ≈ 10× LME random-slope variance scale
+      # men_mean_entropy lives at ~0.5 (≈ 500× the logvol_var scale used in
+      # picasso.yaml). Ceil is set to ~10× the empirical mean for parity
+      # with the original logvol_var sweep, where 50.0 was ~10× the
+      # post-QC max.
+      sigma_v_sq_floor: 1.0e-3
+      sigma_v_sq_ceil: 5.0
       safety_margin: 2.0
   ablation:
     enabled: false
@@ -86,12 +86,10 @@ reporting:
 slurm:
   partition: gputhin
   constraint: cpu
-  # Per-task wall budget: each LME LOPO is ~5 min; 1 h is generous.
-  # The launcher's analysis job overrides this to 2 h.
   time: "0-01:00:00"
   cpus_per_task: 4
   mem: "16G"
   conda_env: growth
   repo_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
-  logs_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model/logs/main_experiment
+  logs_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model/logs/main_experiment_entropy
   array_throttle: 40

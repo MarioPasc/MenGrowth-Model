@@ -358,6 +358,8 @@ def load_uncertainty_trajectories_from_h5(
     *,
     time_variable: str = "ordinal",
     estimator: str = "mean_std",
+    variance_key: str | None = None,
+    mean_key: str | None = None,
     exclude_patients: list[str] | None = None,
     min_timepoints: int = 2,
     covariate_features: list[str] | None = None,
@@ -372,13 +374,29 @@ def load_uncertainty_trajectories_from_h5(
     Reads ``uncertainty/logvol_*`` and (optionally) ``metadata/study_date``,
     returns trajectories with ``observation_variance`` populated.
 
+    Two read modes:
+
+    1. **Legacy estimator mode** (``variance_key=None``): use the
+       ``estimator`` parameter to look up a (mean_key, std_key) pair in
+       ``_ESTIMATOR_MAP``; per-scan σ²_v is ``std**2``.
+    2. **Direct signal mode** (``variance_key`` is set): read
+       ``uncertainty/<variance_key>`` *as the variance itself* (no
+       squaring) and use ``mean_key`` (defaulting to ``logvol_mean``) for
+       the y values. This is the entry point for candidate uncertainty
+       signals like ``men_mean_entropy`` injected as σ²_v.
+
     Args:
         h5_path: Path to MenGrowth H5 file (v2.0 schema).
         time_variable: ``"ordinal"`` or ``"days_from_baseline"``.
-        estimator: Which (y, sigma^2) pair to use:
+        estimator: Which (y, sigma^2) pair to use (legacy mode only):
             ``"mean_std"`` -> logvol_mean, logvol_std^2;
             ``"median_mad"`` -> logvol_median, logvol_mad_scaled^2;
             ``"mask_mean"`` -> logvol_ensemble, logvol_std^2.
+        variance_key: If set, read ``uncertainty/<variance_key>`` directly
+            as σ²_v (no squaring). Overrides ``estimator``. NaN entries are
+            replaced by 0 before the ``floor_variance`` clip.
+        mean_key: Mean dataset name when ``variance_key`` is set. Defaults
+            to ``"logvol_mean"``. Ignored when ``variance_key is None``.
         exclude_patients: Patient IDs to exclude.
         min_timepoints: Minimum observations required per patient.
         covariate_features: Covariate names from metadata group.
@@ -396,7 +414,10 @@ def load_uncertainty_trajectories_from_h5(
             measurement noise. Filtering them prevents the inflated mean
             sigma_v from being absorbed into REML's sigma_n. After
             filtering, patients that fall below ``min_timepoints`` are also
-            dropped. Set to ``None`` (default) to disable.
+            dropped. Set to ``None`` (default) to disable. The QC always
+            uses ``uncertainty/logvol_std`` (the canonical segmentation-
+            quality signal), regardless of which ``variance_key`` drives
+            σ²_v.
 
     Returns:
         List of PatientTrajectory sorted by patient_id, with
@@ -422,7 +443,7 @@ def load_uncertainty_trajectories_from_h5(
         "mask_mean": ("logvol_ensemble", "logvol_std"),
     }
 
-    if estimator not in _ESTIMATOR_MAP:
+    if variance_key is None and estimator not in _ESTIMATOR_MAP:
         raise ValueError(
             f"Unknown estimator '{estimator}'. Must be one of {list(_ESTIMATOR_MAP.keys())}"
         )
@@ -443,11 +464,33 @@ def load_uncertainty_trajectories_from_h5(
             )
 
         # Load uncertainty data
-        y_key, s_key = _ESTIMATOR_MAP[estimator]
         uq = f["uncertainty"]
-        y_values = uq[y_key][:].astype(np.float64)
-        s_values = uq[s_key][:].astype(np.float64)
-        var_values = np.maximum(s_values**2, floor_variance)
+        if variance_key is not None:
+            y_key = mean_key or "logvol_mean"
+            if y_key not in uq:
+                raise ValueError(
+                    f"H5 uncertainty group missing mean dataset '{y_key}'"
+                )
+            if variance_key not in uq:
+                raise ValueError(
+                    f"H5 uncertainty group missing variance dataset '{variance_key}'. "
+                    f"Available: {sorted(uq.keys())}"
+                )
+            y_values = uq[y_key][:].astype(np.float64)
+            raw_var = np.nan_to_num(
+                uq[variance_key][:].astype(np.float64), nan=0.0, posinf=0.0, neginf=0.0
+            )
+            var_values = np.maximum(raw_var, floor_variance)
+            # QC always operates on logvol_std (segmentation-quality signal),
+            # regardless of which variance_key drives σ²_v.
+            s_values = (
+                uq["logvol_std"][:].astype(np.float64) if "logvol_std" in uq else None
+            )
+        else:
+            y_key, s_key = _ESTIMATOR_MAP[estimator]
+            y_values = uq[y_key][:].astype(np.float64)
+            s_values = uq[s_key][:].astype(np.float64)
+            var_values = np.maximum(s_values**2, floor_variance)
 
         timepoint_idx = f["timepoint_idx"][:].astype(int)
         patient_ids_raw = f["patient_ids"][:]
@@ -544,14 +587,21 @@ def load_uncertainty_trajectories_from_h5(
         # Applied to the raw s_values (pre-floor) so the floor cannot mask a
         # genuinely catastrophic ensemble disagreement.
         if max_logvol_std is not None:
-            kept = []
-            for sidx in scan_indices:
-                s_raw = float(s_values[sidx])
-                if s_raw > max_logvol_std:
-                    qc_dropped_scans.append((pid, int(timepoint_idx[sidx]), s_raw))
-                else:
-                    kept.append(sidx)
-            scan_indices = kept
+            if s_values is None:
+                logger.warning(
+                    "max_logvol_std=%s requested but uncertainty/logvol_std missing — "
+                    "skipping segmentation-quality QC",
+                    max_logvol_std,
+                )
+            else:
+                kept = []
+                for sidx in scan_indices:
+                    s_raw = float(s_values[sidx])
+                    if s_raw > max_logvol_std:
+                        qc_dropped_scans.append((pid, int(timepoint_idx[sidx]), s_raw))
+                    else:
+                        kept.append(sidx)
+                scan_indices = kept
 
         if len(scan_indices) < min_timepoints:
             qc_dropped_patients.append(pid)
@@ -608,9 +658,14 @@ def load_uncertainty_trajectories_from_h5(
         for pid in qc_dropped_patients:
             logger.info(f"  dropped patient (post-filter): {pid}")
 
+    source_desc = (
+        f"variance_key={variance_key}, mean_key={mean_key or 'logvol_mean'}"
+        if variance_key is not None
+        else f"estimator={estimator}"
+    )
     logger.info(
         f"Loaded {len(trajectories)} uncertainty trajectories from {h5_path.name} "
-        f"(time={time_variable}, estimator={estimator}, "
+        f"(time={time_variable}, {source_desc}, "
         f"excluded={len(exclude_patients_set)}, floor_var={floor_variance}, "
         f"max_logvol_std={max_logvol_std})"
     )

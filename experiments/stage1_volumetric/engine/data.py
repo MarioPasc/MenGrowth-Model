@@ -51,6 +51,8 @@ def load_trajectories(cfg: dict) -> list[PatientTrajectory]:
         h5_path=cfg["paths"]["mengrowth_h5"],
         time_variable=time_cfg["variable"],
         estimator=uq_cfg.get("estimator", "mean_std"),
+        variance_key=uq_cfg.get("signal"),
+        mean_key=uq_cfg.get("mean_signal"),
         exclude_patients=cfg["patients"].get("exclude", []),
         min_timepoints=cfg["patients"].get("min_timepoints", 2),
         covariate_features=covariate_features,
