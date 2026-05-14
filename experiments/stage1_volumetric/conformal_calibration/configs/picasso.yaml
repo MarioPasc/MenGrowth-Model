@@ -73,7 +73,8 @@ statistics:
 
 reporting:
   tertiles: sigma_v_sq
-  figures: [is_by_model_calibration, coverage_by_model_calibration, tertile_panel, width_vs_sigmav]
+  per_patient_seed: 0   # seed shown in the per-patient interval figure
+  figures: [is_by_model_calibration, coverage_by_model_calibration, tertile_panel, width_vs_sigmav, per_patient_intervals]
 
 slurm:
   partition: gputhin

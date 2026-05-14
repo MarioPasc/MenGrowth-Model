@@ -69,7 +69,8 @@ statistics:
 
 reporting:
   tertiles: sigma_v_sq
-  figures: [is_by_model_calibration, coverage_by_model_calibration, tertile_panel, width_vs_sigmav]
+  per_patient_seed: 0   # seed shown in the per-patient interval figure
+  figures: [is_by_model_calibration, coverage_by_model_calibration, tertile_panel, width_vs_sigmav, per_patient_intervals]
 
 slurm:
   partition: gputhin
@@ -79,5 +80,5 @@ slurm:
   mem: "32G"
   conda_env: growth
   repo_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/repos/MenGrowth-Model
-  logs_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/conformal_calibration/entropy_logs
+  logs_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/conformal_calibration/variance_logs
   array_throttle: 40

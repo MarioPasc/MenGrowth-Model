@@ -9,8 +9,15 @@ One task = one (base_model_key, seed) pair. The runner:
 4. Computes per-layer IS@95, coverage@95, mean width, R²_log, and CRPS.
 5. Stratifies by σ²_v tertile (pinned to the empirical distribution).
 6. Writes ``conformal_lopo_results.json``, ``marginal_metrics.json``,
-   ``tertile_metrics.json`` under
+   ``tertile_metrics.json``, ``per_patient_metrics.json`` under
    ``{output_root}/runs/{base_model}/seed_{NNN}/``.
+
+``per_patient_metrics.json`` is the long-form per-patient, per-layer record
+(one row per patient × calibration layer): point prediction, interval bounds,
+width, coverage flag, the Winkler interval score, the per-target σ²_v and its
+cohort-pinned tertile. It is the substrate for the per-patient interval figure
+(prediction interval + IS@95 per held-out patient) and the per-patient paired
+comparison table.
 """
 
 from __future__ import annotations
@@ -202,6 +209,62 @@ def _empirical_tertile_cuts(sigma_v_sq_flat: np.ndarray) -> tuple[float, float]:
     return float(np.quantile(sv, 1.0 / 3.0)), float(np.quantile(sv, 2.0 / 3.0))
 
 
+def _assign_tertile(sigma_v_sq: float, cuts: tuple[float, float]) -> str:
+    """Map a scalar σ²_v to its cohort-pinned tertile label.
+
+    Args:
+        sigma_v_sq: Per-target measurement variance.
+        cuts: ``(q33, q66)`` cohort-empirical tertile edges.
+
+    Returns:
+        One of ``"low"``, ``"mid"``, ``"high"``, or ``"nan"`` if ``sigma_v_sq``
+        is not finite.
+    """
+    q33, q66 = cuts
+    if not np.isfinite(sigma_v_sq):
+        return "nan"
+    if sigma_v_sq <= q33:
+        return "low"
+    if sigma_v_sq <= q66:
+        return "mid"
+    return "high"
+
+
+def _build_per_patient_rows(
+    results: ConformalLOPOResults,
+    spec: TaskSpec,
+    cuts: tuple[float, float],
+) -> list[dict[str, Any]]:
+    """Long-form per-patient, per-layer records for one (base_model, seed) task.
+
+    Wraps :meth:`ConformalLOPOResults.per_patient_table` (which already carries
+    the per-patient interval, width, coverage flag and Winkler interval score)
+    and tags every row with the task identity and the cohort-pinned σ²_v
+    tertile, so the analysis phase can build the per-patient comparison table
+    and the per-patient interval figure without re-deriving anything.
+
+    Args:
+        results: Completed nested-LOPO results for one task.
+        spec: Task identifier (base model + seed).
+        cuts: ``(q33, q66)`` cohort-empirical σ²_v tertile edges.
+
+    Returns:
+        One dict per (patient, calibration layer).
+    """
+    rows: list[dict[str, Any]] = []
+    for row in results.per_patient_table():
+        rows.append(
+            {
+                "base_model": spec.base_model,
+                "seed": spec.seed,
+                "model_name": results.model_name,
+                "tertile": _assign_tertile(float(row["sigma_v_sq_target"]), cuts),
+                **row,
+            }
+        )
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Task execution
 # ---------------------------------------------------------------------------
@@ -234,8 +297,15 @@ def run_task(
     lopo_path = task_dir / "conformal_lopo_results.json"
     marginal_path = task_dir / "marginal_metrics.json"
     tertile_path = task_dir / "tertile_metrics.json"
+    per_patient_path = task_dir / "per_patient_metrics.json"
 
-    if not force and lopo_path.exists() and marginal_path.exists() and tertile_path.exists():
+    if (
+        not force
+        and lopo_path.exists()
+        and marginal_path.exists()
+        and tertile_path.exists()
+        and per_patient_path.exists()
+    ):
         logger.info("CACHED task %s/%s", spec.model_dirname, spec.seed_dirname)
         with open(marginal_path) as fh:
             marginal = json.load(fh)
@@ -303,6 +373,24 @@ def run_task(
         json.dump(marginal, fh, indent=2)
     with open(tertile_path, "w") as fh:
         json.dump({"cuts_q33_q66": list(cuts), "strata_by_layer": tertile}, fh, indent=2)
+
+    # Long-form per-patient / per-layer records (intervals + IS@95 + σ²_v +
+    # tertile). The headline per-patient interval figure consumes this.
+    per_patient_rows = _build_per_patient_rows(results, spec, cuts)
+    with open(per_patient_path, "w") as fh:
+        json.dump(
+            {
+                "base_model": spec.base_model,
+                "seed": spec.seed,
+                "alpha": alpha,
+                "cuts_q33_q66": list(cuts),
+                "n_patients": len(results.fold_results),
+                "failed_folds": results.failed_folds,
+                "rows": per_patient_rows,
+            },
+            fh,
+            indent=2,
+        )
 
     # Log headline metrics.
     for layer in ("parametric", "jackknife_plus"):

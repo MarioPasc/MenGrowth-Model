@@ -172,6 +172,12 @@ def run_analysis(cfg: dict) -> None:
     df = aggregator.collect_runs(output_root)
     aggregator.write_table(df, output_root)
 
+    # Per-patient long-form table: one row per (base_model, seed, patient,
+    # layer) with interval bounds, width, coverage flag and IS@95. Substrate
+    # for the per-patient interval figure and patient-level comparisons.
+    per_patient_df = aggregator.collect_per_patient(output_root)
+    aggregator.write_per_patient_table(per_patient_df, output_root)
+
     # Load per-task LOPO JSON files keyed by "{base_model}/seed_{NNN}".
     results_by_task: dict[str, dict] = {}
     runs_dir = output_root / "runs"

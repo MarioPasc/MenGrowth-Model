@@ -371,3 +371,169 @@ class TestFiguresEmptyDf:
         cfg["reporting"]["figures"] = ["nonexistent_figure_name"]
         df = pd.DataFrame()
         make_all_figures(df, tmp_path, cfg)
+
+
+# ---------------------------------------------------------------------------
+# Per-patient persistence + aggregation + figure
+# ---------------------------------------------------------------------------
+
+
+def _write_synthetic_per_patient(
+    output_root: Path,
+    base_model: str,
+    seed: int,
+    *,
+    n_patients: int = 8,
+    layers: tuple[str, ...] = ("parametric", "jackknife_plus"),
+) -> Path:
+    """Write a synthetic ``per_patient_metrics.json`` under runs/{model}/seed_{NNN}/."""
+    run_dir = output_root / "runs" / base_model / f"seed_{seed:03d}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+    rows: list[dict] = []
+    for p in range(n_patients):
+        sv2 = float(rng.uniform(0.0, 1.0))
+        tertile = "low" if sv2 <= 1 / 3 else ("mid" if sv2 <= 2 / 3 else "high")
+        actual = float(rng.normal(0.0, 1.0))
+        pred = actual + float(rng.normal(0.0, 0.3))
+        for layer in layers:
+            half = 0.5 + 0.4 * (layer != "parametric")
+            lo, hi = pred - half, pred + half
+            covered = bool(lo <= actual <= hi)
+            width = hi - lo
+            penalty = (2.0 / 0.05) * (max(lo - actual, 0.0) + max(actual - hi, 0.0))
+            rows.append(
+                {
+                    "base_model": base_model,
+                    "seed": seed,
+                    "model_name": f"{base_model}-synthetic",
+                    "tertile": tertile,
+                    "patient_id": f"P{p:02d}",
+                    "layer": layer,
+                    "time": 3.0,
+                    "actual": actual,
+                    "pred_mean": pred,
+                    "pred_var": 0.09,
+                    "lower": lo,
+                    "upper": hi,
+                    "width": width,
+                    "covered": covered,
+                    "interval_score": width + penalty,
+                    "sigma_v_sq_target": sv2,
+                }
+            )
+    payload = {
+        "base_model": base_model,
+        "seed": seed,
+        "alpha": 0.05,
+        "cuts_q33_q66": [1 / 3, 2 / 3],
+        "n_patients": n_patients,
+        "failed_folds": [],
+        "rows": rows,
+    }
+    with open(run_dir / "per_patient_metrics.json", "w") as f:
+        json.dump(payload, f)
+    return run_dir
+
+
+class TestAssignTertile:
+    @pytest.mark.parametrize(
+        "sv2,expected",
+        [(0.05, "low"), (0.4, "mid"), (0.9, "high"), (float("nan"), "nan")],
+    )
+    def test_assign_tertile(self, sv2: float, expected: str) -> None:
+        from experiments.stage1_volumetric.conformal_calibration.modules.runner import (
+            _assign_tertile,
+        )
+
+        assert _assign_tertile(sv2, (1 / 3, 2 / 3)) == expected
+
+
+class TestCollectPerPatient:
+    def test_empty_returns_empty_typed_df(self, tmp_path: Path) -> None:
+        from experiments.stage1_volumetric.conformal_calibration.modules.aggregator import (
+            _PER_PATIENT_COLS,
+            collect_per_patient,
+        )
+
+        df = collect_per_patient(tmp_path)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 0
+        assert list(df.columns) == list(_PER_PATIENT_COLS)
+
+    def test_collects_all_tasks(self, tmp_path: Path) -> None:
+        from experiments.stage1_volumetric.conformal_calibration.modules.aggregator import (
+            collect_per_patient,
+        )
+
+        _write_synthetic_per_patient(tmp_path, "lme_homo", 0, n_patients=6)
+        _write_synthetic_per_patient(tmp_path, "lme_hetero", 0, n_patients=6)
+        _write_synthetic_per_patient(tmp_path, "lme_homo", 1, n_patients=6)
+
+        df = collect_per_patient(tmp_path)
+        # 3 tasks × 6 patients × 2 layers
+        assert len(df) == 3 * 6 * 2
+        assert set(df["base_model"].unique()) == {"lme_homo", "lme_hetero"}
+        assert set(df["seed"].unique()) == {0, 1}
+        # Required columns for the per-patient figure must be present.
+        for col in ("lower", "upper", "interval_score", "covered", "sigma_v_sq_target"):
+            assert col in df.columns
+
+    def test_write_per_patient_table_roundtrip(self, tmp_path: Path) -> None:
+        from experiments.stage1_volumetric.conformal_calibration.modules.aggregator import (
+            collect_per_patient,
+            write_per_patient_table,
+        )
+
+        _write_synthetic_per_patient(tmp_path, "lme_homo", 0, n_patients=5)
+        df = collect_per_patient(tmp_path)
+        path = write_per_patient_table(df, tmp_path)
+        assert path.exists()
+        reloaded = (
+            pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+        )
+        assert len(reloaded) == len(df)
+
+
+class TestPerPatientFigure:
+    def test_figure_no_table_does_not_raise(self, tmp_path: Path) -> None:
+        from experiments.stage1_volumetric.conformal_calibration.modules.figures import (
+            figure_per_patient_intervals,
+        )
+
+        figure_per_patient_intervals(tmp_path, tmp_path / "figures" / "ppi.png", cfg=None)
+        assert not (tmp_path / "figures" / "ppi.png").exists()
+
+    def test_figure_renders_from_synthetic_table(self, tmp_path: Path) -> None:
+        from experiments.stage1_volumetric.conformal_calibration.modules.aggregator import (
+            collect_per_patient,
+            write_per_patient_table,
+        )
+        from experiments.stage1_volumetric.conformal_calibration.modules.figures import (
+            figure_per_patient_intervals,
+        )
+
+        _write_synthetic_per_patient(tmp_path, "lme_homo", 0, n_patients=10)
+        _write_synthetic_per_patient(tmp_path, "lme_hetero", 0, n_patients=10)
+        write_per_patient_table(collect_per_patient(tmp_path), tmp_path)
+
+        out = tmp_path / "figures" / "per_patient_intervals.png"
+        figure_per_patient_intervals(tmp_path, out, cfg={"reporting": {"per_patient_seed": 0}})
+        assert out.exists()
+
+    def test_make_all_figures_includes_per_patient(self, tmp_path: Path) -> None:
+        from experiments.stage1_volumetric.conformal_calibration.modules.aggregator import (
+            collect_per_patient,
+            write_per_patient_table,
+        )
+        from experiments.stage1_volumetric.conformal_calibration.modules.figures import (
+            make_all_figures,
+        )
+
+        _write_synthetic_per_patient(tmp_path, "lme_homo", 0, n_patients=9)
+        write_per_patient_table(collect_per_patient(tmp_path), tmp_path)
+
+        cfg = _minimal_cfg(output_dir=str(tmp_path))
+        cfg["reporting"]["figures"] = ["per_patient_intervals", "width_vs_sigmav"]
+        make_all_figures(pd.DataFrame(), tmp_path, cfg)
+        assert (tmp_path / "figures" / "per_patient_intervals.png").exists()

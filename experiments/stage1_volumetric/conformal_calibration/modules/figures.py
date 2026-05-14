@@ -14,6 +14,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.colors import LogNorm, Normalize
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,54 @@ def _setup_axes(ax: plt.Axes, xlabel: str, ylabel: str, title: str) -> None:
     ax.set_ylabel(ylabel, fontsize=10)
     ax.set_title(title, fontsize=11)
     ax.grid(True, linestyle=":", alpha=0.5)
+
+
+def _load_per_patient_table(output_root: Path) -> pd.DataFrame:
+    """Load ``aggregated/per_patient_table.{parquet,csv}`` if present.
+
+    Args:
+        output_root: Root output directory of the experiment.
+
+    Returns:
+        Per-patient long-form table, or an empty frame if neither file exists.
+    """
+    agg_dir = output_root / "aggregated"
+    for ext, reader in ((".parquet", pd.read_parquet), (".csv", pd.read_csv)):
+        path = agg_dir / f"per_patient_table{ext}"
+        if path.exists():
+            try:
+                return reader(path)
+            except Exception as exc:  # pragma: no cover - depends on optional engine
+                logger.warning("Failed to read %s: %s", path, exc)
+    return pd.DataFrame()
+
+
+def _is_color_norm(is_values: np.ndarray) -> Normalize:
+    """Robust colour normalisation for per-patient IS@95.
+
+    A miss inflates the Winkler score by ``2/alpha`` (40× at α=0.05), so the
+    IS distribution is heavily right-skewed. A log norm clamped to the 2nd–98th
+    percentile keeps both the covered bulk and the misses legible; it falls
+    back to a linear norm when the finite IS range is degenerate.
+
+    Args:
+        is_values: Finite per-patient interval scores.
+
+    Returns:
+        A configured :class:`~matplotlib.colors.Normalize` instance.
+    """
+    finite = is_values[np.isfinite(is_values)]
+    if finite.size == 0:
+        return Normalize(vmin=0.0, vmax=1.0)
+    lo = float(np.percentile(finite, 2.0))
+    hi = float(np.percentile(finite, 98.0))
+    if lo > 0.0 and hi > lo:
+        return LogNorm(vmin=lo, vmax=hi)
+    vmin = float(finite.min())
+    vmax = float(finite.max())
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+    return Normalize(vmin=vmin, vmax=vmax)
 
 
 def _summary_by_model_layer(
@@ -326,22 +375,189 @@ def figure_pit_grid(output_root: Path, output_path: Path, n_bins: int = 10) -> N
 
 
 # ---------------------------------------------------------------------------
-# Figure 5: Mean CI width vs σ²_v (scatter, one point per patient × seed)
+# Figure 5: Per-patient prediction intervals + IS@95 (the headline figure)
+# ---------------------------------------------------------------------------
+
+
+def figure_per_patient_intervals(
+    output_root: Path,
+    output_path: Path,
+    cfg: dict | None = None,
+) -> None:
+    """Per-held-out-patient prediction interval, annotated with its IS@95.
+
+    For one representative seed, a ``(base_model × calibration layer)`` grid of
+    caterpillar panels. In each panel the held-out patients are sorted by their
+    per-target σ²_v; every patient contributes one vertical bar (the prediction
+    interval) coloured by its Winkler interval score, the base-model point
+    prediction (grey tick) and the observed value (white dot if the interval
+    covered it, red ✕ if it missed). A shared colour bar maps the per-patient
+    IS@95. This is the figure that "showcases the prediction interval for new
+    points per patient and the IS value given them".
+
+    Args:
+        output_root: Root output directory; reads
+            ``aggregated/per_patient_table.{parquet,csv}``.
+        output_path: Destination PNG path.
+        cfg: Full experiment config dict. ``reporting.per_patient_seed`` selects
+            the displayed seed; defaults to the smallest seed present.
+    """
+    df = _load_per_patient_table(output_root)
+    if df.empty:
+        logger.warning("No per-patient table; skipping figure_per_patient_intervals")
+        return
+
+    rep_seed: int | None = None
+    if cfg is not None:
+        rep_seed = cfg.get("reporting", {}).get("per_patient_seed", None)
+    if rep_seed is None:
+        rep_seed = int(df["seed"].min())
+    sub = df[df["seed"] == int(rep_seed)].copy()
+    if sub.empty:
+        logger.warning("Per-patient table has no seed %s; skipping", rep_seed)
+        return
+
+    models = [m for m in _BASE_MODELS if m in sub["base_model"].unique()]
+    layers = [l for l in _LAYERS if l in sub["layer"].unique()]
+    if not models or not layers:
+        return
+
+    norm = _is_color_norm(sub["interval_score"].to_numpy(dtype=np.float64))
+    cmap = plt.get_cmap("viridis")
+
+    n_rows, n_cols = len(models), len(layers)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(3.4 * n_cols, 2.9 * n_rows),
+        squeeze=False,
+        sharex=False,
+    )
+
+    for r, model in enumerate(models):
+        for c, layer in enumerate(layers):
+            ax = axes[r][c]
+            cell = sub[(sub["base_model"] == model) & (sub["layer"] == layer)].copy()
+            if cell.empty:
+                ax.set_axis_off()
+                continue
+            cell = cell.sort_values("sigma_v_sq_target", kind="stable")
+            x = np.arange(len(cell))
+            lower = cell["lower"].to_numpy(dtype=np.float64)
+            upper = cell["upper"].to_numpy(dtype=np.float64)
+            actual = cell["actual"].to_numpy(dtype=np.float64)
+            pred = cell["pred_mean"].to_numpy(dtype=np.float64)
+            iscore = cell["interval_score"].to_numpy(dtype=np.float64)
+            covered = cell["covered"].to_numpy(dtype=bool)
+
+            for xi, lo, hi, isv in zip(x, lower, upper, iscore, strict=True):
+                color = cmap(norm(isv)) if np.isfinite(isv) else "0.7"
+                ax.plot([xi, xi], [lo, hi], color=color, lw=2.6, solid_capstyle="round", zorder=1)
+            ax.scatter(x, pred, marker="_", color="0.35", s=26, zorder=2, linewidths=1.0)
+            ax.scatter(
+                x[covered],
+                actual[covered],
+                marker="o",
+                facecolor="white",
+                edgecolor="black",
+                s=20,
+                linewidths=0.8,
+                zorder=3,
+            )
+            ax.scatter(
+                x[~covered],
+                actual[~covered],
+                marker="x",
+                color="crimson",
+                s=34,
+                linewidths=1.6,
+                zorder=4,
+            )
+            cov = float(np.mean(covered)) if covered.size else float("nan")
+            mean_is = float(np.nanmean(iscore)) if iscore.size else float("nan")
+            ax.set_title(
+                f"{model} / {layer}\ncov={cov:.2f}  mean IS={mean_is:.2f}  n={len(cell)}",
+                fontsize=8,
+            )
+            ax.grid(True, linestyle=":", alpha=0.4)
+            ax.tick_params(labelsize=7)
+            if r == n_rows - 1:
+                ax.set_xlabel("held-out patient (σ²_v ascending)", fontsize=8)
+            if c == 0:
+                ax.set_ylabel("log-volume", fontsize=8)
+
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), shrink=0.75, pad=0.015)
+    cbar.set_label("per-patient IS@95 (lower is better)", fontsize=8)
+    cbar.ax.tick_params(labelsize=7)
+
+    fig.suptitle(
+        f"Per-patient prediction intervals & IS@95 — seed {rep_seed}",
+        fontsize=12,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Wrote %s", output_path)
+
+
+# ---------------------------------------------------------------------------
+# Figure 6: CI width vs σ²_v
 # ---------------------------------------------------------------------------
 
 
 def figure_width_vs_sigmav(
     df: pd.DataFrame,
     output_path: Path,
+    output_root: Path | None = None,
 ) -> None:
-    """Scatter: mean CI width vs σ²_v tertile, faceted by calibration layer.
+    """CI width vs σ²_v, faceted by calibration layer, coloured by base model.
 
-    Proxy plot using tertile aggregates when per-patient scatter is unavailable.
+    When the per-patient table is available (``output_root`` given and
+    ``aggregated/per_patient_table.*`` present), this is a true per-patient
+    scatter of interval width against the per-target σ²_v. Otherwise it falls
+    back to the tertile-aggregate proxy (median width per σ²_v tertile).
 
     Args:
-        df: Long-form aggregated table.
+        df: Long-form aggregated metric table (proxy fallback).
         output_path: Destination PNG path.
+        output_root: Root output directory; enables the per-patient scatter.
     """
+    pp = _load_per_patient_table(output_root) if output_root is not None else pd.DataFrame()
+
+    if not pp.empty:
+        layers = [l for l in _LAYERS if l in pp["layer"].unique()]
+        models = [m for m in _BASE_MODELS if m in pp["base_model"].unique()]
+        if not layers or not models:
+            return
+        fig, axes = plt.subplots(
+            1, len(layers), figsize=(4 * len(layers), 4), squeeze=False, sharey=False
+        )
+        for ax, layer in zip(axes[0], layers, strict=True):
+            for model in models:
+                cell = pp[(pp["layer"] == layer) & (pp["base_model"] == model)]
+                if cell.empty:
+                    continue
+                ax.scatter(
+                    cell["sigma_v_sq_target"].to_numpy(dtype=np.float64),
+                    cell["width"].to_numpy(dtype=np.float64),
+                    s=10,
+                    alpha=0.45,
+                    label=model,
+                    color=_MODEL_COLORS.get(model, "C0"),
+                )
+            _setup_axes(ax, "σ²_v (per target)", "CI width", f"{layer}")
+        axes[0][0].legend(title="Model", fontsize=7)
+        fig.suptitle("Per-patient CI width vs σ²_v", fontsize=12)
+        fig.tight_layout()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=300)
+        plt.close(fig)
+        logger.info("Wrote %s", output_path)
+        return
+
+    # --- proxy fallback: tertile aggregates ---
     layers = [l for l in _LAYERS if l in df["layer"].values]
     models = [m for m in _BASE_MODELS if m in df["base_model"].values]
     if not layers or not models:
@@ -381,7 +597,7 @@ def figure_width_vs_sigmav(
         _setup_axes(ax, "σ²_v tertile", "Mean CI width", f"{layer}")
 
     axes[0].legend(title="Model", fontsize=7)
-    fig.suptitle("Mean CI width vs σ²_v tertile", fontsize=12)
+    fig.suptitle("Mean CI width vs σ²_v tertile (proxy)", fontsize=12)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300)
@@ -398,7 +614,13 @@ _FIGURE_MAP = {
     "coverage_by_model_calibration": figure_coverage_by_model_calibration,
     "tertile_panel": figure_tertile_panel,
     "width_vs_sigmav": figure_width_vs_sigmav,
+    "per_patient_intervals": figure_per_patient_intervals,
+    "pit_grid": figure_pit_grid,
 }
+
+# Figures that consume the experiment's output tree directly (per-patient
+# table, per-task JSON) rather than the long-form aggregate frame.
+_OUTPUT_ROOT_FIGURES = {"pit_grid", "per_patient_intervals", "width_vs_sigmav"}
 
 
 def make_all_figures(df: pd.DataFrame, output_root: Path, cfg: dict) -> None:
@@ -424,6 +646,10 @@ def make_all_figures(df: pd.DataFrame, output_root: Path, cfg: dict) -> None:
         try:
             if name == "pit_grid":
                 figure_pit_grid(output_root, out)
+            elif name == "per_patient_intervals":
+                figure_per_patient_intervals(output_root, out, cfg)
+            elif name == "width_vs_sigmav":
+                figure_width_vs_sigmav(df, out, output_root=output_root)
             else:
                 fn(df, out)
         except Exception as exc:
