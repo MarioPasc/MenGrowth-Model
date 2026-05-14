@@ -7,7 +7,10 @@ Produces one figure per MenGrowth patient in the conformal_calibration cohort:
 
 Same style as ``real_patient_homo_vs_bma.py`` but (a) batched over every
 patient and (b) the slices are shown **whole** (full 192³ axial plane, no
-crop) at the per-scan z that maximises the MEN-mask area.
+crop) at a *single* axis-2 index anchored to the most clearly-segmented
+timepoint — so every panel shows the same anatomical plane. A timepoint
+whose MEN mask falls outside that plane (a separate lesion, or an unreliable
+segmentation) is annotated rather than shown contour-free.
 
 Segmentation-variance overlay (codepath, off by default)
 --------------------------------------------------------
@@ -350,16 +353,47 @@ def _make_patient_figure(
 
     with h5py.File(H5_PATH, "r") as f:
         scan_ids = f["scan_ids"][:].astype(str)
+        # Load every timepoint's full 3-D MEN mask first, so the display slice
+        # can be anchored consistently across the longitudinal series. The
+        # scans are co-registered (brain centroids agree across timepoints),
+        # so a single axis-2 index shows the same anatomical plane everywhere.
+        men_volumes = [np.isin(f["segs"][row, 0], MEN_LABELS) for row, _tp in shown]
+        vox_counts = [int(m.sum()) for m in men_volumes]
+
+        # Anchor the display plane to the axis-2 index covered by the most
+        # timepoints' MEN masks — the "maximum common plane". This is robust to
+        # multi-component masks (no centroid-in-a-gap artefact) and to a single
+        # drifted timepoint. A timepoint whose mask still does not reach that
+        # plane (a genuinely different structure / unreliable segmentation on a
+        # high-σ²_v scan) is annotated rather than shown contour-free. Ties
+        # break toward the plane nearest the timepoints' median peak-area slice.
+        z_present = np.array(
+            [m.any(axis=(0, 1)) for m in men_volumes], dtype=int
+        )  # [n_tp, D2]: which axis-2 slices each timepoint's mask occupies
+        coverage = z_present.sum(axis=0)  # [D2]: how many timepoints reach each z
+        if int(coverage.max()) > 0:
+            peak_z = [
+                int(np.argmax(m.sum(axis=(0, 1)))) for m, n in zip(men_volumes, vox_counts) if n > 0
+            ]
+            med = float(np.median(peak_z))
+            best = np.flatnonzero(coverage == coverage.max())
+            ref_cz = int(min(best, key=lambda z: abs(z - med)))
+        else:
+            ref_cz = men_volumes[0].shape[2] // 2
+
         t1c_slices: list[np.ndarray] = []
         men_masks: list[np.ndarray] = []
         var_maps: list[np.ndarray | None] = []
-        for row, _tp in shown:
-            seg = np.isin(f["segs"][row, 0], MEN_LABELS)
-            cz = int(np.argmax(seg.sum(axis=(0, 1)))) if seg.sum() > 0 else seg.shape[2] // 2
-            t1c_slices.append(np.asarray(f["images"][row, T1C_CHAN, :, :, cz], dtype=np.float32))
-            men_masks.append(seg[:, :, cz].astype(np.uint8))
+        mask_off_plane: list[bool] = []  # scan has MEN voxels, but none at ref_cz
+        for (row, _tp), men_vol, n_vox in zip(shown, men_volumes, vox_counts):
+            t1c_slices.append(
+                np.asarray(f["images"][row, T1C_CHAN, :, :, ref_cz], dtype=np.float32)
+            )
+            men_slice = men_vol[:, :, ref_cz].astype(np.uint8)
+            men_masks.append(men_slice)
+            mask_off_plane.append(n_vox > 0 and int(men_slice.sum()) == 0)
             var_vol = _variance_map(str(scan_ids[row]))
-            var_maps.append(var_vol[:, :, cz] if var_vol is not None else None)
+            var_maps.append(var_vol[:, :, ref_cz] if var_vol is not None else None)
 
     fig = plt.figure(figsize=(max(9.0, 2.7 * n), 6.6))
     has_var = any(v is not None for v in var_maps)
@@ -402,6 +436,26 @@ def _make_patient_figure(
             )
         if mask.sum() > 0:
             ax.contour(mask, levels=[0.5], colors=MEN_COLOR, linewidths=1.2, alpha=1.0)
+        elif mask_off_plane[k]:
+            # Scan has a MEN segmentation, but it lies outside the anchored
+            # display plane — a separate lesion, or (more often) an unreliable
+            # segmentation on a high-uncertainty scan. Flag it explicitly.
+            ax.text(
+                0.5,
+                0.035,
+                "MEN mass outside shown plane",
+                transform=ax.transAxes,
+                fontsize=7.5,
+                color=MEN_COLOR,
+                ha="center",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.2",
+                    "facecolor": "black",
+                    "alpha": 0.55,
+                    "edgecolor": "none",
+                },
+            )
         ax.set_xticks([])
         ax.set_yticks([])
         marker = r"  $\leftarrow t^\ast$" if int(tp) == int(t_star) else ""
