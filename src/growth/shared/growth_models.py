@@ -32,6 +32,15 @@ class PatientTrajectory:
             ``{"centroid_x": 0.5, "centroid_y": 0.3, "age": 65}``).
             Used by growth models as fixed effects (LME) or mean-function
             terms (GP). ``None`` means no covariates available.
+        observation_variance: Optional per-observation known measurement
+            variance, shape ``[n_i]``. Consumed by heteroscedastic models.
+        observation_ensemble: Optional per-observation ensemble of scalar
+            observations, shape ``[n_i, M]``, where M is the ensemble size
+            (e.g. the M=20 LoRA segmentation members). Column ``m`` is the
+            m-th realisation of the (scalar) observed value. Consumed by
+            ensemble-of-trajectories models (``EnsembleLMEGrowthModel``).
+            Only defined for scalar observations (D=1). ``None`` means no
+            ensemble is available.
     """
 
     patient_id: str
@@ -39,6 +48,7 @@ class PatientTrajectory:
     observations: np.ndarray
     covariates: dict[str, float] | None = None
     observation_variance: np.ndarray | None = None
+    observation_ensemble: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         import warnings
@@ -74,6 +84,24 @@ class PatientTrajectory:
                     f"this may singularise V_i — consider applying a floor",
                     stacklevel=2,
                 )
+        if self.observation_ensemble is not None:
+            self.observation_ensemble = np.asarray(self.observation_ensemble, dtype=np.float64)
+            assert self.observation_ensemble.ndim == 2, (
+                f"observation_ensemble must be 2-D [n_i, M], got shape "
+                f"{self.observation_ensemble.shape} for patient {self.patient_id}"
+            )
+            assert self.observation_ensemble.shape[0] == self.observations.shape[0], (
+                f"observation_ensemble leading dim {self.observation_ensemble.shape[0]} "
+                f"must match observations leading dim {self.observations.shape[0]} "
+                f"for patient {self.patient_id}"
+            )
+            assert self.observations.shape[1] == 1, (
+                f"observation_ensemble is only defined for scalar observations "
+                f"(D=1), got D={self.observations.shape[1]} for {self.patient_id}"
+            )
+            assert np.all(np.isfinite(self.observation_ensemble)), (
+                f"observation_ensemble contains non-finite values for {self.patient_id}"
+            )
 
     @property
     def n_timepoints(self) -> int:
@@ -84,6 +112,13 @@ class PatientTrajectory:
     def obs_dim(self) -> int:
         """Observation dimensionality (D)."""
         return self.observations.shape[1]
+
+    @property
+    def ensemble_size(self) -> int:
+        """Ensemble size M, or 0 if no ``observation_ensemble`` is attached."""
+        if self.observation_ensemble is None:
+            return 0
+        return self.observation_ensemble.shape[1]
 
 
 @dataclass

@@ -51,6 +51,7 @@ dependencies = [
     "numpy>=1.24.0",
     "scikit-learn>=1.3.0",
     "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
     "PyYAML>=6.0.0",
 
     # Required for SwinUNETR
@@ -62,6 +63,11 @@ dependencies = [
     # Growth prediction (GP hierarchy)
     "GPy>=1.13.0",
     "statsmodels>=0.14.0",
+
+    # Distribution-free interval calibration (conformal prediction).
+    # crepes provides conformal regressors and predictive systems operating
+    # directly on residual arrays (Bostrom, COPA 2022 / JMLR). numpy<2.0 safe.
+    "crepes>=0.7.0",
 
     # Scientific computing
     "scipy>=1.10.0",

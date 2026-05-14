@@ -468,9 +468,7 @@ def load_uncertainty_trajectories_from_h5(
         if variance_key is not None:
             y_key = mean_key or "logvol_mean"
             if y_key not in uq:
-                raise ValueError(
-                    f"H5 uncertainty group missing mean dataset '{y_key}'"
-                )
+                raise ValueError(f"H5 uncertainty group missing mean dataset '{y_key}'")
             if variance_key not in uq:
                 raise ValueError(
                     f"H5 uncertainty group missing variance dataset '{variance_key}'. "
@@ -483,9 +481,7 @@ def load_uncertainty_trajectories_from_h5(
             var_values = np.maximum(raw_var, floor_variance)
             # QC always operates on logvol_std (segmentation-quality signal),
             # regardless of which variance_key drives σ²_v.
-            s_values = (
-                uq["logvol_std"][:].astype(np.float64) if "logvol_std" in uq else None
-            )
+            s_values = uq["logvol_std"][:].astype(np.float64) if "logvol_std" in uq else None
         else:
             y_key, s_key = _ESTIMATOR_MAP[estimator]
             y_values = uq[y_key][:].astype(np.float64)
@@ -668,6 +664,309 @@ def load_uncertainty_trajectories_from_h5(
         f"(time={time_variable}, {source_desc}, "
         f"excluded={len(exclude_patients_set)}, floor_var={floor_variance}, "
         f"max_logvol_std={max_logvol_std})"
+    )
+    return trajectories
+
+
+def load_ensemble_trajectories_from_h5(
+    h5_path: str | Path,
+    *,
+    time_variable: str = "ordinal",
+    variance_key: str = "logvol_var",
+    mean_key: str = "logvol_mean",
+    scaling: str = "raw",
+    floor_variance: float = 1e-6,
+    exclude: list[str] | None = None,
+    min_timepoints: int = 2,
+    skip_all_zero_volume: bool = True,
+    max_logvol_std: float | None = None,
+    missing_date_strategy: str = "skip",
+) -> list[PatientTrajectory]:
+    """Load trajectories with per-observation ensemble members and variance.
+
+    Reads ``uncertainty/per_member_volumes`` (shape ``[N_scans, M]``) and
+    transforms each member with ``np.log1p``.  The ensemble-mean log-volume
+    (``uncertainty/<mean_key>``) is used as the shared ``observations`` target.
+    ``observation_variance`` is populated from ``uncertainty/<variance_key>``
+    (floored at ``floor_variance``), and ``observation_ensemble`` is populated
+    with the log1p-transformed per-member volumes of shape ``[n_i, M]``.
+
+    A consistency assertion verifies that
+    ``np.log1p(per_member_volumes).mean(axis=1)`` matches ``<mean_key>``
+    within ``atol=1e-3``.
+
+    All QC / time-handling logic is delegated to the private helpers already
+    used by :func:`load_uncertainty_trajectories_from_h5`.
+
+    Args:
+        h5_path: Path to MenGrowth H5 file (v2.0 schema).
+        time_variable: ``"ordinal"`` (timepoint index) or
+            ``"days_from_baseline"`` (derives from ``metadata/study_date``).
+        variance_key: Dataset name under ``uncertainty/`` to read as σ²_v
+            (no squaring applied). Defaults to ``"logvol_var"``.
+        mean_key: Dataset name under ``uncertainty/`` for the ensemble-mean
+            log-volume (the shared y target). Defaults to ``"logvol_mean"``.
+        scaling: How to put the ``variance_key`` signal on a measurement-
+            variance scale. ``"raw"`` injects it unchanged (correct when the
+            signal is already in (log-volume)² units, e.g. ``logvol_var``).
+            ``"mean_matched"`` multiplicatively rescales it so its cohort
+            mean equals the cohort mean of ``uncertainty/logvol_var``; this
+            is required when the signal is not in variance units (e.g. a
+            predictive-entropy signal such as ``men_mean_entropy``), and
+            preserves the signal's per-scan ranking while fixing its scale.
+        floor_variance: Minimum allowed ``observation_variance`` value.
+        exclude: Patient IDs to exclude.
+        min_timepoints: Minimum observations required per patient.
+        skip_all_zero_volume: Skip patients where all ``mean_key`` values
+            are zero (all-zero ensemble mean → empty tumor).
+        max_logvol_std: If set, drop scans whose ``uncertainty/logvol_std``
+            exceeds this threshold (segmentation-quality QC filter).
+            Patients that fall below ``min_timepoints`` after filtering are
+            also excluded.
+        missing_date_strategy: How to handle missing study dates when
+            ``time_variable="days_from_baseline"``: ``"skip"`` excludes
+            such patients; ``"mixed"`` falls back to ordinal for them.
+
+    Returns:
+        List of :class:`~growth.shared.growth_models.PatientTrajectory`
+        sorted by ``patient_id``, with ``observation_variance`` and
+        ``observation_ensemble`` populated.
+
+    Raises:
+        FileNotFoundError: If ``h5_path`` does not exist.
+        ValueError: If required H5 datasets are missing or the ensemble-mean
+            consistency check fails.
+    """
+    h5_path = Path(h5_path)
+    if not h5_path.exists():
+        raise FileNotFoundError(f"H5 file not found: {h5_path}")
+
+    exclude_set = set(exclude or [])
+    trajectories: list[PatientTrajectory] = []
+
+    with h5py.File(h5_path, "r") as f:
+        version = f.attrs.get("version", "unknown")
+        if isinstance(version, bytes):
+            version = version.decode()
+        if version != "2.0":
+            logger.warning("Expected H5 schema v2.0, got %s", version)
+
+        if "uncertainty" not in f:
+            raise ValueError(
+                f"H5 file {h5_path} has no 'uncertainty' group. "
+                "Run the LoRA-ensemble merge pipeline first."
+            )
+
+        uq = f["uncertainty"]
+
+        # Validate required datasets.
+        for ds_name in (mean_key, variance_key, "per_member_volumes"):
+            if ds_name not in uq:
+                raise ValueError(
+                    f"H5 uncertainty group missing dataset '{ds_name}'. "
+                    f"Available: {sorted(uq.keys())}"
+                )
+
+        logvol_mean_all = uq[mean_key][:].astype(np.float64)
+        raw_var = np.nan_to_num(
+            uq[variance_key][:].astype(np.float64), nan=0.0, posinf=0.0, neginf=0.0
+        )
+
+        # Optional mean-matching: rescale a non-variance-unit signal (e.g. a
+        # predictive-entropy signal) so its cohort mean equals the cohort mean
+        # of logvol_var (the empirical (log-volume)² scale). Multiplicative,
+        # so the per-scan ranking is preserved and only the scale is fixed.
+        if scaling not in ("raw", "mean_matched"):
+            raise ValueError(f"scaling must be 'raw' or 'mean_matched', got {scaling!r}")
+        if scaling == "mean_matched":
+            if "logvol_var" not in uq:
+                raise ValueError(
+                    "scaling='mean_matched' requires uncertainty/logvol_var as the "
+                    f"reference scale; available: {sorted(uq.keys())}"
+                )
+            reference = np.nan_to_num(
+                uq["logvol_var"][:].astype(np.float64), nan=0.0, posinf=0.0, neginf=0.0
+            )
+            valid = np.isfinite(raw_var) & (raw_var > 0.0)
+            signal_mean = float(np.mean(raw_var[valid])) if np.any(valid) else 0.0
+            reference_mean = float(np.mean(reference[reference > 0.0]))
+            if signal_mean <= 0.0:
+                raise ValueError(
+                    f"cannot mean-match signal '{variance_key}': its positive-value mean is zero"
+                )
+            scale_factor = reference_mean / signal_mean
+            raw_var = raw_var * scale_factor
+            logger.info(
+                "Mean-matched '%s' to logvol_var scale: factor=%.4g (signal mean %.4g -> %.4g)",
+                variance_key,
+                scale_factor,
+                signal_mean,
+                reference_mean,
+            )
+
+        var_all = np.maximum(raw_var, floor_variance)
+
+        pmv_all = uq["per_member_volumes"][:].astype(np.float64)  # [N_scans, M]
+        log_pmv_all = np.log1p(pmv_all)  # [N_scans, M]
+
+        # Consistency check: log1p(member volumes).mean(axis=1) ≈ logvol_mean.
+        computed_mean = log_pmv_all.mean(axis=1)
+        try:
+            np.testing.assert_allclose(
+                computed_mean,
+                logvol_mean_all,
+                atol=1e-3,
+                err_msg=(
+                    "np.log1p(per_member_volumes).mean(axis=1) does not match "
+                    f"uncertainty/{mean_key} (atol=1e-3). "
+                    "Check that the H5 ensemble group is consistent."
+                ),
+            )
+        except AssertionError as exc:
+            raise ValueError(str(exc)) from exc
+
+        # QC signal for max_logvol_std filter (always uses logvol_std).
+        s_values: np.ndarray | None = (
+            uq["logvol_std"][:].astype(np.float64) if "logvol_std" in uq else None
+        )
+
+        timepoint_idx = f["timepoint_idx"][:].astype(int)
+        patient_list = [
+            p.decode() if isinstance(p, bytes) else str(p)
+            for p in f["longitudinal"]["patient_list"][:]
+        ]
+        patient_offsets = f["longitudinal"]["patient_offsets"][:].astype(int)
+
+        # Time handling (reuses the same logic as load_uncertainty_trajectories_from_h5).
+        time_delta_days: np.ndarray | None = None
+        has_dates: list[bool] | None = None
+
+        if time_variable == "days_from_baseline":
+            if "time_delta_days" in f:
+                time_delta_days = f["time_delta_days"][:].astype(np.float64)
+            elif "metadata" in f and "time_delta_days" in f["metadata"]:
+                time_delta_days = f["metadata"]["time_delta_days"][:].astype(np.float64)
+            elif "metadata" in f and "study_date" in f["metadata"]:
+                study_dates = f["metadata"]["study_date"][:]
+                time_delta_days, has_dates = _compute_deltas_from_dates(
+                    study_dates, patient_offsets
+                )
+                n_with = sum(has_dates)
+                n_without = len(has_dates) - n_with
+                if n_without > 0:
+                    logger.info(
+                        "study_date: %d patients with dates, %d without (strategy=%s)",
+                        n_with,
+                        n_without,
+                        missing_date_strategy,
+                    )
+                    if missing_date_strategy == "fail":
+                        missing_pids = [patient_list[i] for i, ok in enumerate(has_dates) if not ok]
+                        raise ValueError(
+                            f"missing_date_strategy='fail' but {n_without} patients "
+                            f"lack dates: {missing_pids}"
+                        )
+            else:
+                logger.warning(
+                    "time_variable='days_from_baseline' but no date data found. "
+                    "Falling back to ordinal."
+                )
+                time_variable = "ordinal"
+
+    # Build per-patient trajectories using CSR offsets.
+    qc_dropped_scans: list[tuple[str, int, float]] = []
+    qc_dropped_patients: list[str] = []
+
+    for i, pid in enumerate(patient_list):
+        if pid in exclude_set:
+            continue
+
+        start = patient_offsets[i]
+        end = patient_offsets[i + 1]
+
+        if (end - start) < min_timepoints:
+            continue
+
+        scan_indices = list(range(start, end))
+
+        # Sort by timepoint index.
+        tp_indices = timepoint_idx[scan_indices]
+        sort_order = np.argsort(tp_indices)
+        scan_indices = [scan_indices[j] for j in sort_order]
+
+        # QC filter on logvol_std (segmentation quality).
+        if max_logvol_std is not None:
+            if s_values is None:
+                logger.warning(
+                    "max_logvol_std=%s requested but uncertainty/logvol_std missing — "
+                    "skipping segmentation-quality QC",
+                    max_logvol_std,
+                )
+            else:
+                kept = []
+                for sidx in scan_indices:
+                    s_raw = float(s_values[sidx])
+                    if s_raw > max_logvol_std:
+                        qc_dropped_scans.append((pid, int(timepoint_idx[sidx]), s_raw))
+                    else:
+                        kept.append(sidx)
+                scan_indices = kept
+
+        if len(scan_indices) < min_timepoints:
+            qc_dropped_patients.append(pid)
+            continue
+
+        # Time variable.
+        if time_variable == "days_from_baseline" and time_delta_days is not None:
+            if has_dates is not None and not has_dates[i]:
+                if missing_date_strategy == "skip":
+                    continue
+                # "mixed": fall back to ordinal for this patient.
+                times = timepoint_idx[scan_indices].astype(np.float64)
+            else:
+                times = time_delta_days[scan_indices]
+        else:
+            times = timepoint_idx[scan_indices].astype(np.float64)
+
+        obs = logvol_mean_all[scan_indices]
+        obs_var = var_all[scan_indices]
+        obs_ensemble = log_pmv_all[scan_indices, :]  # [n_i, M]
+
+        if skip_all_zero_volume and np.all(obs == 0.0):
+            logger.debug("Skipping %s: all ensemble-mean log-volumes are zero", pid)
+            continue
+
+        trajectories.append(
+            PatientTrajectory(
+                patient_id=pid,
+                times=times,
+                observations=obs,
+                covariates=None,
+                observation_variance=obs_var,
+                observation_ensemble=obs_ensemble,
+            )
+        )
+
+    trajectories.sort(key=lambda t: t.patient_id)
+
+    if max_logvol_std is not None:
+        logger.info(
+            "QC filter (max_logvol_std=%s): dropped %d scan(s) and %d patient(s)",
+            max_logvol_std,
+            len(qc_dropped_scans),
+            len(qc_dropped_patients),
+        )
+
+    logger.info(
+        "Loaded %d ensemble trajectories from %s "
+        "(time=%s, mean_key=%s, variance_key=%s, floor_var=%s, M=%d)",
+        len(trajectories),
+        h5_path.name,
+        time_variable,
+        mean_key,
+        variance_key,
+        floor_variance,
+        pmv_all.shape[1] if len(trajectories) > 0 else 0,
     )
     return trajectories
 
