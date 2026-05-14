@@ -9,7 +9,12 @@ pass — not M stochastic / dropout passes through one checkpoint.
 
 For each scan in the H5:
 
-1. Reads the 4-channel image tensor (channel order ``["t2f", "t1c", "t1n", "t2w"]``).
+1. Reads the 4-channel image tensor (channel order ``["t2f", "t1c", "t1n", "t2w"]``)
+   **through the exact validation transform of the original r32 inference**
+   (``get_h5_val_transforms``: z-score intensity normalisation, nonzero,
+   channel-wise). The H5 stores un-normalised intensities; feeding them raw —
+   as this script did before 2026-05-14 — makes BSF over-segment and diverge
+   from the volumes/segs already stored in the H5 (the "World A" inference).
 2. Calls ``predict_scan(images, save_per_member=True)``.
 3. Aggregates the per-voxel ``predictive_entropy`` + ``mutual_information``
    tensors on three masks:
@@ -84,13 +89,36 @@ def _scan_dirname(patient_id: str, timepoint_idx: int) -> str:
     return f"{patient_id}-{int(timepoint_idx):03d}"
 
 
-def _load_image(h5_path: Path, scan_idx: int) -> torch.Tensor:
-    """Return [1, 4, D, H, W] float32 tensor for one H5 row."""
+def _build_val_dataset(h5_path: Path, lora_cfg):
+    """Build a dataset over all H5 scans with the original inference's transform.
+
+    The original r32 inference (``engine/volume_extraction.py``) feeds the
+    ensemble images produced by ``BraTSDatasetH5`` + ``get_h5_val_transforms``
+    — i.e. z-score intensity normalisation (nonzero, channel-wise) at
+    ``inference_roi_size``. Reproducing that transform here is the fix for the
+    World-A / World-B segmentation divergence.
+
+    Args:
+        h5_path: Path to the MenGrowth H5.
+        lora_cfg: Loaded ensemble run config (must carry ``data.*``).
+
+    Returns:
+        A ``BraTSDatasetH5`` whose ``[k]["image"]`` is the transformed
+        ``[4, D, H, W]`` tensor for H5 scan index ``k``.
+    """
+    from growth.data.bratsmendata import BraTSDatasetH5
+    from growth.data.transforms import get_h5_val_transforms
+
+    roi_size = tuple(lora_cfg.data.get("inference_roi_size", lora_cfg.data.val_roi_size))
     with h5py.File(h5_path, "r") as f:
-        arr = f["images"][scan_idx][...]  # [4, D, H, W] float32
-    if arr.shape[0] != 4:
-        raise RuntimeError(f"unexpected channel count {arr.shape[0]} (expected 4)")
-    return torch.from_numpy(arr.astype(np.float32))[None]
+        n_scans = int(f.attrs.get("n_scans", f["images"].shape[0]))
+    logger.info("Validation transform roi_size=%s (z-score norm, nonzero, channel-wise)", roi_size)
+    return BraTSDatasetH5(
+        h5_path=h5_path,
+        indices=np.arange(n_scans, dtype=np.int64),
+        transform=get_h5_val_transforms(roi_size=roi_size),
+        compute_semantic=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
 
     keys_df = _read_h5_keys(args.h5)
     n_scans = len(keys_df)
+    dataset = _build_val_dataset(args.h5, cfg)
     shard = _parse_shard(args.shard)
     indices = _iter_scan_indices(args.scan_indices, n_scans, shard)
     logger.info("Re-inferring %d / %d scans (shard=%s)", len(indices), n_scans, shard)
@@ -303,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
         scan_id = _scan_dirname(meta["patient_id"], meta["timepoint_idx"])
         scan_dir = per_scan_root / scan_id
         try:
-            images = _load_image(args.h5, k)
+            images = dataset[k]["image"].unsqueeze(0)  # [1, 4, D, H, W], normalised
             t0 = time.time()
             pred = predictor.predict_scan(images, save_per_member=bool(args.save_member_masks))
             metrics = aggregate_metrics(pred)

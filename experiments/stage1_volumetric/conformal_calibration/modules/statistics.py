@@ -454,6 +454,7 @@ def run_statistics(
                                     "base_model": base_model,
                                     "layer_a": "parametric",
                                     "layer_b": layer_b,
+                                    "metric": metric,
                                     "seed": seed,
                                     **e,
                                 }
@@ -471,23 +472,120 @@ def run_statistics(
                         }
                     )
 
-    # BH-FDR per family
-    p_vals = np.array(
-        [r["p_value"] for r in bootstrap_rows if "p_value" in r],
-        dtype=np.float64,
-    )
-    rej, p_adj = bh_fdr(p_vals, q=bh_q) if len(p_vals) > 0 else (np.array([]), np.array([]))
-    for i, row in enumerate(r for r in bootstrap_rows if "p_value" in r):
-        row["p_adj_bh"] = float(p_adj[i]) if i < len(p_adj) else float("nan")
-        row["rejected_bh"] = bool(rej[i]) if i < len(rej) else False
+    # model_lift: within each calibration layer, every base model vs lme_homo,
+    # paired by seed. ``bootstrap_pair`` already supports two distinct results
+    # dicts sharing a layer; lme_homo is always the reference arm, so a positive
+    # ΔIS@95 / Δwidth means the comparison model is worse and a positive
+    # Δcoverage means it covers more. This is the headline model comparison
+    # (ensemble_bma / lme_hetero vs the homoscedastic LME baseline).
+    if conf_fam_cfg.get("model_lift", True):
+        by_seed: dict[int, dict[str, dict]] = {}
+        for task_key, task_results in results_by_task.items():
+            bm, seed_str = task_key.rsplit("/", 1)
+            try:
+                sd = int(seed_str.split("_")[-1])
+            except (ValueError, IndexError):
+                sd = -1
+            by_seed.setdefault(sd, {})[bm] = task_results
+
+        for sd, models in sorted(by_seed.items()):
+            ref = models.get("lme_homo")
+            if ref is None:
+                continue
+            ref_layers = set(ref.get("layers", []))
+            for bm, task_results in sorted(models.items()):
+                if bm == "lme_homo":
+                    continue
+                shared = sorted(ref_layers & set(task_results.get("layers", [])))
+                for layer in shared:
+                    br = bootstrap_pair(
+                        ref,
+                        task_results,
+                        layer,
+                        layer,
+                        cuts,
+                        n_bootstrap=n_bootstrap,
+                        confidence_level=confidence_level,
+                        seed=boot_seed + sd,
+                        alpha=alpha,
+                    )
+                    for metric, entries in br.items():
+                        if isinstance(entries, list):
+                            for e in entries:
+                                bootstrap_rows.append(
+                                    {
+                                        "family": "model_lift",
+                                        "base_model_a": "lme_homo",
+                                        "base_model_b": bm,
+                                        "layer": layer,
+                                        "metric": metric,
+                                        "seed": sd,
+                                        **e,
+                                    }
+                                )
+                    if stat_cfg.get("wilcoxon", True):
+                        is_a = _per_patient_is(ref.get("fold_results", []), layer, alpha=alpha)
+                        is_b = _per_patient_is(
+                            task_results.get("fold_results", []), layer, alpha=alpha
+                        )
+                        common = sorted(set(is_a) & set(is_b))
+                        if len(common) >= 3:
+                            delta = np.array([is_b[p] - is_a[p] for p in common], dtype=np.float64)
+                            sd_d = float(np.std(delta, ddof=1)) if len(delta) > 1 else 0.0
+                            if np.allclose(delta, 0.0):
+                                w_stat, w_p, d_eff = 0.0, 1.0, 0.0
+                            else:
+                                try:
+                                    _s, _p = wilcoxon(
+                                        delta, zero_method="wilcox", alternative="two-sided"
+                                    )
+                                    w_stat, w_p = float(_s), float(_p)
+                                except ValueError:
+                                    w_stat, w_p = float("nan"), float("nan")
+                                d_eff = float(np.mean(delta)) / sd_d if sd_d > 0 else float("nan")
+                            wilcoxon_rows.append(
+                                {
+                                    "family": "model_lift",
+                                    "base_model_a": "lme_homo",
+                                    "base_model_b": bm,
+                                    "layer": layer,
+                                    "seed": sd,
+                                    "n": len(common),
+                                    "wilcoxon_stat": w_stat,
+                                    "wilcoxon_p": w_p,
+                                    "cohens_d": d_eff,
+                                    "delta_mean": float(np.mean(delta)),
+                                    "delta_std": sd_d,
+                                }
+                            )
+
+    # BH-FDR applied independently within each comparison family: pooling
+    # families would inflate the test count and is not the hypothesis
+    # structure the families were designed around.
+    bh_summary: dict[str, dict[str, int]] = {}
+    families = sorted({r.get("family", "unknown") for r in bootstrap_rows})
+    for fam in families:
+        fam_rows = [r for r in bootstrap_rows if r.get("family") == fam and "p_value" in r]
+        if not fam_rows:
+            continue
+        p_vals = np.array([r["p_value"] for r in fam_rows], dtype=np.float64)
+        rej, p_adj = bh_fdr(p_vals, q=bh_q)
+        for i, row in enumerate(fam_rows):
+            row["p_adj_bh"] = float(p_adj[i])
+            row["rejected_bh"] = bool(rej[i])
+        bh_summary[fam] = {
+            "n_tests": int(len(p_vals)),
+            "n_rejected": int(np.sum(rej)),
+        }
 
     return {
         "bootstrap": bootstrap_rows,
         "wilcoxon": wilcoxon_rows,
         "bh_fdr": {
             "q": bh_q,
-            "n_tests": int(len(p_vals)),
-            "n_rejected": int(np.sum(rej)) if len(rej) > 0 else 0,
+            "per_family": bh_summary,
+            "n_tests": int(sum(v["n_tests"] for v in bh_summary.values())),
+            "n_rejected": int(sum(v["n_rejected"] for v in bh_summary.values())),
         },
     }
 

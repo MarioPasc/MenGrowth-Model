@@ -457,40 +457,145 @@ def compute_voxelwise_variance_slice(
     return std_map.astype(np.float32)
 
 
-def compute_predictive_entropy_slice(
+def binary_entropy(probs: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """Per-channel binary entropy of sigmoid probabilities.
+
+    For each channel independently: ``H = -(p log p + (1-p) log(1-p))``.
+    Maximum entropy is ``ln(2) ~= 0.693`` at ``p = 0.5``. Mirrors
+    ``engine.uncertainty_metrics.compute_binary_entropy`` so the plotting
+    layer reports the same predictive-entropy definition as the pipeline.
+
+    Args:
+        probs: Sigmoid probabilities, any shape. Values in ``[0, 1]``.
+        eps: Clamp applied before the logarithms for numerical stability.
+
+    Returns:
+        Binary entropy, same shape as ``probs``.
+    """
+    p = np.clip(probs.astype(np.float64), eps, 1.0 - eps)
+    return -(p * np.log(p) + (1.0 - p) * np.log(1.0 - p))
+
+
+def compute_voxelwise_entropy_slice(
     scan_dir: Path,
     slice_idx: int,
+    channel: int | None = 0,
     n_members: int = 20,
     axis: int = 2,
 ) -> np.ndarray:
-    """Predictive entropy from mean probability across members for one slice.
+    """Predictive binary entropy of the ensemble-mean probability for one slice.
 
-    H = -sum_c p_c * log(p_c + eps)
+    The predictive entropy is ``H[mean_m p_m]`` evaluated per channel with the
+    binary-entropy functional. The ensemble-mean probability is read from
+    ``ensemble_probs.nii.gz`` when available (the per-voxel mean is already
+    persisted for sample scans); otherwise it is recomputed by averaging the
+    per-member ``member_*_probs.nii.gz`` maps. The precomputed
+    ``entropy.nii.gz`` artefact is intentionally not used — it is stored as
+    all-NaN by the current inference pipeline.
+
+    Args:
+        scan_dir: Prediction directory for one scan.
+        slice_idx: Slice index along ``axis``.
+        channel: Channel to return (``0`` = BSF ch0 = meningioma mass). If
+            ``None``, the per-channel entropy is summed over all channels.
+        n_members: Number of ensemble members to look for in the fallback path.
+        axis: Axis to slice along (default 2 = axial).
+
+    Returns:
+        2D entropy map for the requested slice (float32). Returns a ``(1, 1)``
+        zero array when no probability maps are available.
     """
-    prob_sum = None
-    count = 0
-
-    for m_idx in range(n_members):
-        prob_path = scan_dir / f"member_{m_idx}_probs.nii.gz"
-        if not prob_path.exists():
-            continue
-        slc = load_nifti_slice(prob_path, slice_idx, axis)
+    ensemble_path = scan_dir / "ensemble_probs.nii.gz"
+    if ensemble_path.exists():
+        slc = load_nifti_slice(ensemble_path, slice_idx, axis)
         if slc.ndim == 2:
             slc = slc[..., np.newaxis]
+        entropy = binary_entropy(slc)
+    else:
+        prob_sum = None
+        count = 0
+        for m_idx in range(n_members):
+            prob_path = scan_dir / f"member_{m_idx}_probs.nii.gz"
+            if not prob_path.exists():
+                continue
+            slc = load_nifti_slice(prob_path, slice_idx, axis)
+            if slc.ndim == 2:
+                slc = slc[..., np.newaxis]
+            count += 1
+            if prob_sum is None:
+                prob_sum = slc.astype(np.float64)
+            else:
+                prob_sum += slc
+            del slc
+            gc.collect()
 
-        count += 1
-        if prob_sum is None:
-            prob_sum = slc.copy().astype(np.float64)
+        if count == 0 or prob_sum is None:
+            return np.zeros((1, 1), dtype=np.float32)
+        entropy = binary_entropy(prob_sum / count)
+
+    if entropy.ndim == 3:
+        if channel is None or channel >= entropy.shape[-1]:
+            entropy = entropy.sum(axis=-1)
         else:
-            prob_sum += slc
-
-        del slc
-        gc.collect()
-
-    if count == 0 or prob_sum is None:
-        return np.zeros((1, 1), dtype=np.float32)
-
-    mean_probs = prob_sum / count
-    eps = 1e-10
-    entropy = -(mean_probs * np.log(mean_probs + eps)).sum(axis=-1)
+            entropy = entropy[..., channel]
+    entropy = np.nan_to_num(entropy, nan=0.0, posinf=0.0, neginf=0.0)
     return entropy.astype(np.float32)
+
+
+def compute_scan_mean_entropy(
+    scan_dir: Path,
+    channel: int = 0,
+    n_members: int = 20,
+) -> float:
+    """Mean predictive binary entropy within the predicted meningioma mask.
+
+    Whole-volume scan-level summary of the qual1 voxelwise entropy map:
+    predictive binary entropy of the ensemble-mean probability on ``channel``
+    (BSF ch0 = meningioma), averaged over voxels inside
+    ``ensemble_mask.nii.gz``. The ensemble-mean probability comes from
+    ``ensemble_probs.nii.gz`` when present, otherwise the per-member maps are
+    averaged. Falls back to the whole-volume mean when no mask is available.
+
+    Args:
+        scan_dir: Prediction directory for one scan.
+        channel: Probability channel to evaluate (default 0 = meningioma).
+        n_members: Number of ensemble members for the fallback averaging path.
+
+    Returns:
+        Mean entropy in nats, or ``nan`` when no probability map is available.
+    """
+    import nibabel as nib
+
+    ensemble_path = scan_dir / "ensemble_probs.nii.gz"
+    if ensemble_path.exists():
+        probs = np.asarray(nib.load(str(ensemble_path)).dataobj, dtype=np.float64)
+    else:
+        prob_sum = None
+        count = 0
+        for m_idx in range(n_members):
+            prob_path = scan_dir / f"member_{m_idx}_probs.nii.gz"
+            if not prob_path.exists():
+                continue
+            arr = np.asarray(nib.load(str(prob_path)).dataobj, dtype=np.float64)
+            prob_sum = arr if prob_sum is None else prob_sum + arr
+            count += 1
+            del arr
+            gc.collect()
+        if count == 0 or prob_sum is None:
+            return float("nan")
+        probs = prob_sum / count
+
+    if probs.ndim == 4:
+        ch = channel if channel < probs.shape[-1] else 0
+        entropy = binary_entropy(probs[..., ch])
+    else:
+        entropy = binary_entropy(probs)
+
+    mask_path = scan_dir / "ensemble_mask.nii.gz"
+    if mask_path.exists():
+        mask = np.asarray(nib.load(str(mask_path)).dataobj) > 0.5
+        if mask.ndim == 4:
+            mask = mask[..., 0]
+        if mask.any():
+            return float(np.nan_to_num(entropy[mask]).mean())
+    return float(np.nan_to_num(entropy).mean())

@@ -46,10 +46,11 @@ _QUAL1_BRATS_CAPTION = (
     r"ground-truth-only voxels~(\textcolor{orange}{orange}), "
     r"ensemble-only voxels~(\textcolor{blue}{blue}), and "
     r"overlap~(\textcolor{green}{green}). "
-    r"\textbf{Right column:}~Inter-member predictive standard deviation "
-    r"$\sum_c \sqrt{\mathrm{Var}_{m}[p_{m,c}(\mathbf{x})]}$, "
-    r"displayed in the \texttt{plasma} colourmap with alpha proportional "
-    r"to normalised variance. Scale bar indicates 10\,mm.}"
+    r"\textbf{Right column:}~Predictive entropy of the ensemble-mean "
+    r"meningioma probability "
+    r"$\mathcal{H}[\bar{p}_{\mathrm{men}}(\mathbf{x})]$ (nats), "
+    r"displayed in the \texttt{magma} colourmap with alpha proportional "
+    r"to normalised entropy. Scale bar indicates 10\,mm.}"
 )
 
 _QUAL1_MENGROWTH_CAPTION = (
@@ -57,10 +58,13 @@ _QUAL1_MENGROWTH_CAPTION = (
     r"Qualitative segmentation results for a representative MenGrowth cohort scan "
     r"across LoRA ranks $r \in \{2, 4, 8, 16, 32\}$. "
     r"Each row corresponds to a LoRA rank; left column shows the ensemble "
-    r"segmentation overlay on T1c; right column shows the inter-member "
-    r"variance map. No ground-truth annotations are available for MenGrowth "
-    r"scans; only ensemble predictions are shown "
-    r"(\textcolor{blue}{blue}~=~ensemble).}"
+    r"segmentation overlay on T1c; right column shows the predictive entropy "
+    r"of the ensemble-mean meningioma probability "
+    r"$\mathcal{H}[\bar{p}_{\mathrm{men}}(\mathbf{x})]$ (nats). The scan is "
+    r"selected as the cohort minimum~(\emph{low\_uncertainty}) or "
+    r"maximum~(\emph{high\_uncertainty}) mean in-mask entropy. No ground-truth "
+    r"annotations are available for MenGrowth scans; only ensemble predictions "
+    r"are shown (\textcolor{blue}{blue}~=~ensemble).}"
 )
 
 FIGURE_CAPTIONS: dict[str, str] = {
@@ -105,10 +109,10 @@ FIGURE_CAPTIONS: dict[str, str] = {
     "qual1_best_brats_horizontal": _QUAL1_BRATS_CAPTION,
     "qual1_worst_brats": _QUAL1_BRATS_CAPTION,
     "qual1_worst_brats_horizontal": _QUAL1_BRATS_CAPTION,
-    "qual1_mengrowth_low_var": _QUAL1_MENGROWTH_CAPTION,
-    "qual1_mengrowth_low_var_horizontal": _QUAL1_MENGROWTH_CAPTION,
-    "qual1_mengrowth_high_var": _QUAL1_MENGROWTH_CAPTION,
-    "qual1_mengrowth_high_var_horizontal": _QUAL1_MENGROWTH_CAPTION,
+    "qual1_mengrowth_low_uncertainty": _QUAL1_MENGROWTH_CAPTION,
+    "qual1_mengrowth_low_uncertainty_horizontal": _QUAL1_MENGROWTH_CAPTION,
+    "qual1_mengrowth_high_uncertainty": _QUAL1_MENGROWTH_CAPTION,
+    "qual1_mengrowth_high_uncertainty_horizontal": _QUAL1_MENGROWTH_CAPTION,
     "qual2_clustered_heatmap": (
         r"\caption{"
         r"Per-scan Dice heatmap with hierarchical clustering. "

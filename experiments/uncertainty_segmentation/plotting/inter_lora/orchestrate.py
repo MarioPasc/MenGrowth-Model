@@ -269,6 +269,7 @@ def generate_inter_lora_report(
 
         # qual1 generates 8 variants (4 vertical + 4 horizontal)
         if name == "qual1_slice_grid":
+            uncertainty_cfg = config.get("uncertainty", {}) or {}
             for variant in QUAL1_VARIANTS:
                 variant_name = f"qual1_{variant}"
                 t0 = time.time()
@@ -277,6 +278,9 @@ def generate_inter_lora_report(
                     "brats_h5": config.get("brats_h5"),
                     "mengrowth_h5": config.get("mengrowth_h5"),
                     "force_recompute": force_recompute,
+                    "map_type": uncertainty_cfg.get("map_type", "entropy"),
+                    "entropy_channel": uncertainty_cfg.get("entropy_channel", 0),
+                    "n_members": uncertainty_cfg.get("n_members", 20),
                 }
                 try:
                     fig = module.plot(inter_data, fig_config)
@@ -351,9 +355,11 @@ def generate_inter_lora_report(
 
     # 9. Generate tables
     if "tables" not in skip:
+        table_config = dict(config.get("uncertainty", {}) or {})
+        table_config["force_recompute"] = force_recompute
         for name, module in INTER_LORA_TABLE_REGISTRY.items():
             try:
-                module.render(inter_data, {}, out_root / "tables")
+                module.render(inter_data, table_config, out_root / "tables")
                 logger.info("[OK]   %s", name)
             except Exception:
                 logger.exception("[FAIL] %s", name)

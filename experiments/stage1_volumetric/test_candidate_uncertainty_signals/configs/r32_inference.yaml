@@ -1,0 +1,130 @@
+experiment:
+  name: lora_ensemble_uncertainty
+  description: LoRA-Ensemble (M adapters, shared backbone) for uncertainty-aware segmentation
+  output_dir: /mnt/home/users/tic_163_uma/mpascual/execs/growth/uncertainty_segmentation_encoder_only
+paths:
+  checkpoint_dir: /mnt/home/users/tic_163_uma/mpascual/fscratch/checkpoints/BrainSegFounder_finetuned_BraTS
+  checkpoint_filename: finetuned_model_fold_0.pt
+  men_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_MEN.h5
+  mengrowth_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/MenGrowth.h5
+  gli_h5_file: /mnt/home/users/tic_163_uma/mpascual/fscratch/datasets/h5_growth_datasets/BraTS_GLI.h5
+ensemble:
+  n_members: 20
+  base_seed: 42
+lora:
+  rank: 32
+  alpha: 64
+  dropout: 0.1
+  target_stages:
+  - 1
+  - 2
+  - 3
+  - 4
+  target_module_types:
+  - qkv
+  - proj
+  - fc1
+  - fc2
+  use_dora: false
+training:
+  epochs: 100
+  batch_size: 2
+  val_batch_size: 1
+  learning_rate:
+    encoder: 0.0001
+    decoder: 0.0001
+    output_head: 0.001
+  weight_decay: 1.0e-05
+  early_stopping:
+    patience: 20
+    min_delta: 0.001
+    monitor: val_dice_mean
+  gradient_clip: 1.0
+  num_workers: 16
+  pin_memory: true
+  warmup_epochs: 5
+  use_amp: true
+  grad_accum_steps: 2
+  plateau_patience: 7
+  plateau_factor: 0.5
+  plateau_min_lr: 1.0e-07
+  decoder_type: original
+  freeze_decoder: true
+  train_output_head: true
+  out_channels: 3
+loss:
+  lambda_dice: 1.0
+  lambda_ce: 1.0
+data:
+  modalities:
+  - t2f
+  - t1c
+  - t1n
+  - t2w
+  roi_size:
+  - 128
+  - 128
+  - 128
+  val_roi_size:
+  - 128
+  - 128
+  - 128
+  inference_roi_size:
+  - 192
+  - 192
+  - 192
+  spacing:
+  - 1.0
+  - 1.0
+  - 1.0
+  train_split: lora_train
+  val_split: lora_val
+  test_split: test
+  augment_train: true
+  augment_gaussian_noise: true
+  augment_gaussian_smooth: true
+inference:
+  sw_roi_size:
+  - 128
+  - 128
+  - 128
+  sw_batch_size: 4
+  sw_overlap: 0.5
+  sw_mode: gaussian
+  min_component_voxels: 64
+  save_ensemble_masks: true
+  save_per_member_masks_all: false
+  save_per_member_probs_all: true
+  save_sample_predictions: true
+  n_sample_scans: 5
+  sample_scan_strategy: spread
+evaluation:
+  compute_ece: true
+  ece_n_bins: 15
+  compute_brier: true
+  compute_reliability: true
+  n_bootstrap: 10000
+  alpha: 0.05
+  subsample_voxels_step: 8
+  compute_ensemble_k_dice: true
+  compute_threshold_sensitivity: true
+  threshold_grid:
+  - 0.05
+  - 0.1
+  - 0.15
+  - 0.2
+  - 0.25
+  - 0.3
+  - 0.35
+  - 0.4
+  - 0.45
+  - 0.5
+  - 0.55
+  - 0.6
+  - 0.65
+  - 0.7
+  - 0.75
+  - 0.8
+  - 0.85
+  - 0.9
+  - 0.95

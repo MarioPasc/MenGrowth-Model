@@ -1,0 +1,87 @@
+# Entropy production config, run locally on the full 56-patient cohort.
+# Mirrors picasso.yaml (signal = men_mean_entropy, scaling = mean_matched) but
+# with the local H5 path and max_logvol_std: null so the cohort matches the
+# variance-ablation run already in conformal_calibration/ (56 patients, 173 scans).
+# Only lme_hetero's parametric layer consumes the scalar signal, so this run is
+# the entropy counterpart of the variance ablation; lme_homo / ensemble_bma are
+# unchanged.
+
+experiment:
+  name: conformal_calibration_entropy_local
+  seed: 42
+
+paths:
+  mengrowth_h5: /media/mpascual/MeningD2/MENINGIOMAS/MENGROWTH/050526/h5_format/MenGrowth.h5
+  output_dir: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/uncertainty_propagation_volume_prediction/conformal_calibration/entropy_local
+
+time:
+  variable: ordinal
+  missing_date_strategy: skip
+
+uncertainty:
+  estimator: mean_std
+  signal: men_mean_entropy
+  mean_signal: logvol_mean
+  scaling: mean_matched
+  floor_variance: 1.0e-6
+
+volume:
+  transform: identity
+
+patients:
+  exclude: [MenGrowth-0028]
+  min_timepoints: 2
+  skip_all_zero_volume: true
+  max_logvol_std: null
+  max_patients: null
+
+ensemble:
+  n_members: 20
+
+models:
+  lme_homo: true
+  lme_hetero: true
+  ensemble_bma: true
+
+conformal:
+  alpha: 0.05
+  layers: [parametric, jackknife_plus, cqr_norm, cqr_proper]
+  jackknife_plus:
+    score: signed
+  cqr_proper:
+    calib_fraction: 0.33
+    quantile_solver: highs
+
+evaluation:
+  protocol: last_from_rest
+  n_seeds: 20
+  n_restarts: 5
+
+statistics:
+  bootstrap:
+    n_samples: 10000
+    confidence_level: 0.95
+    seed: 12345
+  wilcoxon: true
+  cohens_d: true
+  bh_fdr_q: 0.05
+  comparison_families:
+    calibration_lift: true
+    model_lift: true
+    headline: true
+
+reporting:
+  tertiles: sigma_v_sq
+  per_patient_seed: 0
+  figures: [is_by_model_calibration, coverage_by_model_calibration, tertile_panel, width_vs_sigmav, per_patient_intervals]
+
+slurm:
+  partition: gputhin
+  constraint: cpu
+  time: "0-02:00:00"
+  cpus_per_task: 4
+  mem: "32G"
+  conda_env: growth
+  repo_dir: /home/mpascual/research/code/MenGrowth-Model
+  logs_dir: /home/mpascual/research/code/MenGrowth-Model/logs/conformal_calibration_entropy_local
+  array_throttle: 4

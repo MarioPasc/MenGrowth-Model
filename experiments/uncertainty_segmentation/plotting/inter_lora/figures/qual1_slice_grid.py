@@ -3,17 +3,22 @@
 Generates 8 figure variants (vertical + horizontal for each):
   (i)   best_brats / best_brats_horizontal
   (ii)  worst_brats / worst_brats_horizontal
-  (iii) mengrowth_low_var / mengrowth_low_var_horizontal
-  (iv)  mengrowth_high_var / mengrowth_high_var_horizontal
+  (iii) mengrowth_low_uncertainty / mengrowth_low_uncertainty_horizontal
+  (iv)  mengrowth_high_uncertainty / mengrowth_high_uncertainty_horizontal
 
 BraTS variants merge GT+Ensemble into a single overlay column:
   - Ground truth only → orange
   - Ensemble only → blue
   - Overlap → green (solid)
 
-Variance column overlays the uncertainty map on the T1n MRI background:
-  - Where variance > 0 → magma colormap overlay (boundary disagreement)
-  - Where variance = 0 → transparent (raw MRI anatomy visible)
+The uncertainty column overlays a voxelwise uncertainty map on the T1n MRI
+background. The map is selected via ``map_type`` in the figure config:
+  - ``entropy`` (default) → predictive binary entropy of the ensemble-mean
+    probability on the meningioma channel, ``H[mean_m p_m]``; magma colormap.
+  - ``variance`` → inter-member predictive standard deviation summed over
+    channels, ``sum_c sqrt(Var_m[p_m,c])``; plasma colormap.
+In both cases the overlay alpha is proportional to the normalised value, so
+low-uncertainty regions stay transparent (raw MRI anatomy visible).
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ from matplotlib.figure import Figure
 from ..io_layer import (
     InterLoraData,
     RankRun,
+    compute_scan_mean_entropy,
+    compute_voxelwise_entropy_slice,
     compute_voxelwise_variance_slice,
     find_largest_tumor_slice,
     get_nifti_affine,
@@ -46,9 +53,15 @@ logger = logging.getLogger(__name__)
 
 _OVERLAY_ALPHA: float = 0.7
 _VARIANCE_CMAP: str = "plasma_r"
+_ENTROPY_CMAP: str = "magma"
 _REF_CMAP: str = "gray"
 _PAD_VOXELS: int = 15
 _T1N_CHANNEL: int = 2
+
+# Default uncertainty-map settings (overridable via figure config).
+_DEFAULT_MAP_TYPE: str = "entropy"
+_DEFAULT_ENTROPY_CHANNEL: int = 0  # BSF ch0 = meningioma mass (TC)
+_DEFAULT_N_MEMBERS: int = 20
 
 # Merged overlay colours
 _GT_ONLY_RGBA: tuple[float, ...] = (0.9, 0.5, 0.0, _OVERLAY_ALPHA)  # orange
@@ -61,19 +74,54 @@ _ENSEMBLE_RGBA: tuple[float, ...] = (0.0, 0.45, 0.7, _OVERLAY_ALPHA)
 # Variant definitions
 VARIANT_BEST_BRATS = "best_brats"
 VARIANT_WORST_BRATS = "worst_brats"
-VARIANT_MENGROWTH_LOW_VAR = "mengrowth_low_var"
-VARIANT_MENGROWTH_HIGH_VAR = "mengrowth_high_var"
+VARIANT_MENGROWTH_LOW_UNC = "mengrowth_low_uncertainty"
+VARIANT_MENGROWTH_HIGH_UNC = "mengrowth_high_uncertainty"
 
 _VERTICAL_VARIANTS: list[str] = [
     VARIANT_BEST_BRATS,
     VARIANT_WORST_BRATS,
-    VARIANT_MENGROWTH_LOW_VAR,
-    VARIANT_MENGROWTH_HIGH_VAR,
+    VARIANT_MENGROWTH_LOW_UNC,
+    VARIANT_MENGROWTH_HIGH_UNC,
 ]
 
 _HORIZONTAL_VARIANTS: list[str] = [f"{v}_horizontal" for v in _VERTICAL_VARIANTS]
 
 ALL_VARIANTS: list[str] = _VERTICAL_VARIANTS + _HORIZONTAL_VARIANTS
+
+
+def _uncertainty_label(map_type: str) -> str:
+    """Human-readable column/row label for the uncertainty map."""
+    return "Entropy" if map_type == "entropy" else "Variance"
+
+
+def _uncertainty_cmap(map_type: str) -> str:
+    """Matplotlib colormap name for the uncertainty map."""
+    return _ENTROPY_CMAP if map_type == "entropy" else _VARIANCE_CMAP
+
+
+def _uncertainty_cbar_label(map_type: str) -> str:
+    """Colorbar label (LaTeX mathtext) for the uncertainty map."""
+    if map_type == "entropy":
+        return r"$\mathcal{H}\left[\bar{p}_{\mathrm{men}}(\mathbf{x})\right]$ (nats)"
+    return r"$\sum_c \sqrt{\mathrm{Var}_m\left[p_{m,c}(\mathbf{x})\right]}$"
+
+
+def _compute_uncertainty_slice(
+    scan_dir: Path,
+    slice_idx: int,
+    map_type: str,
+    entropy_channel: int,
+    n_members: int,
+) -> np.ndarray:
+    """Dispatch to the entropy or variance voxelwise slice estimator."""
+    if map_type == "entropy":
+        return compute_voxelwise_entropy_slice(
+            scan_dir,
+            slice_idx,
+            channel=entropy_channel,
+            n_members=n_members,
+        )
+    return compute_voxelwise_variance_slice(scan_dir, slice_idx, n_members=n_members)
 
 
 def _is_horizontal(variant: str) -> bool:
@@ -298,12 +346,22 @@ def _load_cache(path: Path) -> dict | None:
 def _select_scan(
     data: InterLoraData,
     variant: str,
+    *,
+    map_type: str = _DEFAULT_MAP_TYPE,
+    entropy_channel: int = _DEFAULT_ENTROPY_CHANNEL,
+    n_members: int = _DEFAULT_N_MEMBERS,
     force_recompute: bool = False,
 ) -> tuple[str | None, bool]:
-    """Select scan_id for a variant. Returns (scan_id, has_gt)."""
+    """Select scan_id for a variant. Returns (scan_id, has_gt).
+
+    The MenGrowth ``low/high_uncertainty`` variants pick the scans with the
+    minimum / maximum value of the *displayed* uncertainty metric: mean
+    predictive entropy when ``map_type == "entropy"``, or inter-member tumour
+    volume standard deviation when ``map_type == "variance"``.
+    """
     base = _base_variant(variant)
 
-    cache_p = _cache_path(data.out_root, base, "selected_scan")
+    cache_p = _cache_path(data.out_root, base, f"selected_scan_{map_type}")
     if not force_recompute:
         cached = _load_cache(cache_p)
         if cached is not None:
@@ -332,7 +390,7 @@ def _select_scan(
         scan_id = str(brats.loc[idx, "scan_id"])
         has_gt = True
 
-    elif base in (VARIANT_MENGROWTH_LOW_VAR, VARIANT_MENGROWTH_HIGH_VAR):
+    elif base in (VARIANT_MENGROWTH_LOW_UNC, VARIANT_MENGROWTH_HIGH_UNC):
         ref_run = _find_rank_with_predictions(data, "MenGrowth")
         if ref_run is None:
             return None, False
@@ -340,58 +398,97 @@ def _select_scan(
         if not valid_scans:
             return None, False
 
-        var_cache = _cache_path(data.out_root, "mengrowth", "member_stats")
-        if not force_recompute:
-            stats_cached = _load_cache(var_cache)
-        else:
-            stats_cached = None
+        stats_cache = _cache_path(data.out_root, "mengrowth", f"{map_type}_select_stats")
+        stats_cached = None if force_recompute else _load_cache(stats_cache)
 
         if stats_cached is not None:
             scan_stats = stats_cached
         else:
-            import nibabel as nib
-
-            scan_stats: dict[str, dict[str, float]] = {}
-            sample_members = [0, 4, 9, 14, 19]
-            for sid in sorted(valid_scans):
-                scan_dir = _find_scan_dir(ref_run, sid)
-                if scan_dir is None:
-                    continue
-                member_vols: list[float] = []
-                for m in sample_members:
-                    mask_path = scan_dir / f"member_{m}_mask.nii.gz"
-                    if not mask_path.exists():
-                        continue
-                    img = nib.load(str(mask_path))
-                    vol = float((img.get_fdata() > 0.5).sum())
-                    member_vols.append(vol)
-                    del img
-                if len(member_vols) >= 2:
-                    scan_stats[sid] = {
-                        "std": float(np.std(member_vols)),
-                        "mean_vol": float(np.mean(member_vols)),
-                    }
-                gc.collect()
-            _save_cache(var_cache, scan_stats)
+            scan_stats = _mengrowth_selection_stats(
+                ref_run,
+                sorted(valid_scans),
+                map_type=map_type,
+                entropy_channel=entropy_channel,
+                n_members=n_members,
+            )
+            _save_cache(stats_cache, scan_stats)
 
         if not scan_stats:
             scan_id = sorted(valid_scans)[0]
-        else:
-            # Prefer larger tumors: filter to above-median volume, then pick by variance
-            volumes = [s["mean_vol"] for s in scan_stats.values()]
-            vol_median = float(np.median(volumes))
-            large_scans = {k: v for k, v in scan_stats.items() if v["mean_vol"] >= vol_median}
-            pool = large_scans if large_scans else scan_stats
-            if base == VARIANT_MENGROWTH_LOW_VAR:
-                scan_id = min(pool, key=lambda k: pool[k]["std"])
+        elif map_type == "entropy":
+            # Pick by the displayed metric directly (mean predictive entropy).
+            if base == VARIANT_MENGROWTH_LOW_UNC:
+                scan_id = min(scan_stats, key=lambda k: scan_stats[k]["score"])
             else:
-                scan_id = max(pool, key=lambda k: pool[k]["std"])
+                scan_id = max(scan_stats, key=lambda k: scan_stats[k]["score"])
+        else:
+            # Variance mode: prefer larger tumours, then pick by volume std.
+            volumes = [s.get("mean_vol", 0.0) for s in scan_stats.values()]
+            vol_median = float(np.median(volumes)) if volumes else 0.0
+            large = {k: v for k, v in scan_stats.items() if v.get("mean_vol", 0.0) >= vol_median}
+            pool = large if large else scan_stats
+            if base == VARIANT_MENGROWTH_LOW_UNC:
+                scan_id = min(pool, key=lambda k: pool[k]["score"])
+            else:
+                scan_id = max(pool, key=lambda k: pool[k]["score"])
         has_gt = False
 
     if scan_id is not None:
         _save_cache(cache_p, {"scan_id": scan_id, "has_gt": has_gt})
 
     return scan_id, has_gt
+
+
+def _mengrowth_selection_stats(
+    ref_run: RankRun,
+    scan_ids: list[str],
+    *,
+    map_type: str,
+    entropy_channel: int,
+    n_members: int,
+) -> dict[str, dict[str, float]]:
+    """Per-scan selection statistic for the MenGrowth uncertainty variants.
+
+    For ``entropy`` mode ``score`` is the mean predictive entropy inside the
+    predicted meningioma mask. For ``variance`` mode ``score`` is the
+    inter-member tumour volume standard deviation, with ``mean_vol`` kept so
+    larger tumours can be preferred.
+    """
+    scan_stats: dict[str, dict[str, float]] = {}
+
+    if map_type == "entropy":
+        for sid in scan_ids:
+            scan_dir = _find_scan_dir(ref_run, sid)
+            if scan_dir is None:
+                continue
+            score = compute_scan_mean_entropy(scan_dir, entropy_channel, n_members)
+            if np.isfinite(score):
+                scan_stats[sid] = {"score": float(score)}
+            gc.collect()
+        return scan_stats
+
+    import nibabel as nib
+
+    sample_members = [0, 4, 9, 14, 19]
+    for sid in scan_ids:
+        scan_dir = _find_scan_dir(ref_run, sid)
+        if scan_dir is None:
+            continue
+        member_vols: list[float] = []
+        for m in sample_members:
+            mask_path = scan_dir / f"member_{m}_mask.nii.gz"
+            if not mask_path.exists():
+                continue
+            img = nib.load(str(mask_path))
+            member_vols.append(float((img.get_fdata() > 0.5).sum()))
+            del img
+        if len(member_vols) >= 2:
+            scan_stats[sid] = {
+                "score": float(np.std(member_vols)),
+                "mean_vol": float(np.mean(member_vols)),
+            }
+        gc.collect()
+    return scan_stats
 
 
 def _render_variant(
@@ -402,15 +499,22 @@ def _render_variant(
     brats_h5: Path | None = None,
     mengrowth_h5: Path | None = None,
     slice_idx: int | None = None,
+    *,
+    map_type: str = _DEFAULT_MAP_TYPE,
+    entropy_channel: int = _DEFAULT_ENTROPY_CHANNEL,
+    n_members: int = _DEFAULT_N_MEMBERS,
 ) -> Figure | None:
     """Render one variant's grid figure.
 
-    BraTS: columns = Overlay (merged GT+Ens) | Variance-on-MRI
-    MenGrowth: columns = Ensemble | Variance-on-MRI
-    Horizontal layout transposes rows↔columns.
+    BraTS: columns = Overlay (merged GT+Ens) | Uncertainty-on-MRI
+    MenGrowth: columns = Ensemble | Uncertainty-on-MRI
+    The uncertainty column shows predictive entropy or inter-member variance
+    depending on ``map_type``. Horizontal layout transposes rows↔columns.
     """
     horizontal = _is_horizontal(variant)
     is_brats = _is_brats(variant)
+    unc_label = _uncertainty_label(map_type)
+    unc_cmap_name = _uncertainty_cmap(map_type)
 
     runs_with_preds: list[RankRun] = []
     for run in data.ranks:
@@ -425,7 +529,7 @@ def _render_variant(
         return None
 
     n_ranks = len(runs_with_preds)
-    n_content_cols = 2  # overlay/ensemble + variance
+    n_content_cols = 2  # overlay/ensemble + uncertainty
 
     if slice_idx is None:
         ref_run = runs_with_preds[-1]
@@ -469,7 +573,7 @@ def _render_variant(
 
     if horizontal:
         col_labels = [f"$r={r.rank}$" for r in runs_with_preds]
-        row_labels = ["Overlay", "Variance"] if is_brats else ["Ensemble", "Variance"]
+        row_labels = ["Overlay", unc_label] if is_brats else ["Ensemble", unc_label]
         n_grid_rows = n_content_cols
         n_grid_cols = n_ranks
 
@@ -489,7 +593,7 @@ def _render_variant(
             axes = axes[np.newaxis, :]
     else:
         row_labels_list = [f"$r={r.rank}$" for r in runs_with_preds]
-        col_labels = ["Overlay", "Variance"] if is_brats else ["Ensemble", "Variance"]
+        col_labels = ["Overlay", unc_label] if is_brats else ["Ensemble", unc_label]
         n_grid_rows = n_ranks
         n_grid_cols = n_content_cols
 
@@ -543,18 +647,18 @@ def _render_variant(
             )
 
     affine_found = None
-    # Two-pass variance: collect data first, render after computing global vmax
-    var_deferred: list[tuple[plt.Axes, np.ndarray]] = []
+    # Two-pass uncertainty: collect data first, render after computing global vmax
+    unc_deferred: list[tuple[plt.Axes, np.ndarray]] = []
 
     for rank_i, run in enumerate(runs_with_preds):
         scan_dir = _find_scan_dir(run, scan_id)
 
         if horizontal:
             overlay_ax = axes[0, rank_i]
-            var_ax = axes[1, rank_i]
+            unc_ax = axes[1, rank_i]
         else:
             overlay_ax = axes[rank_i, 0]
-            var_ax = axes[rank_i, 1]
+            unc_ax = axes[rank_i, 1]
 
         # Overlay / Ensemble column (T1n background + coloured mask)
         if t1n_cropped is not None:
@@ -582,36 +686,42 @@ def _render_variant(
                 if affine_found is None:
                     affine_found = get_nifti_affine(mask_path)
 
-        # Variance column — show T1n background now, overlay variance later
+        # Uncertainty column — show T1n background now, overlay the map later
         if t1n_cropped is not None:
-            var_ax.imshow(t1n_cropped, cmap=_REF_CMAP, vmin=p1, vmax=p99)
+            unc_ax.imshow(t1n_cropped, cmap=_REF_CMAP, vmin=p1, vmax=p99)
 
         if scan_dir is not None:
             try:
-                var_map = compute_voxelwise_variance_slice(scan_dir, slice_idx)
-                var_cropped = var_map[crop_r, crop_c]
-                var_deferred.append((var_ax, var_cropped))
+                unc_map = _compute_uncertainty_slice(
+                    scan_dir,
+                    slice_idx,
+                    map_type,
+                    entropy_channel,
+                    n_members,
+                )
+                unc_cropped = unc_map[crop_r, crop_c]
+                unc_deferred.append((unc_ax, unc_cropped))
             except (MemoryError, Exception):
-                logger.warning("Variance failed for %s r=%d", scan_id, run.rank)
+                logger.warning("%s map failed for %s r=%d", unc_label, scan_id, run.rank)
                 gc.collect()
 
         gc.collect()
 
-    # Deferred variance rendering: proportional alpha so low-variance regions
-    # stay transparent (MRI visible) rather than darkened.
-    var_vmax = 1.0
-    if var_deferred:
-        all_var = np.concatenate([v.ravel() for _, v in var_deferred])
-        var_vmax = float(np.percentile(all_var, 99))
-        if var_vmax < 1e-12:
-            var_vmax = 1.0
-        var_cmap = plt.cm.get_cmap(_VARIANCE_CMAP)
-        for var_ax, var_cropped in var_deferred:
-            var_norm = np.clip(var_cropped / var_vmax, 0.0, 1.0)
-            var_rgba = var_cmap(var_norm)
-            # Alpha scales with normalized variance: 0 → transparent, 1 → full overlay
-            var_rgba[..., 3] = var_norm * _OVERLAY_ALPHA
-            var_ax.imshow(var_rgba)
+    # Deferred uncertainty rendering: proportional alpha so low-uncertainty
+    # regions stay transparent (MRI visible) rather than darkened.
+    unc_vmax = 1.0
+    if unc_deferred:
+        all_unc = np.concatenate([v.ravel() for _, v in unc_deferred])
+        unc_vmax = float(np.percentile(all_unc, 99))
+        if unc_vmax < 1e-12:
+            unc_vmax = 1.0
+        unc_cmap = plt.cm.get_cmap(unc_cmap_name)
+        for unc_ax, unc_cropped in unc_deferred:
+            unc_norm = np.clip(unc_cropped / unc_vmax, 0.0, 1.0)
+            unc_rgba = unc_cmap(unc_norm)
+            # Alpha scales with normalized uncertainty: 0 → transparent, 1 → full overlay
+            unc_rgba[..., 3] = unc_norm * _OVERLAY_ALPHA
+            unc_ax.imshow(unc_rgba)
 
     # Scale bar on first cell
     if affine_found is not None:
@@ -634,14 +744,14 @@ def _render_variant(
             bbox_to_anchor=(0.5, 1.02),
         )
 
-    # Variance colorbar at the BOTTOM, spanning full figure width
-    if var_deferred:
+    # Uncertainty colorbar at the BOTTOM, spanning full figure width
+    if unc_deferred:
         from matplotlib.colors import Normalize as MplNormalize
 
         fig.canvas.draw()
         sm = plt.cm.ScalarMappable(
-            cmap=_VARIANCE_CMAP,
-            norm=MplNormalize(vmin=0, vmax=var_vmax),
+            cmap=unc_cmap_name,
+            norm=MplNormalize(vmin=0, vmax=unc_vmax),
         )
         sm.set_array([])
 
@@ -653,7 +763,7 @@ def _render_variant(
             cbar_y = left_ax.y0 - 0.07
             cbar_h = 0.025
         else:
-            # Span BOTH columns (Overlay + Variance)
+            # Span BOTH columns (Overlay + Uncertainty)
             left_pos = axes[-1, 0].get_position()
             right_pos = axes[-1, -1].get_position()
             cbar_x = left_pos.x0
@@ -665,7 +775,7 @@ def _render_variant(
         ax_cbar = fig.add_axes([cbar_x, cbar_y, cbar_w, cbar_h])
         cbar = fig.colorbar(sm, cax=ax_cbar, orientation="horizontal")
         cbar.set_label(
-            r"$\sum_c \sqrt{\mathrm{Var}_m\left[p_{m,c}(\mathbf{x})\right]}$",
+            _uncertainty_cbar_label(map_type),
             fontsize=cbar_fontsize,
             color="white",
         )
@@ -683,6 +793,11 @@ def plot(data: InterLoraData, config: dict[str, Any]) -> Figure | None:
         variant: One of ALL_VARIANTS (default: best_brats).
         brats_h5: Path to BraTS-MEN H5 for T1n background.
         mengrowth_h5: Path to MenGrowth H5 for T1n background.
+        map_type: ``"entropy"`` (default) or ``"variance"`` — selects the
+            voxelwise uncertainty map shown in the right-hand column.
+        entropy_channel: Probability channel for entropy mode (default 0 =
+            BSF ch0 = meningioma mass).
+        n_members: Ensemble size used when averaging per-member probabilities.
         force_recompute: If True, ignore cached scan selections.
 
     Returns:
@@ -695,12 +810,32 @@ def plot(data: InterLoraData, config: dict[str, Any]) -> Figure | None:
     mengrowth_h5 = Path(mengrowth_h5_str) if mengrowth_h5_str else None
     force_recompute = config.get("force_recompute", False)
 
-    scan_id, has_gt = _select_scan(data, variant, force_recompute=force_recompute)
+    map_type = str(config.get("map_type", _DEFAULT_MAP_TYPE)).lower()
+    if map_type not in ("entropy", "variance"):
+        logger.warning("qual1: unknown map_type=%r — falling back to entropy", map_type)
+        map_type = "entropy"
+    entropy_channel = int(config.get("entropy_channel", _DEFAULT_ENTROPY_CHANNEL))
+    n_members = int(config.get("n_members", _DEFAULT_N_MEMBERS))
+
+    scan_id, has_gt = _select_scan(
+        data,
+        variant,
+        map_type=map_type,
+        entropy_channel=entropy_channel,
+        n_members=n_members,
+        force_recompute=force_recompute,
+    )
     if scan_id is None:
         logger.warning("qual1 %s: no suitable scan found", variant)
         return None
 
-    logger.info("qual1 %s: scan_id=%s, has_gt=%s", variant, scan_id, has_gt)
+    logger.info(
+        "qual1 %s: scan_id=%s, has_gt=%s, map_type=%s",
+        variant,
+        scan_id,
+        has_gt,
+        map_type,
+    )
     return _render_variant(
         data,
         scan_id,
@@ -708,4 +843,7 @@ def plot(data: InterLoraData, config: dict[str, Any]) -> Figure | None:
         variant,
         brats_h5=brats_h5,
         mengrowth_h5=mengrowth_h5,
+        map_type=map_type,
+        entropy_channel=entropy_channel,
+        n_members=n_members,
     )

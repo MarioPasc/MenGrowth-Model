@@ -2,13 +2,21 @@
 
 One row per adapter configuration (Frozen BSF + each LoRA rank).
 Columns: Adapter, ΔW Params, Total Params, Dice (mean ± 95% CI),
-Mean Variance (mean ± 95% CI).
+Mean Variance (mean ± 95% CI), Mean Entropy (mean ± 95% CI).
+
+``Mean Variance`` is the inter-member variance of per-scan Dice (a
+performance-dispersion metric). ``Mean Entropy`` is the predictive binary
+entropy of the ensemble-mean meningioma probability, averaged over voxels
+inside the predicted meningioma mask and then over the test scans that have
+per-voxel uncertainty saved (``ensemble_probs.nii.gz``; optionally the
+per-member maps when ``tab3_max_member_scans`` > 0).
 
 Produces CSV, Markdown, and LaTeX (booktabs) renditions.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from pathlib import Path
@@ -19,12 +27,20 @@ import pandas as pd
 from experiments.uncertainty_segmentation.plotting.inter_lora.io_layer import (
     InterLoraData,
     RankRun,
+    compute_scan_mean_entropy,
 )
 
 logger = logging.getLogger(__name__)
 
 _LORA_PARAMS_PER_RANK: int = 23_040
 _BASE_MODEL_PARAMS: int = 62_191_941
+
+# Default uncertainty settings (overridable via the render() config).
+_DEFAULT_ENTROPY_CHANNEL: int = 0  # BSF ch0 = meningioma mass (TC)
+_DEFAULT_N_MEMBERS: int = 20
+# Scans whose only per-voxel artefact is the per-member probability stack are
+# expensive to read. 0 = skip them entirely (use only ensemble_probs.nii.gz).
+_DEFAULT_MAX_MEMBER_SCANS: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -110,26 +126,103 @@ def _compute_mean_variance(
     return _bootstrap_ci(scan_mean_var)
 
 
+def _iter_scan_dirs(predictions_dir: Path):
+    """Yield per-scan prediction directories under predictions/ (incl. brats_men_test/)."""
+    seen: set[str] = set()
+    for parent in (predictions_dir, predictions_dir / "brats_men_test"):
+        if not parent.is_dir():
+            continue
+        for d in sorted(parent.iterdir()):
+            if d.is_dir() and d.name not in seen:
+                seen.add(d.name)
+                yield d
+
+
+def _compute_mean_entropy(
+    rank_run: RankRun,
+    *,
+    entropy_channel: int,
+    n_members: int,
+    max_member_scans: int,
+) -> tuple[float, float, float]:
+    """Mean predictive entropy with bootstrap 95% CI for one rank.
+
+    Per scan: mean predictive binary entropy of the ensemble-mean meningioma
+    probability inside the predicted meningioma mask
+    (``io_layer.compute_scan_mean_entropy``). Scans exposing
+    ``ensemble_probs.nii.gz`` are always included; scans whose only per-voxel
+    artefact is the per-member probability stack are included up to
+    ``max_member_scans`` (deterministic sorted order) to bound runtime.
+
+    Returns:
+        ``(mean, ci_lo, ci_hi)`` across the contributing scans, or
+        ``(nan, nan, nan)`` when fewer than two scans contribute.
+    """
+    if rank_run.predictions_dir is None:
+        return float("nan"), float("nan"), float("nan")
+
+    values: list[float] = []
+    member_budget = max(0, int(max_member_scans))
+    for scan_dir in _iter_scan_dirs(rank_run.predictions_dir):
+        has_ensemble = (scan_dir / "ensemble_probs.nii.gz").exists()
+        has_members = (scan_dir / "member_0_probs.nii.gz").exists()
+        if not has_ensemble:
+            if not (has_members and member_budget > 0):
+                continue
+            member_budget -= 1
+        score = compute_scan_mean_entropy(scan_dir, entropy_channel, n_members)
+        if np.isfinite(score):
+            values.append(float(score))
+
+    if len(values) < 2:
+        return float("nan"), float("nan"), float("nan")
+    return _bootstrap_ci(np.asarray(values, dtype=np.float64))
+
+
 # ---------------------------------------------------------------------------
 # Table assembly
 # ---------------------------------------------------------------------------
 
 
-def _build_table(data: InterLoraData) -> pd.DataFrame:
-    """Build the complexity table with one row per configuration."""
+def _load_entropy_cache(cache_path: Path | None) -> dict[str, list[float]]:
+    """Load the per-rank Mean Entropy cache, or an empty dict."""
+    if cache_path is None or not cache_path.exists():
+        return {}
+    try:
+        with open(cache_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _build_table(
+    data: InterLoraData,
+    *,
+    entropy_channel: int = _DEFAULT_ENTROPY_CHANNEL,
+    n_members: int = _DEFAULT_N_MEMBERS,
+    max_member_scans: int = _DEFAULT_MAX_MEMBER_SCANS,
+    cache_path: Path | None = None,
+    force_recompute: bool = False,
+) -> pd.DataFrame:
+    """Build the complexity table with one row per configuration.
+
+    The ``Mean Entropy`` column is computed per rank via
+    ``_compute_mean_entropy`` and cached to ``cache_path`` (keyed by rank) so
+    repeated report runs do not re-read the prediction NIfTIs.
+    """
     cm = data.compiled_metrics
 
     rows: list[dict] = []
+    entropy_cache = {} if force_recompute else _load_entropy_cache(cache_path)
+    cache_dirty = False
 
     # Frozen BSF row (rank = 0)
     bsf_dice = cm[(cm["rank"] == 0) & (cm["label"] == "mean")]
     if not bsf_dice.empty:
         r = bsf_dice.iloc[0]
         dice_str = _fmt_pm(r["dice_mean"], r["dice_ci_lo"], r["dice_ci_hi"])
-        dice_str_plain = dice_str
     else:
         dice_str = "—"
-        dice_str_plain = "—"
 
     rows.append(
         {
@@ -142,6 +235,8 @@ def _build_table(data: InterLoraData) -> pd.DataFrame:
             "total_params_fmt": _fmt_params(_BASE_MODEL_PARAMS),
             "dice": dice_str,
             "mean_var": "0.0000 ± 0.0000",
+            # Frozen BSF is a single deterministic model — no ensemble entropy.
+            "mean_entropy": "—",
         }
     )
 
@@ -163,6 +258,20 @@ def _build_table(data: InterLoraData) -> pd.DataFrame:
         mv_mean, mv_lo, mv_hi = _compute_mean_variance(rr)
         var_str = _fmt_pm_sci(mv_mean, mv_lo, mv_hi)
 
+        rank_key = str(rr.rank)
+        if rank_key in entropy_cache:
+            me_mean, me_lo, me_hi = entropy_cache[rank_key]
+        else:
+            me_mean, me_lo, me_hi = _compute_mean_entropy(
+                rr,
+                entropy_channel=entropy_channel,
+                n_members=n_members,
+                max_member_scans=max_member_scans,
+            )
+            entropy_cache[rank_key] = [me_mean, me_lo, me_hi]
+            cache_dirty = True
+        ent_str = _fmt_pm_sci(me_mean, me_lo, me_hi)
+
         rows.append(
             {
                 "rank_val": rr.rank,
@@ -174,8 +283,14 @@ def _build_table(data: InterLoraData) -> pd.DataFrame:
                 "total_params_fmt": _fmt_params(total),
                 "dice": dice_str,
                 "mean_var": var_str,
+                "mean_entropy": ent_str,
             }
         )
+
+    if cache_dirty and cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(entropy_cache, f, indent=2)
 
     df = pd.DataFrame(rows).sort_values("rank_val").reset_index(drop=True)
     return df
@@ -187,8 +302,15 @@ def _build_table(data: InterLoraData) -> pd.DataFrame:
 
 
 def _write_csv(table: pd.DataFrame, out_dir: Path) -> None:
-    out = table[["adapter", "delta_w", "total_params", "dice", "mean_var"]].copy()
-    out.columns = ["Adapter", "Delta_W_Params", "Total_Params", "Dice", "Mean_Variance"]
+    out = table[["adapter", "delta_w", "total_params", "dice", "mean_var", "mean_entropy"]].copy()
+    out.columns = [
+        "Adapter",
+        "Delta_W_Params",
+        "Total_Params",
+        "Dice",
+        "Mean_Dice_Variance",
+        "Mean_Entropy",
+    ]
     path = out_dir / "tab3_model_complexity.csv"
     out.to_csv(path, index=False)
     logger.info("CSV written to %s", path)
@@ -196,13 +318,15 @@ def _write_csv(table: pd.DataFrame, out_dir: Path) -> None:
 
 def _write_markdown(table: pd.DataFrame, out_dir: Path) -> None:
     lines = [
-        "| Adapter | ΔW Params | Total Params | Dice (mean ± 95% CI) | Mean Variance (mean ± 95% CI) |",
-        "|:--------|----------:|-------------:|:--------------------:|:-----------------------------:|",
+        "| Adapter | ΔW Params | Total Params | Dice (mean ± 95% CI) "
+        "| Mean Dice Variance (mean ± 95% CI) | Mean Entropy (mean ± 95% CI) |",
+        "|:--------|----------:|-------------:|:--------------------:"
+        "|:---------------------------------:|:----------------------------:|",
     ]
     for _, row in table.iterrows():
         lines.append(
             f"| {row['adapter']} | {row['delta_w_fmt']} | {row['total_params_fmt']} "
-            f"| {row['dice']} | {row['mean_var']} |"
+            f"| {row['dice']} | {row['mean_var']} | {row['mean_entropy']} |"
         )
     path = out_dir / "tab3_model_complexity.md"
     path.write_text("\n".join(lines) + "\n")
@@ -215,12 +339,16 @@ def _write_latex(table: pd.DataFrame, out_dir: Path) -> None:
         r"\centering",
         r"\caption{Model complexity versus segmentation performance. "
         r"$\Delta W$ denotes the LoRA adapter parameters. "
-        r"Dice and variance are reported as mean $\pm$ 95\% CI "
-        r"(bootstrap, $B{=}10\,000$).}",
+        r"Dice, mean Dice variance, and mean predictive entropy are reported "
+        r"as mean $\pm$ 95\% CI (bootstrap, $B{=}10\,000$). Mean Dice variance "
+        r"is the inter-member variance of per-scan Dice; mean entropy is the "
+        r"predictive binary entropy of the ensemble-mean meningioma "
+        r"probability, averaged inside the predicted meningioma mask over the "
+        r"test scans with per-voxel uncertainty saved.}",
         r"\label{tab:model_complexity}",
-        r"\begin{tabular}{l r r c c}",
+        r"\begin{tabular}{l r r c c c}",
         r"\toprule",
-        r"Adapter & $\Delta W$ & Total & Dice & Mean Var. \\",
+        r"Adapter & $\Delta W$ & Total & Dice & Mean Var. & Mean Ent. \\",
         r"\midrule",
     ]
 
@@ -244,11 +372,12 @@ def _write_latex(table: pd.DataFrame, out_dir: Path) -> None:
         tp = row["total_params_fmt"]
         dice = row["dice"].replace("±", r"$\pm$")
         mvar = row["mean_var"].replace("±", r"$\pm$")
+        ment = row["mean_entropy"].replace("±", r"$\pm$")
 
         if int(row["rank_val"]) == best_dice_idx:
             dice = r"\textbf{" + dice + "}"
 
-        line = f"{adapter} & {dw} & {tp} & {dice} & {mvar} \\\\"
+        line = f"{adapter} & {dw} & {tp} & {dice} & {mvar} & {ment} \\\\"
 
         if i == 0:
             line += "\n" + r"\midrule"
@@ -278,13 +407,30 @@ def render(data: InterLoraData, config: dict, out_dir: Path) -> None:
 
     Args:
         data: Aggregated inter-LoRA data container.
-        config: Configuration dictionary (unused).
+        config: ``uncertainty`` config block. Recognised keys:
+            ``entropy_channel`` (default 0), ``n_members`` (default 20),
+            ``tab3_max_member_scans`` (default 0 — Mean Entropy uses only
+            scans with ``ensemble_probs.nii.gz``), ``force_recompute``.
         out_dir: Output directory for table files.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Rendering Tab 3 (model complexity) to %s", out_dir)
 
-    table = _build_table(data)
+    config = config or {}
+    entropy_channel = int(config.get("entropy_channel", _DEFAULT_ENTROPY_CHANNEL))
+    n_members = int(config.get("n_members", _DEFAULT_N_MEMBERS))
+    max_member_scans = int(config.get("tab3_max_member_scans", _DEFAULT_MAX_MEMBER_SCANS))
+    force_recompute = bool(config.get("force_recompute", False))
+    cache_path = out_dir.parent / "data" / "tab3_mean_entropy.json"
+
+    table = _build_table(
+        data,
+        entropy_channel=entropy_channel,
+        n_members=n_members,
+        max_member_scans=max_member_scans,
+        cache_path=cache_path,
+        force_recompute=force_recompute,
+    )
 
     if table.empty:
         logger.warning("Tab 3: empty table — skipping.")

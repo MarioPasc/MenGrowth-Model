@@ -155,3 +155,21 @@ evaluation:
   compute_threshold_sensitivity: true
   threshold_grid: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
                    0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+
+# =============================================================================
+# Inter-LoRA comparison report (experiments/.../plotting/inter_lora)
+# =============================================================================
+inter_lora:
+  # HDF5 sources used only for the T1n MRI background in the qual1 slice grid.
+  brats_h5: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/BraTS_MEN.h5
+  mengrowth_h5: /media/mpascual/Sandisk2TB/research/growth-dynamics/growth/data/source/MenGrowth.h5
+
+  # Voxelwise uncertainty map shown in qual1 + the tab3 Mean Entropy column.
+  uncertainty:
+    map_type: entropy        # "entropy" (predictive binary entropy) | "variance"
+    entropy_channel: 0       # BSF ch0 = meningioma mass (TC) — the volume target
+    n_members: 20            # ensemble size for averaging per-member probabilities
+    # tab3 Mean Entropy: scans with ensemble_probs.nii.gz are always included;
+    # this caps how many extra scans whose only artefact is the per-member
+    # probability stack are read (expensive). 0 = ensemble_probs scans only.
+    tab3_max_member_scans: 0
