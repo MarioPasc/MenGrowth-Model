@@ -79,16 +79,23 @@ SEED = 0  # parametric layer is seed-deterministic at tau=0.
 ALPHA = 0.05
 
 # (base_model, display label, colour, time-offset at t*)
+# Both predictions are rendered at the held-out x = t^ast (no offset) so the
+# point estimates land exactly on the GT vertical; the two violin densities
+# overlap with their own alphas, which is acceptable since the table reports
+# the numeric separation.
 MODELS: tuple[tuple[str, str, str, float], ...] = (
-    ("lme_homo", "LME homoscedastic", "#4477AA", -0.11),
-    ("ensemble_bma", "Ensemble BMA", "#CC6677", +0.11),
+    ("lme_homo", "LME homoscedastic", "#4477AA", 0.0),
+    ("ensemble_bma", "Ensemble BMA", "#CC6677", 0.0),
 )
 
 # --- Segmentation-variance overlay codepath -------------------------------- #
-# Set to the World-A re-inference ``per_scan/`` directory once it exists
-# (see test_candidate_uncertainty_signals/REINFER_WORLDA.md). While None, the
-# slices show only the consensus MEN contour.
-PER_MEMBER_DIR: Path | None = None
+# World-A re-inference ``per_scan/`` directory (per-member masks consistent
+# with the logvol_mean trajectory used by the conformal experiment). See
+# test_candidate_uncertainty_signals/REINFER_WORLDA.md for context.
+PER_MEMBER_DIR: Path | None = Path(
+    "/media/mpascual/Sandisk2TB/research/growth-dynamics/growth/results/"
+    "uncertainty_propagation_volume_prediction/per_member_segmentations_r32_worldA/per_scan"
+)
 N_MEMBERS = 20
 VAR_CMAP = "magma"
 VAR_VMAX = 0.25  # theoretical max of the Bernoulli variance p(1-p)
@@ -130,6 +137,8 @@ def _load_predictions() -> pd.DataFrame:
     return keep.set_index(["base_model", "patient_id"]).sort_index()
 
 
+
+
 def _patient_scan_rows(f: h5py.File) -> dict[str, list[tuple[int, int]]]:
     """Map each patient to its time-ordered ``(h5_row, timepoint_idx)`` list.
 
@@ -150,21 +159,137 @@ def _patient_scan_rows(f: h5py.File) -> dict[str, list[tuple[int, int]]]:
     return out
 
 
-def _variance_map(scan_id: str) -> np.ndarray | None:
+# --------------------------------------------------------------------------- #
+# Physical-units helpers
+# --------------------------------------------------------------------------- #
+# H5 spacing is 1 mm isotropic (see ``attrs['spacing']``), so 1 voxel = 1 mm^3
+# and the H5 ``logvol_mean`` field is :math:`\\log(V_{\\mathrm{mm}^3} + 1)`.
+VOXEL_SPACING_MM = 1.0
+SCALE_BAR_LENGTH_MM = 30.0  # ruler length drawn on each slice
+
+
+def _log_to_diam_mm(y: np.ndarray) -> np.ndarray:
+    """Convert ``log(V+1)`` (V in mm^3) to equivalent spherical diameter (mm).
+
+    Args:
+        y: Log-volume values.
+
+    Returns:
+        Equivalent spherical diameter, :math:`d = 2 (3V / 4\\pi)^{1/3}`, mm.
+    """
+    v = np.maximum(np.exp(y) - 1.0, 0.0)
+    return 2.0 * (3.0 * v / (4.0 * np.pi)) ** (1.0 / 3.0)
+
+
+def _diam_mm_to_log(d: np.ndarray) -> np.ndarray:
+    """Inverse of :func:`_log_to_diam_mm`: equivalent diameter (mm) → log(V+1).
+
+    Args:
+        d: Equivalent spherical diameter in mm.
+
+    Returns:
+        :math:`\\log(\\pi d^3 / 6 + 1)`.
+    """
+    d = np.maximum(d, 0.0)
+    return np.log1p((np.pi / 6.0) * d ** 3)
+
+
+def _add_scale_bar(
+    ax: plt.Axes,
+    length_mm: float = SCALE_BAR_LENGTH_MM,
+    voxel_size_mm: float = VOXEL_SPACING_MM,
+) -> None:
+    """Draw a horizontal ruler on the slice (white, with endpoint tick marks).
+
+    Args:
+        ax: Image axes (imshow already drawn; y-axis inverted).
+        length_mm: Ruler length in millimetres.
+        voxel_size_mm: Image voxel pitch in millimetres (in-plane).
+    """
+    if voxel_size_mm < 1e-6:
+        return
+    bar_voxels = length_mm / voxel_size_mm
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    x_start = xlim[0] + (xlim[1] - xlim[0]) * 0.04
+    x_end = x_start + bar_voxels
+    y_pos = ylim[0] - 0.025 * abs(ylim[1] - ylim[0])  # just above bottom edge of image
+    tick_h = 0.018 * abs(ylim[1] - ylim[0])
+    ax.plot(
+        [x_start, x_end],
+        [y_pos, y_pos],
+        color="white",
+        linewidth=1.6,
+        solid_capstyle="butt",
+        clip_on=False,
+        zorder=11,
+    )
+    for x_t in (x_start, x_end):
+        ax.plot(
+            [x_t, x_t],
+            [y_pos - tick_h, y_pos + tick_h],
+            color="white",
+            linewidth=1.6,
+            solid_capstyle="butt",
+            clip_on=False,
+            zorder=11,
+        )
+    # Label sits clearly above the bar (image y-axis is inverted, so subtracting
+    # moves visually upward). va="bottom" anchors the text's lower edge to y,
+    # leaving a clean gap between the label and the ruler ticks.
+    ax.text(
+        (x_start + x_end) / 2,
+        y_pos - 1.6 * tick_h,
+        f"{length_mm:.0f} mm",
+        color="white",
+        fontsize=7,
+        ha="center",
+        va="bottom",
+        zorder=11,
+    )
+
+
+def _worldA_dir(patient_id: str, traj_index: int) -> Path | None:
+    """Resolve the World-A per-scan directory for a given trajectory position.
+
+    The World-A re-inference enumerates scans **per patient, 0-based,
+    contiguous, in trajectory (timepoint) order** — independently of the
+    H5 ``scan_ids`` strings, which retain the original clinical numbering
+    and can skip values (e.g. ``MenGrowth-0025`` has scan ids ``-000,
+    -002, -003, -004, -005, -006`` for trajectory positions 0..5; disk has
+    ``-000..-005``). Indexing by scan_id therefore mis-reads or misses
+    variance maps; the correct key is ``f"{patient_id}-{traj_index:03d}"``.
+
+    Args:
+        patient_id: Patient identifier (e.g. ``MenGrowth-0048``).
+        traj_index: 0-based position within the patient's trajectory.
+
+    Returns:
+        Path to the per-scan directory, or ``None`` if ``PER_MEMBER_DIR``
+        is unset or the directory is missing on disk.
+    """
+    if PER_MEMBER_DIR is None:
+        return None
+    d = PER_MEMBER_DIR / f"{patient_id}-{traj_index:03d}"
+    return d if d.is_dir() else None
+
+
+def _variance_map(patient_id: str, traj_index: int) -> np.ndarray | None:
     """Voxel-wise Bernoulli variance ``p(1-p)`` of the MEN indicator over members.
 
     Args:
-        scan_id: Scan identifier (e.g. ``MenGrowth-0048-002``).
+        patient_id: Patient identifier.
+        traj_index: 0-based trajectory position (see ``_worldA_dir``).
 
     Returns:
         Float32 ``[D, H, W]`` variance map, or ``None`` if ``PER_MEMBER_DIR`` is
         unset or the per-member masks for this scan are missing.
     """
-    if PER_MEMBER_DIR is None:
+    scan_dir = _worldA_dir(patient_id, traj_index)
+    if scan_dir is None:
         return None
     import nibabel as nib  # local import: only needed when the overlay is on
 
-    scan_dir = PER_MEMBER_DIR / scan_id
     members = []
     for k in range(N_MEMBERS):
         path = scan_dir / f"member_{k}_mask.nii.gz"
@@ -173,6 +298,27 @@ def _variance_map(scan_id: str) -> np.ndarray | None:
         members.append(np.asarray(nib.load(str(path)).dataobj) > 0)
     p = np.mean(np.stack(members).astype(np.float32), axis=0)
     return (p * (1.0 - p)).astype(np.float32)
+
+
+def _ensemble_mask(patient_id: str, traj_index: int) -> np.ndarray | None:
+    """Load the World-A LoRA-ensemble consensus MEN mask.
+
+    Args:
+        patient_id: Patient identifier.
+        traj_index: 0-based trajectory position (see ``_worldA_dir``).
+
+    Returns:
+        Boolean ``[D, H, W]`` consensus mask, or ``None`` if missing on disk.
+    """
+    scan_dir = _worldA_dir(patient_id, traj_index)
+    if scan_dir is None:
+        return None
+    import nibabel as nib  # local import: only needed when the overlay is on
+
+    path = scan_dir / "ensemble_mask.nii.gz"
+    if not path.exists():
+        return None
+    return np.asarray(nib.load(str(path)).dataobj) > 0
 
 
 # --------------------------------------------------------------------------- #
@@ -196,7 +342,7 @@ def _draw_prediction_panel(
         t_star: Held-out follow-up index.
         y_true: Held-out observed log-volume.
         preds: Mapping ``base_model -> prediction Series``.
-        patient_id: Patient identifier (for the title).
+        patient_id: Patient identifier (unused — title removed).
     """
     half = 0.34  # sideways-density half-width in time units
 
@@ -213,7 +359,7 @@ def _draw_prediction_panel(
     )
     ax.axvline(t_star, color="0.6", linestyle=":", linewidth=0.9, zorder=0)
 
-    is_lines: list[str] = []
+    metrics_rows: list[tuple[str, str, str, str, str]] = []
     for base_model, label, color, dx in MODELS:
         row = preds[base_model]
         mu = float(row["pred_mean"])
@@ -272,7 +418,19 @@ def _draw_prediction_panel(
                 arrowprops={"arrowstyle": "<->", "color": color, "lw": 1.5},
                 zorder=6,
             )
-        is_lines.append(rf"{label}: IS@95 $= {is_val:.2f}$ ({'covered' if covered else 'miss'})")
+        abs_log_err = abs(mu - y_true)
+        abs_diam_err_mm = abs(
+            float(_log_to_diam_mm(np.array(mu))) - float(_log_to_diam_mm(np.array(y_true)))
+        )
+        metrics_rows.append(
+            (
+                label,
+                color,
+                f"{is_val:.2f}",
+                f"{abs_log_err:.2f}",
+                f"{abs_diam_err_mm:.1f}",
+            )
+        )
 
     ax.plot(
         t_star,
@@ -284,28 +442,74 @@ def _draw_prediction_panel(
         markeredgewidth=0.5,
         zorder=7,
     )
-    ax.text(
-        0.015,
-        0.97,
-        "\n".join(is_lines),
-        transform=ax.transAxes,
-        fontsize=9,
-        va="top",
-        ha="left",
-        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.9},
-    )
 
     all_t = np.concatenate([past_t, [t_star]])
     ax.set_xlim(all_t.min() - 0.45, t_star + 0.85)
     ax.set_xticks(np.unique(all_t))
-    ax.set_xlabel(r"follow-up index $t$")
+    ax.set_xlabel(r"Follow-up Index $t$")
     ax.set_ylabel(r"$\log(V_{\mathrm{MEN}}+1)$")
     ax.grid(alpha=0.25, linestyle=":")
-    ax.set_title(
-        rf"{patient_id}: predict $t^\ast={int(t_star)}$ from $t=0,\dots,{int(t_star) - 1}$ "
-        r"(LME homoscedastic vs. Ensemble BMA, 95% parametric interval)",
-        fontsize=10,
+
+    # Secondary y-axis: equivalent spherical diameter (mm), d = 2(3V/4π)^{1/3}.
+    # Gives a physical / clinical sense alongside the log-volume axis.
+    sec = ax.secondary_yaxis("right", functions=(_log_to_diam_mm, _diam_mm_to_log))
+    sec.set_ylabel(r"Equivalent Spherical Diameter $d$ (mm)")
+
+    # --- Top-left metrics table (booktabs-style; LaTeX paper convention).
+    # Columns: model | IS@95 (this patient's Winkler interval score) |
+    # |Δlog(V+1)| (absolute log-volume residual, |μ̂ - y|, pure point-prediction
+    # error) | |Δd| (mm) (the same residual mapped to equivalent spherical
+    # diameter, a clinical length scale).
+    col_labels = (
+        r"Model",
+        r"IS@95",
+        r"$|\Delta \log(V{+}1)|$",
+        r"$|\Delta d|$ (mm)",
     )
+    cell_text = [[row[0], row[2], row[3], row[4]] for row in metrics_rows]
+    tbl_x0, tbl_y0, tbl_w, tbl_h = 0.015, 0.66, 0.47, 0.30  # axes-fraction
+    tbl = ax.table(
+        cellText=cell_text,
+        colLabels=col_labels,
+        cellLoc="center",
+        colLoc="center",
+        bbox=(tbl_x0, tbl_y0, tbl_w, tbl_h),
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8.8)
+    col_widths = (0.40, 0.16, 0.24, 0.20)
+    n_rows = len(metrics_rows) + 1  # +1 for the header
+    # Strip all cell edges; the booktabs rules below are drawn separately so
+    # the top/bottom rules can be thicker than the header mid-rule.
+    for (r_idx, c_idx), cell in tbl.get_celld().items():
+        cell.set_width(col_widths[c_idx])
+        cell.set_facecolor("white")
+        cell.visible_edges = ""
+        cell.set_linewidth(0.0)
+        if r_idx == 0:
+            pass  # header row: plain weight per request
+        elif c_idx == 0:
+            model_color = metrics_rows[r_idx - 1][1]
+            cell.set_text_props(color=model_color, weight="bold")
+
+    # Booktabs rules in axes coords: thick top-rule, thin mid-rule under
+    # the header, thick bottom-rule under the last data row.
+    row_h = tbl_h / n_rows
+    y_top = tbl_y0 + tbl_h
+    y_mid = y_top - row_h  # under the header
+    y_bot = tbl_y0
+    rule_x0, rule_x1 = tbl_x0, tbl_x0 + tbl_w
+    for y_val, lw in ((y_top, 1.2), (y_mid, 0.6), (y_bot, 1.2)):
+        ax.plot(
+            [rule_x0, rule_x1],
+            [y_val, y_val],
+            transform=ax.transAxes,
+            color="black",
+            linewidth=lw,
+            solid_capstyle="butt",
+            clip_on=False,
+            zorder=10,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -357,43 +561,87 @@ def _make_patient_figure(
         # can be anchored consistently across the longitudinal series. The
         # scans are co-registered (brain centroids agree across timepoints),
         # so a single axis-2 index shows the same anatomical plane everywhere.
-        men_volumes = [np.isin(f["segs"][row, 0], MEN_LABELS) for row, _tp in shown]
+        # Prefer the World-A LoRA-ensemble consensus mask — it is the segmentation
+        # the conformal trajectory was built from. Index by within-patient
+        # trajectory position (0-based), NOT by H5 scan_id: the latter retains
+        # clinical numbering with gaps that does not align with the World-A
+        # per_scan directory layout. Fall back to H5 ``segs`` only when the
+        # per-member directory is unavailable for a scan.
+        men_volumes: list[np.ndarray] = []
+        var_volumes: list[np.ndarray | None] = []
+        for k, (row, _tp) in enumerate(shown):
+            ens = _ensemble_mask(patient_id, k)
+            if ens is None:
+                ens = np.isin(f["segs"][row, 0], MEN_LABELS)
+            men_volumes.append(ens)
+            var_volumes.append(_variance_map(patient_id, k))
         vox_counts = [int(m.sum()) for m in men_volumes]
 
-        # Anchor the display plane to the axis-2 index covered by the most
-        # timepoints' MEN masks — the "maximum common plane". This is robust to
-        # multi-component masks (no centroid-in-a-gap artefact) and to a single
-        # drifted timepoint. A timepoint whose mask still does not reach that
-        # plane (a genuinely different structure / unreliable segmentation on a
-        # high-σ²_v scan) is annotated rather than shown contour-free. Ties
-        # break toward the plane nearest the timepoints' median peak-area slice.
+        # Anchor the display plane to where the overlay carries lesion-localised
+        # content. LoRA members can disagree on non-tumour voxels (skull base,
+        # cerebellum edge), so a global "max variance" anchor drifts off-lesion.
+        # Constrain to slices inside the lesion: among the z's covered by the
+        # most timepoints' MEN masks (so the contour is informative), pick the
+        # one whose per-member disagreement, *restricted to the union of masks
+        # across timepoints*, is largest. Tie-break to the slice nearest the
+        # timepoints' median peak-area z. Fallback: contour-only anchor.
+        D2 = men_volumes[0].shape[2]
         z_present = np.array(
             [m.any(axis=(0, 1)) for m in men_volumes], dtype=int
-        )  # [n_tp, D2]: which axis-2 slices each timepoint's mask occupies
-        coverage = z_present.sum(axis=0)  # [D2]: how many timepoints reach each z
+        )  # [n_tp, D2]
+        coverage = z_present.sum(axis=0)  # [D2]
+        peak_z_list = [
+            int(np.argmax(m.sum(axis=(0, 1)))) for m, n in zip(men_volumes, vox_counts) if n > 0
+        ]
+        med = float(np.median(peak_z_list)) if peak_z_list else D2 / 2.0
+
         if int(coverage.max()) > 0:
-            peak_z = [
-                int(np.argmax(m.sum(axis=(0, 1)))) for m, n in zip(men_volumes, vox_counts) if n > 0
-            ]
-            med = float(np.median(peak_z))
-            best = np.flatnonzero(coverage == coverage.max())
-            ref_cz = int(min(best, key=lambda z: abs(z - med)))
+            band = np.flatnonzero(coverage == coverage.max())
+            # Per-z lesion-restricted variance summed across timepoints. The
+            # mask used for restriction is the OR of MEN masks across the
+            # timepoints whose mask actually reaches that z, so we never include
+            # variance from voxels outside any lesion at that plane.
+            in_mask_var = np.zeros(D2, dtype=np.float64)
+            for v, m in zip(var_volumes, men_volumes):
+                if v is None:
+                    continue
+                in_mask_var += (v * m.astype(np.float32)).sum(axis=(0, 1))
+            if in_mask_var[band].max() > 0:
+                top = in_mask_var[band].max()
+                cand = band[in_mask_var[band] >= 0.95 * top]
+            else:
+                cand = band
+            ref_cz = int(min(cand, key=lambda z: abs(z - med)))
         else:
-            ref_cz = men_volumes[0].shape[2] // 2
+            ref_cz = D2 // 2
 
         t1c_slices: list[np.ndarray] = []
         men_masks: list[np.ndarray] = []
         var_maps: list[np.ndarray | None] = []
-        mask_off_plane: list[bool] = []  # scan has MEN voxels, but none at ref_cz
-        for (row, _tp), men_vol, n_vox in zip(shown, men_volumes, vox_counts):
+        mask_off_plane: list[bool] = []  # rendered at its own z, not ref_cz
+        slice_z: list[int] = []  # actual axial index used for each panel
+        for k, ((row, _tp), men_vol, var_vol, n_vox) in enumerate(
+            zip(shown, men_volumes, var_volumes, vox_counts)
+        ):
+            # If the mass exists in 3D but does not reach ``ref_cz``, fall back
+            # to this timepoint's own peak-area slice (per-scan z). The panel
+            # is then labelled with its own z so the reader is not misled into
+            # thinking the lesion has disappeared. The variance overlay follows
+            # the same z so it remains lesion-localised on that timepoint.
+            men_at_ref = men_vol[:, :, ref_cz].astype(np.uint8)
+            if n_vox > 0 and int(men_at_ref.sum()) == 0:
+                z_k = int(np.argmax(men_vol.sum(axis=(0, 1))))
+                off = True
+            else:
+                z_k = ref_cz
+                off = False
             t1c_slices.append(
-                np.asarray(f["images"][row, T1C_CHAN, :, :, ref_cz], dtype=np.float32)
+                np.asarray(f["images"][row, T1C_CHAN, :, :, z_k], dtype=np.float32)
             )
-            men_slice = men_vol[:, :, ref_cz].astype(np.uint8)
-            men_masks.append(men_slice)
-            mask_off_plane.append(n_vox > 0 and int(men_slice.sum()) == 0)
-            var_vol = _variance_map(str(scan_ids[row]))
-            var_maps.append(var_vol[:, :, ref_cz] if var_vol is not None else None)
+            men_masks.append(men_vol[:, :, z_k].astype(np.uint8))
+            mask_off_plane.append(off)
+            slice_z.append(z_k)
+            var_maps.append(var_vol[:, :, z_k] if var_vol is not None else None)
 
     fig = plt.figure(figsize=(max(9.0, 2.7 * n), 6.6))
     has_var = any(v is not None for v in var_maps)
@@ -406,7 +654,7 @@ def _make_patient_figure(
         wspace=0.08,
         left=0.075,
         right=right,
-        top=0.92,
+        top=0.965,
         bottom=0.11,
         figure=fig,
     )
@@ -414,16 +662,25 @@ def _make_patient_figure(
     ax_pred = fig.add_subplot(gs[0, :])
     _draw_prediction_panel(ax_pred, past_t, past_y, t_star, y_true, pred_by_model, patient_id)
 
-    all_intens = np.concatenate([s.ravel() for s in t1c_slices])
-    pos = all_intens[all_intens > 0]
-    vmin, vmax = np.percentile(pos, (1.0, 99.0)) if pos.size else (0.0, 1.0)
+    # Per-slice grayscale normalisation: each timepoint's slice is stretched to
+    # its own 1–99 percentile of positive pixels, so every panel fills the same
+    # display range despite genuine inter-study intensity differences (scanner /
+    # session / bias field). The MR intensities themselves are not modified —
+    # only the imshow vmin/vmax for visual comparability across timepoints.
     var_im = None
 
     for k, (_row, tp) in enumerate(shown):
         ax = fig.add_subplot(gs[1, k])
         img = np.rot90(t1c_slices[k], k=1)
         mask = np.rot90(men_masks[k], k=1)
-        ax.imshow(img, cmap="gray", vmin=vmin, vmax=vmax, interpolation="bilinear")
+        pos = img[img > 0]
+        if pos.size:
+            vmin_k, vmax_k = np.percentile(pos, (1.0, 99.0))
+            if vmax_k <= vmin_k:
+                vmax_k = vmin_k + 1.0
+        else:
+            vmin_k, vmax_k = 0.0, 1.0
+        ax.imshow(img, cmap="gray", vmin=vmin_k, vmax=vmax_k, interpolation="bilinear")
         if var_maps[k] is not None:
             var = np.rot90(var_maps[k], k=1)
             var_im = ax.imshow(
@@ -436,14 +693,14 @@ def _make_patient_figure(
             )
         if mask.sum() > 0:
             ax.contour(mask, levels=[0.5], colors=MEN_COLOR, linewidths=1.2, alpha=1.0)
-        elif mask_off_plane[k]:
-            # Scan has a MEN segmentation, but it lies outside the anchored
-            # display plane — a separate lesion, or (more often) an unreliable
-            # segmentation on a high-uncertainty scan. Flag it explicitly.
+        if mask_off_plane[k]:
+            # This timepoint's lesion did not reach the cohort-anchored plane,
+            # so the panel falls back to the scan's own peak-area slice — flag
+            # this so the reader is not misled by the anatomical shift.
             ax.text(
                 0.5,
                 0.035,
-                "MEN mass outside shown plane",
+                f"Different Axial Plane (z={slice_z[k]})",
                 transform=ax.transAxes,
                 fontsize=7.5,
                 color=MEN_COLOR,
@@ -461,17 +718,21 @@ def _make_patient_figure(
         marker = r"  $\leftarrow t^\ast$" if int(tp) == int(t_star) else ""
         # full_y is indexed by trajectory order, which matches `shown` order.
         ax.set_title(rf"$t = {int(tp)}$,  $\log(V+1) = {full_y[k]:.2f}${marker}", fontsize=8.5)
+        _add_scale_bar(ax)
 
     if has_var and var_im is not None:
         row1_box = gs[1, n - 1].get_position(fig)
         cax = fig.add_axes((0.915, row1_box.y0, 0.015, row1_box.height))
         cb = fig.colorbar(var_im, cax=cax, orientation="vertical")
         cb.set_label(
-            r"segmentation variance $p(1-p)$" + "\n" + r"across $M=20$ ensemble members",
+            r"Segmentation Variance $p(1-p)$" + "\n" + r"across $M=20$ Ensemble Members",
             fontsize=8.5,
         )
         cb.ax.tick_params(labelsize=8)
 
+    # Model identity is conveyed by the table's colour-coded model rows and the
+    # plot ribbons, so the legend lists only the entries that do not appear in
+    # the table: conditioning observations, held-out observation, segmentation.
     handles = [
         plt.Line2D(
             [],
@@ -482,41 +743,40 @@ def _make_patient_figure(
             color=PAST_COLOR,
             markeredgecolor="black",
             markeredgewidth=0.4,
-            label="conditioning observations",
+            label="Conditioning Observations",
         ),
         plt.Line2D(
             [],
             [],
             linestyle="none",
             marker="*",
-            markersize=16,
+            markersize=14,
             color=STAR_COLOR,
             markeredgecolor="black",
             markeredgewidth=0.5,
-            label=r"held-out observation $y$ at $t^\ast$",
+            label=r"Held-out Observation $y$ at $t^\ast$",
         ),
-        plt.Line2D([], [], linestyle="-", linewidth=1.3, color=MODELS[0][2], label=MODELS[0][1]),
-        plt.Line2D([], [], linestyle="-", linewidth=1.3, color=MODELS[1][2], label=MODELS[1][1]),
         plt.Line2D(
             [],
             [],
             linestyle="-",
-            linewidth=1.4,
+            linewidth=1.5,
             color=MEN_COLOR,
-            label=r"MEN segmentation (labels 1$|$3)",
+            label="Tumor Core Segmentation",
         ),
     ]
     fig.legend(
         handles=handles,
         loc="lower center",
         bbox_to_anchor=(0.5, 0.0),
-        ncol=5,
+        ncol=3,
         frameon=False,
         fontsize=9,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, format="png", dpi=170, bbox_inches="tight")
+    fig.savefig(out_path.with_suffix(".pdf"), format="pdf", bbox_inches="tight")
     plt.close(fig)
     return True
 
